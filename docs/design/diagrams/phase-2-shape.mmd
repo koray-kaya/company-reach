@@ -1,0 +1,15 @@
+flowchart TD
+    subgraph parent [reach — parent graph]
+        START([__start__]) --> pool_stage[load · screen · criteria · score · probe]
+        pool_stage --> draw_batch
+        draw_batch -->|Send per company| enrich_company
+        enrich_company --> collect
+        collect --> more{sendable == 0<br/>and batches < 3<br/>and pool not exhausted?}
+        more -->|yes| draw_batch
+        more -->|no| END([__end__])
+    end
+    subgraph child [child graph — one company, run by enrich_company]
+        C0([__start__]) --> find_site --> has_site{site found?}
+        has_site -->|no| C9([__end__])
+        has_site -->|yes| read_and_extract[pick · read · extract · check] --> find_contact --> recommend --> draft --> C9
+    end

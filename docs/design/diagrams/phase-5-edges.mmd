@@ -1,0 +1,18 @@
+flowchart TD
+    subgraph parent [reach — parent graph]
+        START([__start__]) --> load_pool --> screen_pool --> write_criteria --> score_pool --> probe_search --> draw_batch
+        draw_batch --> fan{fan_out}
+        fan -->|Send per uid| enrich_company
+        fan -->|empty batch| collect
+        enrich_company -->|"{results: [CompanyResult]}"| collect
+        collect --> need{need_another_batch}
+        need -->|again: sendable==0 and batches<3 and not exhausted| draw_batch
+        need -->|done| END([__end__])
+    end
+    subgraph child [enrich_company runs the child graph in try/except]
+        C0([__start__]) --> load_company --> find_site --> has{has_site}
+        has -->|no| C9([__end__])
+        has -->|yes| pick_pages --> read_pages --> extract --> check_profile --> find_contact --> recommend --> nd{needs_draft}
+        nd -->|skip| C9
+        nd -->|send or hold| draft --> check_draft --> C9
+    end

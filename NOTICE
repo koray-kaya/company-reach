@@ -1,0 +1,19 @@
+company-reach
+Copyright (c) 2026 Koray Kaya. Licensed under the MIT License (see LICENSE).
+
+Data sources used at run time (no data is shipped with this repository):
+
+- Swiss commercial register (Zefix), via LINDAS, the linked-data service of
+  the Swiss federal administration — https://lindas.admin.ch
+  Source: Federal Office of Justice, Zefix. The dataset is published as
+  open data under the terms "Open use. Must provide the source."
+
+- Swiss Official Gazette of Commerce (SHAB/FOSC), via the Amtsblattportal
+  API — https://www.amtsblattportal.ch
+  Source: SECO, Swiss Official Gazette of Commerce. Data retrieved through
+  this tool is not an official publication; only the publication on
+  shab.ch / amtsblattportal.ch is authoritative.
+
+Third-party software keeps its own licence; SearXNG (AGPL-3.0) and
+Playwright (Apache-2.0) run as separate containers and are not part of this
+code base.

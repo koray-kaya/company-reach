@@ -1,0 +1,269 @@
+# company-reach — LangGraph design spec, revision 2 (2026-09-19, after the audit)
+# Built phase by phase with the langgraph-builder skill. Single source of truth
+# for the graph design; the human-readable design doc is derived from it.
+# Phase 9 (codegen) is deliberately not used: the code is written by hand,
+# together, from this spec.
+
+project: company-reach
+started: 2026-09-19
+revision: 2
+
+intent:
+  purpose: >
+    From one Swiss municipality and the user's goal, produce about ten reviewed
+    candidates — verified website, named contact, personal German invitation
+    draft — for a human to send.
+  use_cases:
+    - Thesis: manufacturing SMEs (10–50 people) in St. Gallen city, for 30-minute interviews
+    - The same user later widens to Gossau, Wil, Rapperswil-Jona
+    - Another GitHub user with their own key, e.g. software SMEs in Zürich for a survey
+  input:
+    source: CLI (local or Docker Compose)
+    shape: municipality id, goal text, about-me text, batch size, seed
+  output:
+    consumer: local review page (one company per screen, arrow keys) + SQLite ledger
+    shape: per company — verdict with one reason, what it does, the site, who to write to
+      (every address with its kind, or a LinkedIn lead marked unverified), the draft
+  constraints:
+    latency_ms: null          # minutes to an hour per run is fine
+    cost_ceiling: ~10 USD per run, measured and printed, not enforced
+    autonomy: auto until candidates are ready, then human
+  hitl_needs:
+    - send / skip / never per candidate — the tool never sends mail
+  trigger:
+    type: manual
+    cadence: on demand
+    expected_load: {note: 1–4 runs per month}
+    stop_conditions:
+      monthly_mail_cap: none — the page shows this month's sent count; the user decides
+      max_batches_per_run: 3
+      indefinite: false
+  out_of_scope:
+    - sending mail; LinkedIn automation (a lead found by web search is allowed, marked unverified)
+    - reply tracking beyond a manual ledger entry; multi-user; non-Swiss sources; CRM features
+  failure_modes:
+    - LINDAS slow or down
+    - SearXNG unreachable or baseline engines suspended (typed SearchError, probe before fan-out)
+    - site unreachable; robots.txt disallows; JavaScript-only page (Playwright fallback service)
+    - LLM returns malformed JSON, refuses, hits rate limits, or the endpoint ignores the schema (doctor probe)
+    - SHAB unavailable
+    - partial run: must resume without re-scoring the pool; errors retried, findings kept
+    - hostile page content trying to steer extraction or the draft (deterministic checks)
+    - draft too long for a mailto: link
+
+scope:
+  type: composition
+  graphs:
+    - name: reach
+      role: parent
+    - name: enrich_company
+      role: child           # invoked from a parent function node, one uid per invocation
+  composition:
+    pattern: invoke-from-node   # the documented pattern for differing schemas
+    parent_to_child: {run_id: run_id, goal: goal, about_me: about_me, "batch_uids[i]": uid}
+    child_to_parent: the wrapper returns {"results": [CompanyResult]}; the child state never writes parent keys
+
+shape:
+  pattern: linear + orchestrator_worker
+  api: stategraph
+  rationale: >
+    Branching (site found?, batch loop) and a fan-out make StateGraph the clearer
+    choice; the child graph is testable on one company. LangGraph is a learning
+    choice; a plain asyncio pipeline would also do, and that is recorded.
+  decisions:
+    - Human review lives outside the graph; no interrupt() in v1.
+    - The child is run by a parent node (enrich_company) inside try/except, so a
+      failing company becomes an error result and never aborts the superstep.
+    - Batch loop in the parent with three exits: sendable found, three batches, pool exhausted.
+    - No checkpointer (simplicity); SQLite is the record; recursion_limit=40 set explicitly.
+diagram_paths:
+  phase_2: docs/design/diagrams/phase-2-shape.mmd
+  phase_5: docs/design/diagrams/phase-5-edges.mmd
+  visual: https://claude.ai/artifact/P7hmJMMTzHswUtgv72sgVF
+
+state:
+  principle: >
+    State carries ids, counts and small typed records. The pool, scores and raw
+    pages live in SQLite / the disk cache, never in state.
+  parent:
+    - {name: run_id,           type: str,                 why: every persisted row is tagged with it}
+    - {name: goal,             type: str,                 why: input; criteria and draft}
+    - {name: about_me,         type: str,                 why: input; draft}
+    - {name: municipality,     type: str,                 why: input; LINDAS query}
+    - {name: batch_size,       type: int,                 why: input}
+    - {name: seed,             type: int,                 why: input; reproducible draw}
+    - {name: pool_count,       type: int,                 why: written by load_pool; read by collect}
+    - {name: kept_count,       type: int,                 why: written by screen_pool; read by collect}
+    - {name: criteria,         type: "SelectionCriteria | None", why: written by write_criteria; rendered into score.md; stored in the manifest}
+    - {name: batch_uids,       type: "list[str]",         why: written by draw_batch; replaced each loop}
+    - {name: batches_drawn,    type: int,                 why: loop exit counter}
+    - {name: pool_exhausted,   type: bool,                why: written by draw_batch; loop exit}
+    - {name: results,          type: "Annotated[list[CompanyResult], operator.add]", reducer: operator.add,
+       why: one CompanyResult per enrich_company node in this superstep}
+    - {name: sendable_count,   type: int,                 why: written by collect from the results TABLE (not state), so reruns count earlier results}
+  child:
+    - {name: run_id,          type: str}
+    - {name: goal,            type: str}
+    - {name: about_me,        type: str}
+    - {name: uid,             type: str}
+    - {name: company,         type: CompanyRecord}
+    - {name: site,            type: "SiteChoice | None",       why: url, tier uid|address|model, evidence quote, confidence}
+    - {name: page_urls,       type: "list[str]  # cap 200"}
+    - {name: pages_to_read,   type: "list[str]  # cap max_pages_per_site"}
+    - {name: page_texts,      type: "dict[str, str]  # per page ≤ max_chars_per_page"}
+    - {name: profile,         type: "CompanyProfile | None"}
+    - {name: contact,         type: "Contact | None",          why: email_kind seen|constructed|generic|third_party}
+    - {name: recommendation,  type: "Recommendation | None"}
+    - {name: draft,           type: "Draft | None"}
+  error_handling: child nodes RAISE typed errors (SearchError, FetchError, LlmError, ShabError); the wrapper catches and records CompanyResult(error_kind=...)
+  records: all record types are Pydantic models; the same models are the LLM output schemas
+  checkpointer:
+    dev: none
+    prod: none
+    rationale: >
+      Our SQLite is the system of record; nodes persist their results and a rerun
+      with the same run_id resumes from the results table. Chosen for simplicity;
+      the SQLite checkpointer's injection issue (CVE-2025-67644) is patched and
+      is not the reason.
+
+memory:
+  short_term:  {enabled: false, note: no messages channel; each run is independent}
+  long_term:   {enabled: false, backend: none, note: the ledger / suppression list is our own SQLite}
+  summarization: {strategy: none}
+  pii_filter:
+    enabled: false
+    note: >
+      Person names and emails are in state during a run and persisted only under
+      gitignored data/. `forget <uid|email>` removes them everywhere and adds a
+      suppression key. A retention purge removes cache and run files > 12 months.
+  secrets: never in state; pydantic-settings reads .env at module level
+
+nodes:
+  execution: >
+    Plain functions. Async where a node issues many requests itself (score_pool,
+    find_site, read_pages, enrich_company); the rest sync, which LangGraph runs in
+    a thread pool under ainvoke — hence one DB connection per call.
+  parent:
+    - {name: load_pool,      responsibility: fetch the municipality's AG+GmbH companies from LINDAS and store them; raise if empty, reads: [municipality, run_id], writes: [pool_count], side_effects: [http_lindas, db], is_async: false}
+    - {name: screen_pool,    responsibility: rule-based exclusion (in Liquidation, property-only head clause), reads: [run_id], writes: [kept_count], side_effects: [db], is_async: false}
+    - {name: write_criteria, responsibility: derive typed SelectionCriteria from the goal; store in the manifest, reads: [goal], writes: [criteria], side_effects: [llm, db], is_async: false}
+    - {name: score_pool,     responsibility: score kept companies not yet scored for (goal_hash, prompt@version, model) in batches of 50; compare returned UID set with sent set and re-send the difference; drop duplicates; validate 0–100 client-side, reads: [criteria, seed, run_id], writes: [], side_effects: [llm, db], is_async: true}
+    - {name: probe_search,   responsibility: one known query must return ≥ 1 result, else raise before anything is drawn, reads: [], writes: [], side_effects: [http_search], is_async: false}
+    - {name: draw_batch,     responsibility: pick the next N unseen companies by score, record them as seen, set pool_exhausted; on a rerun of the same run_id reuse the recorded batch, reads: [batch_size, seed, batches_drawn, run_id], writes: [batch_uids, batches_drawn, pool_exhausted], side_effects: [db], is_async: false}
+    - {name: enrich_company, responsibility: run the child graph for one uid inside try/except; write the results row; return {"results": [CompanyResult]}; on rerun skip uids whose results row has no error, reads: [run_id, goal, about_me, uid(from Send)], writes: [results], side_effects: [child_graph, db], is_async: true}
+    - {name: collect,        responsibility: count sendable from the results table for run_id; write the run report, reads: [run_id, pool_count, kept_count, batches_drawn], writes: [sendable_count], side_effects: [db], is_async: false}
+  child:
+    - {name: load_company,  responsibility: load the company record from SQLite, reads: [uid], writes: [company], side_effects: [db], is_async: false}
+    - {name: find_site,     responsibility: 3 queries + domain guess → drop directory/social domains → fetch home + Impressum of ≤ 3 candidates → tier 1 UID match, tier 2 register street+postal-code match, tier 3 model choice with a verbatim quote checked against normalised text → list pages (≤ 200), reads: [company], writes: [site, page_urls], side_effects: [http_search, http_site, llm, db], is_async: true}
+    - {name: pick_pages,    responsibility: choose up to max_pages_per_site pages worth reading, reads: [page_urls], writes: [pages_to_read], side_effects: [llm], is_async: false}
+    - {name: read_pages,    responsibility: polite fetch with cache; clean text; Playwright when the needs-JS detector fires, reads: [pages_to_read], writes: [page_texts], side_effects: [http_site, disk_cache], is_async: true}
+    - {name: extract,       responsibility: page texts, delimited as data, → CompanyProfile, reads: [page_texts, company], writes: [profile], side_effects: [llm, db], is_async: false}
+    - {name: check_profile, responsibility: deterministic — drop persons/emails not verbatim in page texts; email domain ≠ site domain → third_party, reads: [profile, page_texts, site], writes: [profile], side_effects: [], is_async: false}
+    - {name: find_contact,  responsibility: typed rules — personal address on the site domain > SHAB name + generic address on the site domain > LinkedIn lead (unverified); noise filters, reads: [profile, company, site], writes: [contact], side_effects: [http_shab, http_search, db], is_async: false}
+    - {name: recommend,     responsibility: rules — no site / distributor / foreign group → skip; no contact or only third_party → hold; else send; one reason, reads: [site, profile, contact], writes: [recommendation], side_effects: [], is_async: false}
+    - {name: draft,         responsibility: German invitation from typed fields only; measure mailto length; persist, reads: [company, profile, contact, goal, about_me], writes: [draft], side_effects: [llm, db], is_async: false}
+    - {name: check_draft,   responsibility: deterministic — no URL, no e-mail, ≤ 1,200 chars, greets the contact, contains the revDSG sentence; one regeneration on failure, then recommendation hold, reads: [draft, contact], writes: [draft, recommendation], side_effects: [llm(once), db], is_async: false}
+  settings_referenced:
+    max_pages_per_site: 10
+    max_chars_per_page: 8000
+    score_batch_size: 50
+    max_batches_per_run: 3
+    llm_concurrency: 5
+    search_concurrency: 2
+    recursion_limit: 40
+
+edges:
+  parent:
+    - {from: __start__, to: load_pool, type: direct}
+    - {from: load_pool, to: screen_pool, type: direct}
+    - {from: screen_pool, to: write_criteria, type: direct}
+    - {from: write_criteria, to: score_pool, type: direct}
+    - {from: score_pool, to: probe_search, type: direct}
+    - {from: probe_search, to: draw_batch, type: direct}
+    - {from: draw_batch, type: conditional, router: fan_out,
+       branches: {"Send(enrich_company, {uid,...}) per uid": enrich_company, empty_batch: collect}}
+    - {from: enrich_company, to: collect, type: direct}
+    - {from: collect, type: conditional, router: need_another_batch,
+       branches: {again: draw_batch, done: __end__},
+       condition: "sendable_count == 0 and batches_drawn < max_batches_per_run and not pool_exhausted",
+       cycle_exit: batches_drawn counter + pool_exhausted; recursion_limit=40}
+  child:
+    - {from: __start__, to: load_company, type: direct}
+    - {from: load_company, to: find_site, type: direct}
+    - {from: find_site, type: conditional, router: has_site, branches: {yes: pick_pages, no: __end__}}
+    - {from: pick_pages, to: read_pages, type: direct}
+    - {from: read_pages, to: extract, type: direct}
+    - {from: extract, to: check_profile, type: direct}
+    - {from: check_profile, to: find_contact, type: direct}
+    - {from: find_contact, to: recommend, type: direct}
+    - {from: recommend, type: conditional, router: needs_draft, branches: {yes: draft, skip: __end__}}
+    - {from: draft, to: check_draft, type: direct}
+    - {from: check_draft, to: __end__, type: direct}
+  error_rule: >
+    A child node that cannot do its job for infrastructure reasons raises a
+    typed error; the parent's enrich_company node catches it, records
+    CompanyResult(error_kind, error_text) and returns normally. Findings
+    ("no site", "no address") are ordinary returns and end the child through
+    the routers above.
+
+tools:
+  note: >
+    No LLM tool-calling loop. "Tools" are integration modules the nodes call.
+    HTTP and LLM clients are created once per module; DB connections per call.
+    There is deliberately no send_email.
+  - {name: lindas,  signature: "(municipality: str) -> list[CompanyRecord]", auth: none (attribution required), idempotent: true, failure: retry 3x, then raise; raise if empty}
+  - {name: search,  signature: "(query: str, limit: int) -> list[SearchResult]", auth: {env: [SEARXNG_URL, SERPER_API_KEY]}, idempotent: true, failure: "raise SearchError when SearXNG is unreachable or all baseline engines unresponsive; [] on a real empty result; Serper only on SearchError; semaphore 2 + 1 s gap; every query + raw response + unresponsive_engines stored"}
+  - {name: fetcher, signature: "(url: str) -> Page{url,status,html,error}", auth: none, idempotent: true, failure: "never raises per page; raises FetchError when a site's home page is unreachable after retries; http(s) only; refuses private IPs; cache; robots + Crawl-delay; 1 s per host; 2 MB cap"}
+  - {name: browser, signature: "(url: str) -> str | None", auth: {env: [PLAYWRIGHT_URL]}, idempotent: true, failure: None → static text kept}
+  - {name: textify, signature: "(html: str) -> str", auth: none, idempotent: true, failure: pure; normalises NBSP/whitespace}
+  - {name: shab,    signature: "(uid: str) -> list[Person]", auth: none (source citation + not-official notice), idempotent: true, failure: "[] on none; raise ShabError on HTTP failure; uids= filter; publicationStates=PUBLISHED; XML detail per publication; DE/FR parser"}
+  - {name: llm,     signature: "(prompt: str, variables: dict, output_model: type[BaseModel]) -> BaseModel", auth: {env: [LLM_BASE_URL, LLM_API_KEY, LLM_MODEL, LLM_STRUCTURED_METHOD]}, idempotent: true, failure: "Pydantic validation; one retry on parse failure; raw text stored (include_raw=True); provenance on every call; semaphore 5; raise LlmError after retry"}
+  - {name: db,      signature: "connect() context manager", auth: none, failure: "one connection per call; WAL; busy_timeout=5000; autocommit=False; with conn: transactions"}
+  - {name: mailto,  signature: "(to, subject, body) -> MailtoLink{href,length,fits}", auth: none, idempotent: true, failure: pure; fits=false above 2000 chars}
+  - {name: doctor,  signature: "() -> Report", auth: uses the above, failure: "checks: schema probe parses; 20k-token marker echoed (context length); SearXNG JSON reachable; DB writable"}
+
+cross_cutting:
+  hitl:
+    location: outside the graph — the review page (ux/review-page-ux.md)
+    points:
+      - {action: send, effect: ledger(status=sent, address) written FIRST, then the mailto: opens; the page shows this month's count, no cap}
+      - {action: skip, effect: ledger(status=skipped, reason); undoable}
+      - {action: never, effect: suppression(key) — permanent; confirm step}
+    rule: a uid in ledger or suppression is never drawn again
+    security: POST routes reject requests whose Sec-Fetch-Site is not same-origin/none; bind 127.0.0.1 outside Docker; http(s) links only; .html templates (autoescape)
+  resume_and_retry:
+    key: run_id + results row
+    rule: rerun skips load/screen/score when scores exist, reuses the recorded batch, re-enriches only uids whose results row has an error_kind; `retry <run_id>` does the same on demand
+  untrusted_content:
+    - page text wrapped as <<<PAGE url=…>>> … <<<END>>> with a data-not-instructions line in pick_site.md, pick_pages.md, extract.md
+    - check_profile: persons/emails must occur verbatim in page_texts; email domain ≠ verified site domain → third_party
+    - recommend: only third_party contacts → hold
+    - draft sees typed fields only; check_draft rejects URLs and e-mail addresses in the body
+    - golden set carries 3–5 adversarial pages
+  streaming_mode: updates with subgraphs=True
+  observability:
+    logging: stdlib logging → stderr + data/runs/<run_id>/run.log
+    manifest: data/runs/<run_id>/manifest.json (goal, criteria, seed, model, prompt versions with sha, settings, counts, cost per node, git commit) at start and end
+    raw_llm_responses: data/runs/<run_id>/llm/<node>-<uid>.json
+    langsmith: optional; LANGSMITH_TRACING=false by default; README warns traces carry names
+  error_handling:
+    node_level: child nodes raise typed errors; the wrapper records them; parent nodes raise (a failed pool stage stops the run with a clear message)
+    graph_level: recursion_limit=40; GraphRecursionError reported as a bug
+    app_level: CLI wrapper logs the exception, marks the manifest failed, prints one line; Ctrl-C cancels through ainvoke
+  rate_control:
+    llm_concurrency: 5
+    search_concurrency: 2 with a 1 s gap
+    per_host_delay_s: 1 (or robots Crawl-delay)
+    cost_ceiling_enforcement: none — measured per node and printed
+  data_protection:
+    - person data only under gitignored data/
+    - forget <uid|email>: removes from contacts, profiles, drafts, page cache, runs/*/llm; adds suppression key
+    - retention purge: cache and run files older than 12 months
+    - PRIVACY.md: page text and SHAB person blocks go to the configured LLM endpoint
+    - import-v0: v0's examined companies into ledger/seen before the first run
+  legal:
+    - invitation carries the revDSG notice (source: public commercial register; how to be deleted)
+    - LICENSE MIT; NOTICE with LINDAS/Zefix (Provide-the-Source) and SHAB (source + "not an official publication")
+    - no automated sending; mailto only
+
+validation_waivers: []

@@ -1,0 +1,19 @@
+# Company and person data — never committed
+data/
+
+# Secrets
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# OS
+.DS_Store
+
+# Local, per-developer agent setup — not part of the project
+.claude/
+CLAUDE.local.md
