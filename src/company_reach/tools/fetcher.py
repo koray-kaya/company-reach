@@ -1,0 +1,262 @@
+"""Fetching pages from the open internet, carefully.
+
+Every URL this module sees came from somewhere we do not control — a search
+engine, or a link on a page we did not write. Two audit items (A5) follow
+from that, and both are checks that run *before* the request:
+
+* only `http` and `https`, because a result can carry `javascript:` or
+  `data:`, and `file:` would read the disk;
+* only public addresses, checked twice over. A literal address in the URL is
+  judged as itself; a hostname is judged on what DNS returns, because a
+  perfectly ordinary name can resolve to `169.254.169.254` or into our own
+  container network, and reading the text of the URL would not catch that.
+
+The other rule worth stating: a single page that fails is not an error. It
+returns a `Page` carrying what went wrong, because the company may still be
+identifiable from another page. Only a home page that cannot be reached at
+all raises, and only then because "we could not look" must never be recorded
+as "this company has no website".
+"""
+
+import asyncio
+import hashlib
+import ipaddress
+import json
+import socket
+import time
+from dataclasses import dataclass
+from urllib.parse import urlsplit, urlunsplit
+
+import httpx
+from protego import Protego
+
+from company_reach.errors import FetchError
+from company_reach.settings import Settings
+
+USER_AGENT = "company-reach/0.1 (+https://github.com/koray-kaya/company-reach)"
+_ALLOWED_SCHEMES = ("http", "https")
+_HOME_ATTEMPTS = 2
+_BACKOFF_S = (2.0, 4.0)
+
+
+@dataclass(frozen=True)
+class Page:
+    """What one URL gave us. `error` and `html` are mutually exclusive in
+    practice, but both are always present so a caller never has to guess
+    which shape it got."""
+
+    url: str
+    status: int | None = None
+    html: str = ""
+    error: str | None = None
+
+
+async def resolve_host(host: str) -> list[str]:
+    """DNS, off the event loop. Module-level so a test can replace it — the
+    guard below is the thing under test, not the resolver."""
+    loop = asyncio.get_running_loop()
+    infos = await loop.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
+    return [info[4][0] for info in infos]
+
+
+def _is_public(address: str) -> bool:
+    ip = ipaddress.ip_address(address)
+    return not (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_reserved
+        or ip.is_multicast
+        or ip.is_unspecified
+    )
+
+
+def _cache_key(url: str) -> str:
+    return hashlib.sha1(url.encode("utf-8")).hexdigest()
+
+
+class Fetcher:
+    """Holds what has to be remembered between requests: the robots rules and
+    last request time per host, and the disk cache.
+
+    `delay_s` is a constructor argument rather than only a setting so tests
+    can turn the politeness delay off without pretending a host declared
+    zero.
+    """
+
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        refetch: bool = False,
+        delay_s: float | None = None,
+    ) -> None:
+        self._settings = settings
+        self._refetch = refetch
+        self._delay_s = settings.per_host_delay_s if delay_s is None else delay_s
+        self._cache_dir = settings.data_dir / "cache"
+        self._robots: dict[str, Protego | None] = {}
+        self._last_request: dict[str, float] = {}
+
+    # -- cache ---------------------------------------------------------------
+
+    def _cached(self, url: str) -> Page | None:
+        if self._refetch:
+            return None
+        key = _cache_key(url)
+        body = self._cache_dir / f"{key}.html"
+        side = self._cache_dir / f"{key}.json"
+        if not (body.is_file() and side.is_file()):
+            return None
+        meta = json.loads(side.read_text(encoding="utf-8"))
+        return Page(url=url, status=meta.get("status"), html=body.read_text("utf-8"))
+
+    def _store(self, page: Page) -> None:
+        """Only successes. Caching a 503 would turn a transient outage into a
+        permanent verdict about a company."""
+        if page.error is not None or not page.html:
+            return
+        self._cache_dir.mkdir(parents=True, exist_ok=True)
+        key = _cache_key(page.url)
+        (self._cache_dir / f"{key}.html").write_text(page.html, encoding="utf-8")
+        (self._cache_dir / f"{key}.json").write_text(
+            json.dumps(
+                {"url": page.url, "status": page.status, "fetched_at": time.time()}
+            ),
+            encoding="utf-8",
+        )
+
+    # -- guards --------------------------------------------------------------
+
+    async def _refuse(self, url: str) -> str | None:
+        """The reason this URL must not be fetched, or None."""
+        parts = urlsplit(url)
+        if parts.scheme not in _ALLOWED_SCHEMES:
+            return f"refused scheme {parts.scheme!r}: only http and https are fetched"
+        if not parts.hostname:
+            return "refused: no host in the URL"
+
+        # A literal address is checked as itself. Asking DNS about "127.0.0.1"
+        # happens to give the right answer, but then the guard's correctness
+        # would rest on how a resolver treats a number — and a guard should
+        # not depend on anything it can check directly.
+        try:
+            literal = ipaddress.ip_address(parts.hostname)
+        except ValueError:
+            literal = None
+        if literal is not None:
+            return (
+                None
+                if _is_public(parts.hostname)
+                else f"refused {parts.hostname}: private or otherwise "
+                f"non-public address"
+            )
+
+        try:
+            addresses = await resolve_host(parts.hostname)
+        except (OSError, socket.gaierror) as error:
+            return f"could not resolve {parts.hostname}: {error}"
+        if not addresses:
+            return f"could not resolve {parts.hostname}"
+        if not all(_is_public(address) for address in addresses):
+            return (
+                f"refused {parts.hostname}: resolves to an address that is not public"
+            )
+        return None
+
+    # -- robots --------------------------------------------------------------
+
+    async def _rules(self, client: httpx.AsyncClient, url: str) -> Protego | None:
+        """Read once per host. A missing or unreadable robots.txt allows
+        everything, which is what the standard says."""
+        parts = urlsplit(url)
+        host = parts.netloc
+        if host in self._robots:
+            return self._robots[host]
+        robots_url = urlunsplit((parts.scheme, host, "/robots.txt", "", ""))
+        rules: Protego | None = None
+        try:
+            answer = await client.get(robots_url)
+            if answer.status_code == 200:
+                rules = Protego.parse(answer.text)
+        except httpx.HTTPError:
+            rules = None
+        self._robots[host] = rules
+        return rules
+
+    async def _wait_turn(self, host: str, rules: Protego | None) -> None:
+        declared = rules.crawl_delay(USER_AGENT) if rules else None
+        delay = float(declared) if declared is not None else self._delay_s
+        if delay <= 0:
+            return
+        last = self._last_request.get(host)
+        if last is not None:
+            remaining = delay - (time.monotonic() - last)
+            if remaining > 0:
+                await asyncio.sleep(delay)
+        self._last_request[host] = time.monotonic()
+
+    # -- fetching ------------------------------------------------------------
+
+    async def get(self, url: str) -> Page:
+        """One page. Never raises: every failure comes back inside the Page."""
+        cached = self._cached(url)
+        if cached is not None:
+            return cached
+
+        refusal = await self._refuse(url)
+        if refusal is not None:
+            return Page(url=url, error=refusal)
+
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(15.0, connect=5.0),
+            follow_redirects=True,
+            headers={"User-Agent": USER_AGENT},
+        ) as client:
+            rules = await self._rules(client, url)
+            if rules is not None and not rules.can_fetch(url, USER_AGENT):
+                return Page(url=url, error="skipped: robots.txt disallows this URL")
+
+            await self._wait_turn(urlsplit(url).netloc, rules)
+            page = await self._fetch_once(client, url)
+
+        self._store(page)
+        return page
+
+    async def _fetch_once(self, client: httpx.AsyncClient, url: str) -> Page:
+        try:
+            answer = await client.get(url)
+        except httpx.HTTPError as error:
+            return Page(url=url, error=f"{type(error).__name__}: {error}")
+
+        if answer.status_code >= 400:
+            return Page(
+                url=url,
+                status=answer.status_code,
+                error=f"HTTP {answer.status_code}",
+            )
+        if len(answer.content) > self._settings.max_page_bytes:
+            return Page(
+                url=url,
+                status=answer.status_code,
+                error=f"too large: {len(answer.content)} bytes",
+            )
+        return Page(url=url, status=answer.status_code, html=answer.text)
+
+    async def get_home(self, url: str) -> Page:
+        """The site's home page, retried, and an error if it stays out of
+        reach. This is the one place the fetcher raises: not reaching a site
+        at all is infrastructure failing, and it must never be recorded as
+        the finding that a company has no website."""
+        last: Page | None = None
+        for attempt in range(_HOME_ATTEMPTS):
+            page = await self.get(url)
+            if page.error is None:
+                return page
+            last = page
+            if attempt + 1 < _HOME_ATTEMPTS:
+                await asyncio.sleep(_BACKOFF_S[attempt])
+        raise FetchError(
+            f"home page unreachable after {_HOME_ATTEMPTS} attempts: {url} "
+            f"({last.error if last else 'unknown'})"
+        )
