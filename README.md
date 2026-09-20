@@ -22,6 +22,31 @@ Work in progress. The design is done; I am building it step by step, in
 eight milestones. Each milestone is written with an AI coding assistant and
 explained to me before I review and merge it, so I learn how it works.
 
+Milestone 1 of 8 is done: the first step — listing a town's companies and
+applying the rule-based exclusions — runs.
+
+## Run it
+
+Needs [uv](https://docs.astral.sh/uv/); it installs Python 3.13 itself.
+Nothing else so far: no Docker, no model key.
+
+```bash
+git clone https://github.com/koray-kaya/company-reach.git
+cd company-reach
+uv sync
+cp .env.example .env      # milestone 1 uses no key, but the file must exist
+
+uv run company-reach pool --municipality 3203 --run-id first
+uv run company-reach screen --run-id first
+```
+
+`3203` is the federal id of a municipality (that one is St. Gallen). The
+first command writes the companies into `data/company_reach.db`; the second
+marks the ones the rules exclude and prints how many were kept. Running
+either one again is safe.
+
+Tests run offline: `uv run pytest`.
+
 ## Notes
 
 - Built with Python, LangGraph, SearXNG, FastAPI and SQLite.
