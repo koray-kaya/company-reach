@@ -262,10 +262,29 @@ def _candidate_block(url: str, text: str, limit: int) -> str:
     return f"<<<PAGE url={url}>>>\n{text[:limit]}\n<<<END>>>"
 
 
+def narrowing_query(record: CompanyRecord) -> str:
+    """The last resort: the same name, restricted to Swiss domains.
+
+    The research is explicit that this must not *start* the search — leading
+    with `site:.ch` throws away a company whose site is a `.com`. As a fourth
+    query, after the first three brought back nothing but directories, it
+    costs one search and sometimes finds the site those directories were
+    describing."""
+    name = strip_legal_form(record.name)
+    seat = record.city or record.municipality
+    return f'site:.ch "{name}" {seat}'
+
+
 async def _gather_candidates(record: CompanyRecord, *, settings: Settings) -> list[str]:
     results: list[Result] = []
     for query in build_queries(record):
         results.extend(await search(query, settings=settings))
+
+    # Everything came back, and every single result was a directory or a
+    # social profile. Narrowing to .ch is the one cheap thing left.
+    if results and not dedupe_candidates(results):
+        results.extend(await search(narrowing_query(record), settings=settings))
+
     guessed = await resolving_domains(guess_domains(record.name))
     results.extend(Result(url, "", "", "guess") for url in guessed)
     return dedupe_candidates(results)[:_MAX_CANDIDATES]
