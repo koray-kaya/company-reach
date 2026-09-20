@@ -24,7 +24,7 @@ plan can be read without the design doc open.
 | Baseline engines: DuckDuckGo + Mojeek + Brave; Google is a bonus | `research/search-layer.md:155` |
 | Search semaphore 2 with a 1 s gap, separate from the fetcher's per-host delay | `design.md:152`, `audit-2026-09-19.md:209` |
 | Three queries: `"name" seat` · `name Impressum` · `"UID"` in both spellings | `research/search-layer.md:233-247` |
-| Blocklist of 44 register/directory/social domains, verified 2026-09-19 | `research/search-layer.md:257-273` |
+| Blocklist of 47 register, directory and social domains, verified 2026-09-19 | `research/search-layer.md:257-273` |
 | Ranking: prefer a registered domain containing a name token; dedupe by registered domain | `research/search-layer.md:252-255` |
 | Tier 1 UID regex + check digit; tier 2 postal-code line; tier 3 model with a verbatim quote | `research/website-reading.md:139-157`, `audit-2026-09-19.md:178` |
 | Fetcher: `http(s)` only, refuse non-public IPs after DNS, 2 MB cap, `Timeout(15, connect=5)`, UA `company-reach/<version> (+repo)` | `design.md:153`, `audit-2026-09-19.md:246` |
@@ -215,7 +215,7 @@ compose.yaml                     # new: app + searxng (+ playwright, profile js)
 searxng/settings.yml             # new
 .env.example                     # + SEARXNG_SECRET
 src/company_reach/
-  data/blocklist.txt             # new: 44 domains
+  data/blocklist.txt             # new: 47 domains
   errors.py                      # FetchError docstring: M4, not M5
   settings.py                    # + search_concurrency, per_host_delay_s,
                                  #   baseline_engines, max_page_urls,
@@ -261,7 +261,7 @@ mod 11, digit = 11 − remainder, 11 counts as 0, 10 is invalid
       `MWST`/`TVA`/`IVA`/`VAT`/`HR`) normalises to `CHE123456789`; an invalid
       check digit is rejected; a *different* valid UID is reported as such,
       not as "no match". *Blocklist:* `linkedin.com` and `jobs.linkedin.com`
-      are both blocked, `mylinkedin.com` is not; the file carries 44 entries.
+      are both blocked, `mylinkedin.com` is not; the file carries 47 entries.
       *Textify:* a normal page extracts its text; a page whose `favor_recall`
       extraction is under 80 words falls back to `html2txt` and keeps the
       address block; whitespace, NBSP and `ß` normalise so that a later
