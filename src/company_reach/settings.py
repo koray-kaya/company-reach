@@ -41,6 +41,15 @@ class Settings(BaseSettings):
 
     searxng_url: str = "http://searxng:8080"
     serper_api_key: SecretStr | None = None
+    # Ten children starting find_site at once would fire 30-40 queries from
+    # one IP in the first seconds, which is the pattern that gets an engine
+    # suspended. The fetcher's per-host delay does not cover these.
+    search_concurrency: int = 2
+    search_gap_s: float = 1.0
+    # The engines that must all be unresponsive before an empty result stops
+    # meaning "this company has no website". Google is a bonus, not baseline:
+    # measured, a self-hosted SearXNG behaves like a DuckDuckGo proxy.
+    baseline_engines: str = "duckduckgo,mojeek,brave"
     playwright_url: str | None = None
 
     max_pages_per_site: int = 10

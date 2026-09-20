@@ -197,24 +197,33 @@ def initial_state(
     )
 
 
-def build_graph(*, settings: Settings, child) -> CompiledStateGraph:
+def build_graph(*, settings: Settings, child, dry: bool = False) -> CompiledStateGraph:
     """The loop. Pool stages (`load_pool`, `screen_pool`, `write_criteria`,
     `score_pool`) stay CLI commands for now and fill the database this graph
     reads — that is what makes `run --dry` offline and fast.
+
+    `dry` leaves `probe_search` out of the graph entirely. The probe exists to
+    stop a run before search failures get recorded as "no website"; a run that
+    never searches has nothing to protect, and wiring it in would put a
+    network call inside the one command whose point is that it needs none.
 
     `functools.partial` binds `settings` and `child` ahead of time, because a
     LangGraph node is called with the state and nothing else.
     """
     builder = StateGraph(ReachState)
-    builder.add_node("probe_search", partial(probe_search, settings=settings))
+    if not dry:
+        builder.add_node("probe_search", partial(probe_search, settings=settings))
     builder.add_node("draw_batch", partial(draw_batch, settings=settings))
     builder.add_node(
         "enrich_company", partial(enrich_company, child=child, settings=settings)
     )
     builder.add_node("collect", partial(collect, settings=settings))
 
-    builder.add_edge(START, "probe_search")
-    builder.add_edge("probe_search", "draw_batch")
+    if dry:
+        builder.add_edge(START, "draw_batch")
+    else:
+        builder.add_edge(START, "probe_search")
+        builder.add_edge("probe_search", "draw_batch")
     builder.add_conditional_edges("draw_batch", fan_out, ["enrich_company", "collect"])
     builder.add_edge("enrich_company", "collect")
     builder.add_conditional_edges(
@@ -225,9 +234,11 @@ def build_graph(*, settings: Settings, child) -> CompiledStateGraph:
     return builder.compile()
 
 
-async def run_graph(state: ReachState, *, settings: Settings, child) -> ReachState:
+async def run_graph(
+    state: ReachState, *, settings: Settings, child, dry: bool = False
+) -> ReachState:
     """`recursion_limit` is passed here rather than left to the default of
     1000: an unset limit is not a defence, and a routing bug should fail in
     forty supersteps, not a thousand."""
-    graph = build_graph(settings=settings, child=child)
+    graph = build_graph(settings=settings, child=child, dry=dry)
     return await graph.ainvoke(state, config={"recursion_limit": RECURSION_LIMIT})
