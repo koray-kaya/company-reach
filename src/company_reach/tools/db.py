@@ -4,14 +4,19 @@ review page read while a run writes; busy_timeout waits instead of failing
 when two writers meet. `with conn:` commits on success and rolls back on an
 exception — it does not close, so we close in the finally."""
 
+import json
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from importlib.resources import files
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from company_reach.models import CompanyRecord
+from company_reach.models import CompanyRecord, Score, SelectionCriteria
+
+if TYPE_CHECKING:  # avoids pulling langchain into every db import
+    from company_reach.tools.llm import Provenance
 
 
 def _open(path: Path) -> sqlite3.Connection:
@@ -82,3 +87,95 @@ def upsert_companies(
         rows,
     )
     return len(rows)
+
+
+def unscored_companies(
+    conn: sqlite3.Connection, goal_hash: str, prompt_version: str, model: str
+) -> list[CompanyRecord]:
+    """Companies the rules kept and this (goal, prompt, model) has not scored.
+
+    The left join is the score cache: rerunning after an interrupted pass, or
+    with a longer --limit, costs nothing for work already done."""
+    rows = conn.execute(
+        """select c.uid, c.name, c.legal_form, c.municipality, c.street,
+                  c.postal_code, c.city, c.purpose, c.purpose_head
+             from companies c
+             left join scores s
+               on s.uid = c.uid and s.goal_hash = ?
+              and s.prompt_version = ? and s.model = ?
+            where c.screen_reason is null and s.uid is null
+            order by c.uid""",
+        (goal_hash, prompt_version, model),
+    ).fetchall()
+    return [CompanyRecord(**dict(row)) for row in rows]
+
+
+def count_scored(
+    conn: sqlite3.Connection, goal_hash: str, prompt_version: str, model: str
+) -> int:
+    return conn.execute(
+        "select count(*) from scores where goal_hash = ? and prompt_version = ? "
+        "and model = ?",
+        (goal_hash, prompt_version, model),
+    ).fetchone()[0]
+
+
+def upsert_scores(
+    conn: sqlite3.Connection,
+    scores: list[Score],
+    *,
+    goal_hash: str,
+    prompt_version: str,
+    model: str,
+) -> int:
+    conn.executemany(
+        """INSERT INTO scores (uid, goal_hash, prompt_version, model, score,
+             reason, scored_at)
+           VALUES (?,?,?,?,?,?,?)
+           ON CONFLICT(uid, goal_hash, prompt_version, model) DO UPDATE SET
+             score=excluded.score, reason=excluded.reason,
+             scored_at=excluded.scored_at""",
+        [
+            (s.uid, goal_hash, prompt_version, model, s.score, s.reason, now())
+            for s in scores
+        ],
+    )
+    return len(scores)
+
+
+def record_run(
+    path: Path,
+    run_id: str,
+    goal: str,
+    criteria: SelectionCriteria,
+    provenance: "Provenance",
+    *,
+    seed: int,
+) -> None:
+    """Write the run's own record before any scoring happens.
+
+    The criteria are stored as JSON rather than left inside the prompt, so the
+    question "why did this company score 8?" has an answer months later: these
+    were the rules, this was the prompt version, this was the model."""
+    from company_reach.profile import goal_hash
+
+    with connect(path) as conn:
+        conn.execute(
+            """INSERT INTO runs (id, goal, goal_hash, seed, batch_size, model,
+                 prompt_versions, criteria, started_at, status)
+               VALUES (?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(id) DO UPDATE SET criteria=excluded.criteria,
+                 prompt_versions=excluded.prompt_versions, model=excluded.model""",
+            (
+                run_id,
+                goal,
+                goal_hash(goal),
+                seed,
+                None,
+                provenance.model,
+                json.dumps({provenance.prompt: provenance.prompt_version}),
+                criteria.model_dump_json(),
+                now(),
+                "scoring",
+            ),
+        )

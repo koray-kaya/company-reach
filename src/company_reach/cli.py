@@ -9,11 +9,12 @@ from typing import Annotated
 import typer
 
 from company_reach.nodes.load_pool import load_pool
+from company_reach.nodes.score_pool import score_pool
 from company_reach.nodes.screen_pool import screen_pool
 from company_reach.nodes.write_criteria import format_criteria, write_criteria
 from company_reach.profile import goal_hash, load_profile
 from company_reach.settings import get_settings
-from company_reach.tools.db import init_db
+from company_reach.tools.db import init_db, record_run
 from company_reach.tools.doctor import run_checks
 
 app = typer.Typer(help="Find Swiss companies, find the person, draft the mail.")
@@ -57,6 +58,34 @@ def criteria(goal: str | None = None) -> None:
     )
     typer.echo("")
     typer.echo(format_criteria(result))
+
+
+@app.command()
+def score(
+    goal: str | None = None,
+    limit: int | None = None,
+    seed: int = 0,
+    run_id: str | None = None,
+) -> None:
+    """Score screened companies against the goal. Incremental and resumable:
+    already-scored companies cost nothing, so run it again to score more."""
+    s = get_settings()
+    text = _resolve_goal(goal)
+    rid = _run_id(run_id)
+
+    criteria_result, prov = asyncio.run(write_criteria(text, settings=s))
+    typer.echo(format_criteria(criteria_result))
+    typer.echo("")
+
+    record_run(s.db_path, rid, text, criteria_result, prov, seed=seed)
+    report = asyncio.run(
+        score_pool(rid, text, criteria_result, settings=s, limit=limit, seed=seed)
+    )
+    typer.echo(
+        f"scored {report.scored}, already cached {report.cached}, "
+        f"dropped {report.dropped}, failed batches {report.failed_batches} "
+        f"in {report.seconds:.0f}s (run {rid})"
+    )
 
 
 @app.command()

@@ -44,16 +44,30 @@ class SelectionCriteria(BaseModel):
     positive_signals: list[str] = Field(description="raise the score when present")
 
 
+class RawScore(BaseModel):
+    """What the model returns, deliberately unconstrained.
+
+    Structured output enforces shape, not numeric range: guided decoding will
+    keep `score` an integer but will happily emit 11. Validating the range
+    here would make one stray number destroy the other 49 answers in the
+    batch, so the range is checked per entry in `score_pool` instead and only
+    the offending row is dropped."""
+
+    uid: str
+    score: int = Field(description="0 = certainly not, 10 = clearly the target")
+    reason: str = Field(description="at most 20 words, English")
+
+
+class ScoreBatch(BaseModel):
+    """One scoring call's answer. The list is checked against the UIDs that
+    were sent — the model may drop, duplicate or invent one."""
+
+    scores: list[RawScore]
+
+
 class Score(BaseModel):
-    """One company's fit with the goal. Also the schema the model must obey."""
+    """A score that passed the checks and may be stored."""
 
     uid: str
     score: int = Field(ge=0, le=10)
     reason: str
-
-
-class ScoreBatch(BaseModel):
-    """What one scoring call returns. The list is checked against the UIDs
-    that were sent — the model may drop, duplicate or invent one."""
-
-    scores: list[Score]
