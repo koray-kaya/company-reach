@@ -39,3 +39,26 @@ def test_dollar_sign_in_data_is_left_alone():
     assert "$Waren" in text
     assert "$goal" not in text.split("COMPANIES")[0]  # the real slot was filled
     assert "Handel mit $Waren und $goal" in text  # the data block is untouched
+
+
+def test_a_prompt_variable_may_be_called_name():
+    """`render(name, /, ...)`: without the positional-only marker the
+    caller's name= collides with the parameter that says which prompt to
+    load, and pick_site.md — whose first field is the company's name —
+    cannot be rendered at all. Found by running the real thing; every test
+    that mocks llm.ask is blind to it."""
+    version, text = render(
+        "pick_site",
+        name="Muster AG",
+        address="a",
+        seat="s",
+        uid="CHE000000046",
+        candidates="c",
+    )
+    assert "Muster AG" in text
+    assert version
+
+
+def test_a_prompt_variable_may_be_called_prompt_name():
+    with pytest.raises(PromptError):
+        render("pick_site", prompt_name="x")
