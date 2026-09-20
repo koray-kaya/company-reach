@@ -1,0 +1,55 @@
+# SearXNG for company-reach. Only the app talks to it.
+#
+# Two settings carry most of the weight. `limiter: false`, because the JSON
+# API window is four requests per hour per IP and a `python-requests`-shaped
+# user agent is classed as a bot — with the limiter on, this returns nothing
+# at all. And `formats` must list `json`, which the shipped default does not.
+#
+# Measured 2026-07: out of the box a self-hosted instance behaves like a
+# DuckDuckGo proxy rather than a Google API. Google returned nothing
+# parseable, Brave and Startpage were suspended, DuckDuckGo answered
+# reliably. Hence the baseline in settings.py is duckduckgo, mojeek, brave —
+# Google is a bonus, never something to depend on.
+#
+# Do not add `network:` lines to engines: engines sharing a named network
+# object share one suspension bucket, so one CAPTCHA takes them all out.
+
+use_default_settings:
+  engines:
+    keep_only:
+      - google
+      - duckduckgo
+      - brave
+      - startpage
+      - mojeek
+      - bing
+
+search:
+  formats:
+    - html
+    - json
+  safe_search: 0
+  default_lang: "de-CH"
+
+server:
+  limiter: false
+  public_instance: false
+  image_proxy: false
+
+outgoing:
+  request_timeout: 3.0
+  max_request_timeout: 10.0
+
+engines:
+  - name: google
+    disabled: false
+  - name: duckduckgo
+    disabled: false
+  - name: brave
+    disabled: false
+  - name: startpage
+    disabled: false
+  - name: mojeek
+    disabled: false
+  - name: bing
+    disabled: false
