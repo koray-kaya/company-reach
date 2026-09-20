@@ -37,7 +37,9 @@ pass. No milestone starts before the previous one is merged.
   golden set, opt-in (`RUN_LLM_EVALS=1`).
 - Company and person data only under `data/` (gitignored). Fixtures use
   fictional companies.
-- English in files, Turkish in chat. Conventional commits, ≤ 60 chars.
+- English in files, Turkish in chat — except `docs/milestones/`, which is
+  Turkish (its only reader is Koray); library names and settled technical
+  terms stay English there. Conventional commits, ≤ 60 chars.
 
 ## 3. Milestones
 
