@@ -45,30 +45,45 @@ records it so the audit item can be closed with evidence.
 
 ## Decisions taken with Koray on 2026-09-20
 
-1. **`draw_batch` applies a minimum score, `draw_min_score`, default 5.**
+1. **`draw_batch` applies a minimum score, `draw_min_score`, default 7.**
    Below it a company is never drawn, and `pool_exhausted` means "nothing left
    that clears the bar" rather than "nothing left at all".
 
-   Measured on the 30-company golden set against the current score set
-   (`goal_hash 5e6426a7`, prompt version 1, 275 scores):
+   The number was decided twice, and the first answer is kept here because the
+   difference between them is itself a finding.
 
-   | threshold | hand ≥ 6 kept | hand 4–5 kept | hand ≤ 3 kept | pool kept |
+   **First measurement, 275 scores under `goal_hash 5e6426a7`.** Threshold 5
+   kept 4/4 of the golden companies Koray hand-rated ≥ 6 while 8/19 of the junk
+   also passed; 6 dropped one good company; 7 kept 3/4 and let 3/19 junk
+   through. 5 was chosen: everything below the wrapper is a stub in M3, so junk
+   cost nothing while a lost candidate is a missing survey respondent.
+
+   **That score set then turned out to belong to an older goal.** `profile.toml`
+   had been reworded after those 275 companies were scored, so the evidence
+   described a goal the project no longer had. The pool was re-scored — 1,500
+   companies under `goal_hash d9b17653`, golden-set coverage 19/30 — and the
+   picture changed shape:
+
+   | threshold | hand ≥ 6 kept | hand 4–5 | hand ≤ 3 kept | pool kept |
    |---:|---|---|---|---|
-   | 5 | 4/4 | 5/7 | 8/19 | 33% (92/275) |
-   | 6 | 3/4 | 4/7 | 6/19 | 26% (72/275) |
-   | 7 | 3/4 | 4/7 | 3/19 | 20% (55/275) |
+   | 5 | 3/4 | 2/4 | 2/11 | 19.3% (289/1500) |
+   | 7 | 3/4 | 2/4 | **0/11** | 10.4% (156/1500) |
+   | 9 | 3/4 | 0/4 | 0/11 | 4.4% (66/1500) |
 
-   The decision sits between 5 and 6: the one company Koray scored 6 was scored
-   5 by the model, so a threshold of 6 drops it while 7 removes no further good
-   candidate and halves the junk. 6 is therefore the worst of the three — it
-   pays 7's price without buying its cleanliness.
+   The rewritten goal separates the two groups cleanly. The companies Koray
+   rated ≥ 6 score 9, 9, 9 and 3; nothing he rated ≤ 3 scores above 6. **7 sits
+   in that gap**, and it is the choice with headroom: 9 would sit exactly on
+   the good companies, and a single score carries ±1 of noise (45/50 exact
+   agreement between identical runs).
 
-   5 was chosen because in M3 everything below the wrapper is a stub, so a junk
-   company costs nothing today, whereas a lost candidate is a missing survey
-   respondent. Retune in M4/M5 against real cost. Two cautions travel with the
-   number: only 4 golden companies are hand-rated ≥ 6, and the measured noise
-   floor (45/50 exact agreement between identical runs) means ±1 on a single
-   score is noise.
+   Raising 5 to 7 therefore costs no good candidate at all and removes the junk
+   entirely — under the old scores that trade did not exist.
+
+   Two cautions still travel with the number: only 4 golden companies are
+   hand-rated ≥ 6, and 11 of the 30 have no score under the current goal yet.
+   The fourth good company (hand 6, model 3) survives no threshold above 3;
+   that is a disagreement between Koray and the goal sentence, not a threshold
+   problem, and it stays an open thread.
 
 2. **An errored company is recoverable in a later run, never in the same one.**
    `seen` keeps `uid` as primary key, so a company is not redrawn inside a run
@@ -182,7 +197,7 @@ concatenates, so ten children produce ten entries.
       reducer (assert on `ReachState.__annotations__`).
 - [ ] **Step 2** — run, see them fail.
 - [ ] **Step 3** — write the models, add `batch_size: int = 10` and
-      `draw_min_score: int = 5` to `Settings` with the measurement in a
+      `draw_min_score: int = 7` to `Settings` with the measurement in a
       comment, define `ReachState`.
 - [ ] **Step 4** — green, `ruff check`.
 
