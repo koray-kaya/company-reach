@@ -171,7 +171,9 @@ def run(
     )
 
     try:
-        out = asyncio.run(run_graph(state, settings=s, child=build_stub_child()))
+        out = asyncio.run(
+            run_graph(state, settings=s, child=build_stub_child(), dry=dry)
+        )
     except Exception as error:
         finish_manifest(rid, settings=s, status="failed", counts={})
         raise typer.Exit(1) from error

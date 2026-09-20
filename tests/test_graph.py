@@ -7,6 +7,7 @@ from company_reach.errors import LlmError
 from company_reach.graph import (
     RECURSION_LIMIT,
     ReachState,
+    build_graph,
     build_stub_child,
     collect,
     initial_state,
@@ -185,7 +186,7 @@ async def test_one_raising_child_does_not_lose_the_other(settings):
     _seed(settings, {"CHE000000001": 9, "CHE000000002": 7})
     child = ChildByUid({"CHE000000001": "raise", "CHE000000002": "send"})
 
-    out = await run_graph(_start(settings), settings=settings, child=child)
+    out = await run_graph(_start(settings), settings=settings, dry=True, child=child)
 
     assert len(out["results"]) == 2
     assert out["sendable_count"] == 1
@@ -200,7 +201,7 @@ async def test_an_exhausted_pool_ends_without_a_child_call(settings):
     _seed(settings, {"CHE000000001": 2})
     child = ChildByUid({})
 
-    out = await run_graph(_start(settings), settings=settings, child=child)
+    out = await run_graph(_start(settings), settings=settings, dry=True, child=child)
 
     assert child.seen == []
     assert out["pool_exhausted"] is True
@@ -214,7 +215,7 @@ async def test_the_loop_draws_again_when_nothing_is_sendable(settings):
     child = ChildByUid(dict.fromkeys([f"CHE00000000{n}" for n in (1, 2, 3)], "skip"))
 
     out = await run_graph(
-        _start(settings, batch_size=1), settings=settings, child=child
+        _start(settings, batch_size=1), settings=settings, dry=True, child=child
     )
 
     assert len(child.seen) == 3
@@ -227,13 +228,13 @@ async def test_a_rerun_draws_no_new_companies(settings):
     skipped, and `seen` does not grow."""
     _seed(settings, {"CHE000000001": 9, "CHE000000002": 7})
     first = ChildByUid({"CHE000000001": "skip", "CHE000000002": "skip"})
-    await run_graph(_start(settings), settings=settings, child=first)
+    await run_graph(_start(settings), settings=settings, dry=True, child=first)
 
     with connect(settings.db_path) as conn:
         after_first = conn.execute("select count(*) from seen").fetchone()[0]
 
     second = ChildByUid({})  # a call would raise KeyError
-    out = await run_graph(_start(settings), settings=settings, child=second)
+    out = await run_graph(_start(settings), settings=settings, dry=True, child=second)
 
     assert second.seen == []
     with connect(settings.db_path) as conn:
@@ -255,7 +256,7 @@ async def test_run_graph_passes_the_recursion_limit(settings, monkeypatch):
             return state
 
     monkeypatch.setattr("company_reach.graph.build_graph", lambda **kw: Spy())
-    await run_graph(_start(settings), settings=settings, child=ChildByUid({}))
+    await run_graph(_start(settings), settings=settings, dry=True, child=ChildByUid({}))
     assert captured["recursion_limit"] == RECURSION_LIMIT
 
 
@@ -265,9 +266,24 @@ async def test_the_stub_child_runs_through_the_real_graph(settings):
     LangGraph itself and not only against a test double."""
     _seed(settings, {"CHE000000001": 9})
 
-    out = await run_graph(_start(settings), settings=settings, child=build_stub_child())
+    out = await run_graph(
+        _start(settings), settings=settings, dry=True, child=build_stub_child()
+    )
 
     assert len(out["results"]) == 1
     assert out["results"][0].recommendation == "skip"
     assert out["results"][0].error_kind is None
     assert out["sendable_count"] == 0
+
+
+def test_the_dry_graph_leaves_the_search_probe_out(settings):
+    """--dry never searches, so the pre-flight for search has nothing to
+    protect — and wiring it in would put a network call inside the one
+    command whose point is that it needs none."""
+    dry = build_graph(settings=settings, child=build_stub_child(), dry=True)
+    assert "probe_search" not in dry.get_graph().nodes
+
+
+def test_a_real_run_keeps_the_search_probe(settings):
+    real = build_graph(settings=settings, child=build_stub_child(), dry=False)
+    assert "probe_search" in real.get_graph().nodes
