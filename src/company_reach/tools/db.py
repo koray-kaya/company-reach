@@ -179,3 +179,77 @@ def record_run(
                 "scoring",
             ),
         )
+
+
+def draw_batch(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    batch_no: int,
+    goal_hash: str,
+    prompt_version: str,
+    model: str,
+    min_score: int,
+    limit: int,
+) -> list[str]:
+    """The uids for one batch, best score first. Empty means the pool is
+    exhausted: nothing left that clears `min_score`.
+
+    On a rerun of the same run_id and batch_no the recorded batch comes back
+    unchanged — a resumed run must repeat the batch it drew, not draw a new
+    one. Order within a batch is not preserved on that path and does not
+    matter: the whole batch fans out in one superstep.
+
+    No tie-breaking. Scoring order was already shuffled with the run's seed,
+    so equal scores sit in random order; adding `, uid` here would undo that
+    and bias every batch towards low UIDs, which are the canton's oldest
+    firms.
+    """
+    recorded = [
+        r["uid"]
+        for r in conn.execute(
+            "select uid from seen where run_id = ? and batch_no = ? order by uid",
+            (run_id, batch_no),
+        )
+    ]
+    if recorded:
+        return recorded
+
+    rows = conn.execute(
+        """select c.uid
+             from companies c
+             join scores s
+               on s.uid = c.uid and s.goal_hash = ?
+              and s.prompt_version = ? and s.model = ?
+            where c.screen_reason is null
+              and s.score >= ?
+              -- not already drawn in THIS run, or the loop would redraw it
+              and c.uid not in (select uid from seen where run_id = ?)
+              -- never drawn at all, or drawn by an earlier run that failed on
+              -- it: an errored company was never contacted and has no draft,
+              -- so there is nothing to protect it from
+              and (c.uid not in (select uid from seen)
+                   or c.uid in (select uid from results
+                                 where error_kind is not null and run_id <> ?))
+            order by s.score desc
+            limit ?""",
+        (goal_hash, prompt_version, model, min_score, run_id, run_id, limit),
+    ).fetchall()
+    return [r["uid"] for r in rows]
+
+
+def record_seen(
+    conn: sqlite3.Connection, uids: list[str], *, run_id: str, batch_no: int
+) -> int:
+    """Mark a batch as drawn. `seen.uid` is the primary key, so a company
+    recovered by a later run updates its row rather than inserting a second:
+    the row says which run last drew it, which is exactly what `draw_batch`
+    reads to keep a recovered company out of its own run's next batch."""
+    conn.executemany(
+        """INSERT INTO seen (uid, run_id, batch_no, drawn_at) VALUES (?,?,?,?)
+           ON CONFLICT(uid) DO UPDATE SET
+             run_id=excluded.run_id, batch_no=excluded.batch_no,
+             drawn_at=excluded.drawn_at""",
+        [(u, run_id, batch_no, now()) for u in uids],
+    )
+    return len(uids)
