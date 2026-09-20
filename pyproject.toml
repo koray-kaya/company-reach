@@ -1,0 +1,38 @@
+[project]
+name = "company-reach"
+version = "0.1.0"
+description = "Find Swiss companies worth talking to and draft a personal invitation for a human to send."
+requires-python = ">=3.13"
+dependencies = [
+    "typer>=0.27",
+    "pydantic>=2",
+    "pydantic-settings>=2.15",
+    "httpx>=0.28",
+]
+
+[project.scripts]
+company-reach = "company_reach.cli:app"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=1",
+    "respx>=0.22",
+    "ruff>=0.14",
+]
+
+[tool.ruff]
+line-length = 88
+# ruff formats Python fenced in Markdown; docs/ is the design record, not code.
+extend-exclude = ["*.md"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[build-system]
+requires = ["uv_build>=0.12.13,<0.13.0"]
+build-backend = "uv_build"
