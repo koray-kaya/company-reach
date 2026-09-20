@@ -252,20 +252,30 @@ async def test_typography_does_not_break_a_true_quote(wired, monkeypatch):
 
 
 @respx.mock
-async def test_a_verified_uid_beats_the_model(wired, monkeypatch):
-    """A check-digit-verified UID cannot be a coincidence. The model read one
-    page; the register is the register."""
+async def test_the_model_can_veto_a_uid_match(wired, monkeypatch):
+    """The first real run found this: a company directory publishes the UIDs
+    of the firms it lists, so its page matches tier 1. The model saw a
+    directory and said no, and the rejection has to stand — a UID proves the
+    page is about the company, never that it belongs to the company."""
     serve(IMPRESSUM_WITH_UID)
     model_says(monkeypatch, None, None)
     out = await find_site(state(), settings=wired, fetcher=quick(wired))
-    assert out["site"].tier == "uid"
-    assert "disagree" in out["site"].evidence_note
+    assert out["site"] is None
+    assert out["recommendation"] == "skip"
 
 
 @respx.mock
-async def test_an_address_match_does_not_beat_the_model(wired, monkeypatch):
-    """Hundreds of firms share a town. An address match is corroboration,
-    not proof, so the model's full reading of the page outranks it."""
+async def test_a_uid_still_decides_the_label(wired, monkeypatch):
+    """Vetoing is not demotion: when the model does choose the page, the UID
+    is still the strongest evidence the site can carry."""
+    serve(IMPRESSUM_WITH_UID)
+    model_says(monkeypatch, f"{SITE}/", "Muster Metallbau AG")
+    out = await find_site(state(), settings=wired, fetcher=quick(wired))
+    assert out["site"].tier == "uid"
+
+
+@respx.mock
+async def test_an_address_match_can_be_vetoed_too(wired, monkeypatch):
     serve(IMPRESSUM_WITH_ADDRESS)
     model_says(monkeypatch, None, None)
     out = await find_site(state(), settings=wired, fetcher=quick(wired))

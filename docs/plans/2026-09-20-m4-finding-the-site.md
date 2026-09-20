@@ -72,16 +72,25 @@ and are recorded here so nobody re-derives them.
    would call the model roughly twice in production while the evaluation
    called it fifteen times — the test would not be measuring the product.
 
-3. **A verified UID match beats the model; an address match does not.**
-   If the register's UID appears on the page with a valid check digit and the
-   model says "none of these", the site is accepted with tier `uid` and the
-   model's disagreement is recorded in `searches.evidence`. Counting those
-   disagreements tells us when the prompt is wrong.
+3. **The model is the gate; the tiers are the label.** ~~A verified UID match
+   beats the model.~~ **Revised 2026-09-20 after the first real run.**
 
-   The rule generalises from why: a check-digit-verified UID is stronger
-   evidence than the model's reading. A street-and-postal-code match is not —
-   hundreds of firms share a town — so **when tier 2 and the model disagree,
-   the model wins** and the tier is recorded as `model`.
+   The original rule let a UID match stand against a "none of these", on the
+   reasoning that a check-digit-verified UID cannot be a coincidence. It
+   cannot — but that proves the page is *about* the company, not that it
+   *belongs to* the company.
+
+   The first real `enrich` found the difference immediately. A company
+   directory publishes the UIDs of the firms it lists, so a directory page
+   matched tier 1; the model saw a directory and rejected it; the rejection
+   was overruled, and a directory was recorded as the company's website
+   carrying the highest confidence label the system has. It is the same
+   grounding-is-not-identity trap tier 3 was already built around.
+
+   So a rejection stands. A UID still outranks everything as evidence — it
+   decides which label a site carries — it no longer decides whether there
+   is a site. When the register's UID sits on a page the model passed over,
+   that is recorded as a note rather than acted on.
 
 4. **M4 tests the mechanism; M5 measures the accuracy.** Every branch is
    tested offline with fictional companies: UID check digit, blocklist
