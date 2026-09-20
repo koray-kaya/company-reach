@@ -15,14 +15,17 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Send
 
-from company_reach.models import CompanyResult, SelectionCriteria
+from company_reach.models import CompanyRecord, CompanyResult, SelectionCriteria
 from company_reach.nodes.enrich_company import enrich_company
+from company_reach.nodes.find_site import SiteChoice, find_site
+from company_reach.nodes.load_company import load_company
 from company_reach.nodes.probe_search import probe_search
 from company_reach.profile import goal_hash
 from company_reach.settings import Settings
 from company_reach.tools import llm
 from company_reach.tools.db import connect, count_sendable, record_seen
 from company_reach.tools.db import draw_batch as db_draw_batch
+from company_reach.tools.fetcher import Fetcher
 
 RECURSION_LIMIT = 40
 
@@ -141,13 +144,25 @@ def fan_out(state: ReachState) -> list[Send] | str:
 # --- the child, stubbed until M4 ---------------------------------------------
 
 
-class ChildState(TypedDict):
+class ChildState(TypedDict, total=False):
+    """`total=False` here, unlike the parent: the child fills its keys as it
+    goes, and a company with no site never gets a `site` at all."""
+
     run_id: str
     uid: str
     goal: str
     about_me: str
+    company: CompanyRecord | None
+    site: SiteChoice | None
+    page_urls: list[str]
     recommendation: str | None
     reason: str | None
+
+
+def has_site(state: ChildState) -> str:
+    """M5 adds `pick_pages` on the yes branch. For now a found site ends the
+    child too — find_site already wrote everything M4 promises."""
+    return END
 
 
 def _stub_recommend(state: ChildState) -> dict:
@@ -155,13 +170,29 @@ def _stub_recommend(state: ChildState) -> dict:
 
 
 def build_stub_child():
-    """A child graph with one node. M4 gives it find_site, pick_pages and the
-    rest; nothing above it changes, because the parent only ever awaits
-    `ainvoke` and reads `recommendation`."""
+    """The M3 child: one node, every company skipped. Kept because `run --dry`
+    still uses it — that command's point is to exercise the loop without
+    search, fetch or a model call."""
     builder = StateGraph(ChildState)
     builder.add_node("recommend", _stub_recommend)
     builder.add_edge(START, "recommend")
     builder.add_edge("recommend", END)
+    return builder.compile()
+
+
+def build_child(*, settings: Settings, fetcher=None) -> CompiledStateGraph:
+    """The real child: load the register record, then find the website.
+
+    One `Fetcher` is threaded through rather than built per node, because the
+    per-host delay and the robots cache live on the instance — a fetcher each
+    would forget both between the nodes of one company's graph."""
+    shared = fetcher or Fetcher(settings)
+    builder = StateGraph(ChildState)
+    builder.add_node("load_company", partial(load_company, settings=settings))
+    builder.add_node("find_site", partial(find_site, settings=settings, fetcher=shared))
+    builder.add_edge(START, "load_company")
+    builder.add_edge("load_company", "find_site")
+    builder.add_conditional_edges("find_site", has_site, [END])
     return builder.compile()
 
 

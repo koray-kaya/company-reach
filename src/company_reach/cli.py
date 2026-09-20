@@ -8,7 +8,13 @@ from typing import Annotated
 
 import typer
 
-from company_reach.graph import build_stub_child, initial_state, run_graph
+from company_reach.errors import CompanyReachError
+from company_reach.graph import (
+    build_child,
+    build_stub_child,
+    initial_state,
+    run_graph,
+)
 from company_reach.manifest import finish_manifest, manifest_path, start_manifest
 from company_reach.nodes.load_pool import load_pool
 from company_reach.nodes.score_pool import score_pool
@@ -150,11 +156,6 @@ def run(
     `pool`, `screen` and `score` have already filled. That is what keeps
     `--dry` offline and quick enough to demonstrate.
     """
-    if not dry:
-        raise typer.BadParameter(
-            "only --dry is available until M4 gives the child graph its nodes."
-        )
-
     s = get_settings()
     text = _resolve_goal(goal)
     rid = _run_id(run_id)
@@ -171,9 +172,8 @@ def run(
     )
 
     try:
-        out = asyncio.run(
-            run_graph(state, settings=s, child=build_stub_child(), dry=dry)
-        )
+        child = build_stub_child() if dry else build_child(settings=s)
+        out = asyncio.run(run_graph(state, settings=s, child=child, dry=dry))
     except Exception as error:
         finish_manifest(rid, settings=s, status="failed", counts={})
         raise typer.Exit(1) from error
@@ -194,6 +194,47 @@ def run(
     typer.echo(f"manifest: {manifest_path(rid, settings=s)}")
     if dry:
         typer.echo("--dry: every company was skipped by the M3 stub child.")
+
+
+@app.command()
+def enrich(
+    uid: Annotated[str, typer.Option(help="The company to enrich.")],
+    until: Annotated[
+        str, typer.Option(help="How far to go. Only 'site' exists until M5.")
+    ] = "site",
+    run_id: str | None = None,
+) -> None:
+    """Run one company through the child graph and print what it found.
+
+    The milestone's demo, and the way to look at a single disagreement
+    between the register and a website without drawing a batch.
+    """
+    if until != "site":
+        raise typer.BadParameter("only --until site exists until M5.")
+
+    s = get_settings()
+    rid = _run_id(run_id)
+    child = build_child(settings=s)
+
+    try:
+        out = asyncio.run(
+            child.ainvoke({"run_id": rid, "uid": uid, "goal": "", "about_me": ""})
+        )
+    except CompanyReachError as error:
+        typer.echo(str(error), err=True)
+        raise typer.Exit(1) from error
+
+    site = out.get("site")
+    if site is None:
+        typer.echo(f"{uid}: no website — {out.get('reason', 'no reason recorded')}")
+        return
+
+    note = f"  ({site.evidence_note})" if site.evidence_note else ""
+    typer.echo(f"{uid}  {site.url}")
+    typer.echo(f"  tier      {site.tier}{note}")
+    typer.echo(f"  evidence  {site.evidence}")
+    typer.echo(f"  from      {site.evidence_url}")
+    typer.echo(f"  pages     {len(out.get('page_urls') or [])} listed")
 
 
 if __name__ == "__main__":

@@ -304,3 +304,13 @@ def count_sendable(conn: sqlite3.Connection, run_id: str) -> int:
         "select count(*) from results where run_id = ? and recommendation = 'send'",
         (run_id,),
     ).fetchone()[0]
+
+
+def company_by_uid(conn: sqlite3.Connection, uid: str) -> CompanyRecord | None:
+    row = conn.execute(
+        """select uid, name, legal_form, municipality, street, postal_code,
+                  city, purpose, purpose_head
+             from companies where uid = ?""",
+        (uid,),
+    ).fetchone()
+    return CompanyRecord(**dict(row)) if row else None
