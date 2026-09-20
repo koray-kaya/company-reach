@@ -382,3 +382,66 @@ async def test_a_company_without_a_site_lists_no_pages(wired, monkeypatch):
     out = await find_site(state(), settings=wired, fetcher=quick(wired))
     assert out["site"] is None
     assert "page_urls" not in out
+
+
+# --- the fourth query --------------------------------------------------------
+
+
+@respx.mock
+async def test_a_fourth_query_runs_when_everything_was_a_directory(
+    settings: Settings, monkeypatch
+):
+    """The research says not to *start* with `site:.ch`, not to avoid it.
+    When the first three queries return only directories, narrowing to Swiss
+    domains is the last cheap thing to try before giving up."""
+    asked: list[str] = []
+
+    async def searcher(query, *, settings, limit=10):
+        asked.append(query)
+        if "site:.ch" in query:
+            return [Result(f"{SITE}/", "Muster Metallbau AG", "x", "ddg")]
+        return [Result("https://moneyhouse.ch/muster", "x", "y", "ddg")]
+
+    async def no_guesses(names, **kw):
+        return []
+
+    async def resolve(host):
+        return ["93.184.216.34"]
+
+    monkeypatch.setattr("company_reach.tools.fetcher.resolve_host", resolve)
+    monkeypatch.setattr(node, "resolving_domains", no_guesses)
+    monkeypatch.setattr(node, "search", searcher)
+    serve(IMPRESSUM_WITH_UID)
+    model_says(monkeypatch, f"{SITE}/", "Muster Metallbau AG")
+
+    out = await find_site(state(), settings=settings, fetcher=quick(settings))
+    assert any("site:.ch" in q for q in asked)
+    assert out["site"] is not None
+
+
+@respx.mock
+async def test_no_fourth_query_when_a_real_candidate_was_found(
+    settings: Settings, monkeypatch
+):
+    """It is a last resort, not a fourth step. A candidate that is not a
+    directory means the first three queries did their job."""
+    asked: list[str] = []
+
+    async def searcher(query, *, settings, limit=10):
+        asked.append(query)
+        return [Result(f"{SITE}/", "Muster Metallbau AG", "x", "ddg")]
+
+    async def no_guesses(names, **kw):
+        return []
+
+    async def resolve(host):
+        return ["93.184.216.34"]
+
+    monkeypatch.setattr("company_reach.tools.fetcher.resolve_host", resolve)
+    monkeypatch.setattr(node, "resolving_domains", no_guesses)
+    monkeypatch.setattr(node, "search", searcher)
+    serve(IMPRESSUM_WITH_UID)
+    model_says(monkeypatch, f"{SITE}/", "Muster Metallbau AG")
+
+    await find_site(state(), settings=settings, fetcher=quick(settings))
+    assert not any("site:.ch" in q for q in asked)
