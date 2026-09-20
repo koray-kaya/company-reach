@@ -33,7 +33,12 @@ Decided (2026-09-19), details in the design doc:
   milestone by milestone (which library, why, how it is used); a human
   reviews every change before it merges. Prefer the plain, readable solution
   over the clever one.
-- Keep the system simple. No framework until a step clearly needs one.
+- Use the established library for a job rather than hand-rolling its
+  equivalent: langchain-openai for model calls, LangGraph for the graph,
+  FastAPI for the review page, trafilatura for page text. Reaching for httpx
+  where a maintained client exists costs transferable knowledge and buys
+  nothing. Keep *our own* code plain — the simplicity rule applies to what we
+  write, not to whether we depend on the standard tool.
 - Prompts live in `prompts/`, versioned, easy to read and edit.
 - All files in English, with one exception: `docs/milestones/` is written in
   Turkish. Those pages explain a finished milestone to the repository's owner
