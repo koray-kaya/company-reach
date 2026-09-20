@@ -8,13 +8,15 @@ from typing import Annotated
 
 import typer
 
+from company_reach.graph import build_stub_child, initial_state, run_graph
+from company_reach.manifest import finish_manifest, manifest_path, start_manifest
 from company_reach.nodes.load_pool import load_pool
 from company_reach.nodes.score_pool import score_pool
 from company_reach.nodes.screen_pool import screen_pool
 from company_reach.nodes.write_criteria import format_criteria, write_criteria
 from company_reach.profile import goal_hash, load_profile
 from company_reach.settings import get_settings
-from company_reach.tools.db import init_db, record_run
+from company_reach.tools.db import connect, init_db, record_run
 from company_reach.tools.doctor import run_checks
 
 app = typer.Typer(help="Find Swiss companies, find the person, draft the mail.")
@@ -31,6 +33,23 @@ def _resolve_goal(explicit: str | None) -> str:
 
 def _run_id(explicit: str | None) -> str:
     return explicit or f"r{uuid.uuid4().hex[:8]}"
+
+
+def _require_a_scored_pool(s, goal: str) -> None:
+    """A run over an empty database would print a row of zeros and look like
+    a working run that found nothing. Name the three commands instead."""
+    with connect(s.db_path) as conn:
+        scored = conn.execute(
+            "select count(*) from scores where goal_hash = ? and model = ?",
+            (goal_hash(goal), s.llm_model),
+        ).fetchone()[0]
+    if scored == 0:
+        typer.echo(
+            "No company is scored for this goal yet. Run `pool`, then `screen`,"
+            " then `score` before `run`.",
+            err=True,
+        )
+        raise typer.Exit(2)
 
 
 @app.command()
@@ -110,6 +129,69 @@ def screen(
     s = get_settings()
     kept, dropped = screen_pool(run_id, settings=s)
     typer.echo(f"kept {kept}, dropped {dropped}")
+
+
+@app.command()
+def run(
+    dry: Annotated[
+        bool,
+        typer.Option(
+            "--dry",
+            help="Loop over the stub child: no search, no fetch, no model call.",
+        ),
+    ] = False,
+    goal: str | None = None,
+    seed: int = 0,
+    run_id: str | None = None,
+) -> None:
+    """Draw batches of the best-scoring companies and work through them.
+
+    The pool stages are separate commands, so this starts from a database that
+    `pool`, `screen` and `score` have already filled. That is what keeps
+    `--dry` offline and quick enough to demonstrate.
+    """
+    if not dry:
+        raise typer.BadParameter(
+            "only --dry is available until M4 gives the child graph its nodes."
+        )
+
+    s = get_settings()
+    text = _resolve_goal(goal)
+    rid = _run_id(run_id)
+    _require_a_scored_pool(s, text)
+
+    start_manifest(rid, settings=s, goal=text, seed=seed)
+    state = initial_state(
+        run_id=rid,
+        goal=text,
+        about_me=load_profile(PROFILE_PATH).about_me if goal is None else "",
+        municipality="",
+        settings=s,
+        seed=seed,
+    )
+
+    try:
+        out = asyncio.run(run_graph(state, settings=s, child=build_stub_child()))
+    except Exception as error:
+        finish_manifest(rid, settings=s, status="failed", counts={})
+        raise typer.Exit(1) from error
+
+    counts = {
+        "batches_drawn": out["batches_drawn"],
+        "results": len(out["results"]),
+        "sendable": out["sendable_count"],
+        "errors": sum(1 for r in out["results"] if r.error_kind),
+    }
+    finish_manifest(rid, settings=s, status="done", counts=counts)
+
+    typer.echo(
+        f"{counts['batches_drawn']} batches · {counts['results']} companies · "
+        f"{counts['errors']} errors · {counts['sendable']} sendable"
+        + ("  · pool exhausted" if out["pool_exhausted"] else "")
+    )
+    typer.echo(f"manifest: {manifest_path(rid, settings=s)}")
+    if dry:
+        typer.echo("--dry: every company was skipped by the M3 stub child.")
 
 
 if __name__ == "__main__":
