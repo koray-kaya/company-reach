@@ -28,8 +28,11 @@ pass. No milestone starts before the previous one is merged.
 
 ## 2. Ground rules for the code
 
-- Plain over clever. A function Koray can read in one screen beats a class
-  hierarchy. No framework until a step clearly needs one.
+- Plain over clever in the code we write: a function Koray can read in one
+  screen beats a class hierarchy. That is not an argument against
+  dependencies — use the industry-standard library for a job
+  (langchain-openai, LangGraph, FastAPI) rather than reimplementing it
+  against a raw HTTP client.
 - Every module has a docstring saying what it is for and which library it
   uses, in two or three lines.
 - Tests without the network for everything deterministic (`respx` mocks

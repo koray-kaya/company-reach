@@ -32,7 +32,10 @@ Taken 2026-09-20 against the school hub (`api.llmhub.infs.ai`, vLLM,
 | `json_object`, function calling | both work |
 | 50 companies, one call, thinking on | 121 s, 4,741 completion tokens, 50/50 returned, 0 missing or invented UIDs |
 | Same, thinking off (`reasoning_effort: low`) | 37.6 s, 1,465 tokens |
-| Thinking off vs on, same 50 companies | 38/50 identical; the 12 that differ are **all** scored higher with thinking off — it is less able to separate the bottom of the pool |
+| `reasoning_effort` levels, 50 companies | `max` 130 s / 4,951 tok · `high` 72 s / 2,146 tok · `low` 41 s / 1,260 tok |
+| What each level actually thinks | `low` emits 11 characters of reasoning (`"Score each."`) — effectively no deliberation; `high` emits 3,118 characters of per-company reasoning. GLM-5.3 cannot disable thinking, so `low` is as close to off as the model allows |
+| **Noise floor** — same level, run twice | `max` vs `max`: 32/50 identical scores, **top-10 overlap 9/10**. `low` vs `low`: 45/50, **9/10** |
+| Difference between levels | `max` vs `low`: 26/50, **top-10 overlap 8/10** |
 | 10 concurrent requests | 6/10 succeeded, 4 × HTTP 500 after 600 s; per-request latency 330–590 s |
 | 3 concurrent requests | first wave 213 / 233 / 306 s clean; **second wave returned truncated JSON** — `max_tokens=8000` was not enough under load |
 | Throughput, any concurrency | ~0.5 companies/s — the server is compute-bound, concurrency buys ~20% |
@@ -48,11 +51,31 @@ shared university GPU for half an hour, and the `finish_reason` check stays
 regardless, because raising a cap lowers the chance of truncation without
 removing it.
 
-**Decisions that follow.** Thinking stays **on** for scoring (a one-time cost,
-sharper discrimination). `LLM_CONCURRENCY=3`. `max_tokens` must be generous —
-a 20-token limit returned empty content because reasoning consumed it, and
-that failure mode is silent, so `doctor` and `llm.ask` both check
-`finish_reason`.
+**The noise floor is the reason for the decision.** The model is not
+deterministic at `temperature=0` — vLLM batches requests, and what else is in
+the batch changes floating-point summation order. Running `max` twice on
+identical input produced different scores for 18 of 50 companies and token
+counts of 3,800 and 5,654. So a difference between two settings can only be
+read against how much a setting differs from *itself*: 9/10 is the ceiling,
+and `max` vs `low` scores 8/10. **The effort level makes no measurable
+difference to the top of the ranking, which is the only part that matters** —
+M3 draws from the top.
+
+An earlier version of this plan chose thinking-on after a single unreplicated
+comparison. That comparison was mostly noise; this section replaces it.
+
+**Decisions that follow.** Scoring uses `reasoning_effort="low"`: three times
+faster, markedly more self-consistent (45/50 against 32/50), and far below the
+truncation threshold. The level is a **per-call argument** with a settings
+default, not one global value — M4's site choice and M5's extraction are
+harder tasks that may want `high`, and that decision belongs at the call site.
+`LLM_CONCURRENCY=3`.
+
+**Reproducibility, to be stated in the thesis.** Even with a fixed seed and
+identical settings, roughly one company in the top ten changes between runs.
+That is a property of the model, not a defect, but it bounds what the golden
+set can measure: a prompt change that moves top-10 overlap by one is
+indistinguishable from noise.
 
 ## Decisions taken with Koray on 2026-09-20
 
@@ -204,8 +227,8 @@ async def ask(
     output_model: type[BaseModelT],
     *,
     settings: Settings,
-    max_tokens: int | None = None,    # None → settings.llm_max_tokens
-    thinking: bool | None = None,     # None → settings.llm_thinking
+    max_tokens: int | None = None,        # None → settings.llm_max_tokens
+    reasoning_effort: Effort | None = None,  # None → settings.llm_reasoning_effort
     **variables,
 ) -> tuple[BaseModelT, Provenance]
 ```
@@ -222,14 +245,15 @@ Behaviour:
 - A module-level `asyncio.Semaphore(settings.llm_concurrency)` guards every
   call.
 
-**New settings:** `llm_reasoning_effort: Literal["low","high","max"]`,
-`llm_max_tokens: int = 32000`; `llm_concurrency` default changes 5 → 3.
+**New settings:** `llm_reasoning_effort: Effort = "low"` where
+`Effort = Literal["low", "high", "max"]`, `llm_max_tokens: int = 32000`;
+`llm_concurrency` default changes 5 → 3.
 
 GLM-5.3 cannot have thinking switched off — the chat template always opens a
-`<think>` block — but `reasoning_effort` selects one of three levels and the
-endpoint **defaults to `max`**. Every measurement above was therefore taken at
-the most expensive setting. The chosen default is recorded in Task 6 after
-the three levels are compared on top-10 overlap.
+`<think>` block — and the endpoint **defaults to `max`**, which is why every
+early measurement was taken at the most expensive setting without anyone
+choosing it. `reasoning_effort` is passed through on every request and
+overridable per call.
 
 - [ ] **Step 1** — failing tests with `respx`: happy path returns model +
       provenance; `finish_reason="length"` raises; malformed JSON raises after

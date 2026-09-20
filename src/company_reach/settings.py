@@ -25,7 +25,18 @@ class Settings(BaseSettings):
     llm_structured_method: Literal["json_schema", "function_calling", "json_mode"] = (
         "json_schema"
     )
-    llm_concurrency: int = 5
+    # GLM-5.3 cannot switch thinking off; "low" is the least it will do, and
+    # measured most self-consistent for scoring. Harder prompts override this
+    # per call.
+    llm_reasoning_effort: Literal["low", "high", "max"] = "low"
+    # Measured need for 50 companies is ~1.3k-5k tokens; 8k truncated under
+    # load. Finite so a runaway generation fails in minutes, not an hour.
+    llm_max_tokens: int = 32000
+    # A scoring call measured 41-130 s; httpx defaults to 5 s.
+    llm_timeout_seconds: float = 600.0
+    # Ten concurrent requests timed out four of ten on the shared endpoint
+    # without raising throughput.
+    llm_concurrency: int = 3
 
     searxng_url: str = "http://searxng:8080"
     serper_api_key: SecretStr | None = None
