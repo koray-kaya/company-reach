@@ -316,8 +316,6 @@ The stub child is replaced by a real one: `load_company → find_site`, with
 - [ ] **State plainly in the PR that the ≥ 13/15 site-choice criterion is not
       met in M4 and why**, with the fixture work it needs, so the audit item
       is deferred on purpose and not by omission.
-- [ ] Re-measure `draw_min_score` once the second scoring pass finishes; the
-      current default of 5 was chosen against scores that no longer exist.
 - [ ] PR, review, merge — after #11.
 
 ## Known rough edges
