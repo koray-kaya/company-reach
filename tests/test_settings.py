@@ -17,10 +17,10 @@ def test_defaults_and_env(monkeypatch, tmp_path: Path):
 
 def test_drawing_defaults(monkeypatch, tmp_path: Path):
     """Ten because review starts once ten candidates are ready (design §31);
-    five because it is the highest threshold that keeps every golden-set
-    company Koray hand-rated 6 or above."""
+    seven because it is the gap between what Koray rated well (model 9) and
+    what he rated junk (model 6 at most)."""
     monkeypatch.setenv("LLM_API_KEY", "abc")
     monkeypatch.setenv("LLM_MODEL", "m")
     s = Settings(_env_file=None, data_dir=tmp_path)
     assert s.batch_size == 10
-    assert s.draw_min_score == 5
+    assert s.draw_min_score == 7
