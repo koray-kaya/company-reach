@@ -12,6 +12,10 @@ class PromptError(CompanyReachError):
     """A prompt file is missing, malformed, or a variable was not supplied."""
 
 
+class ProfileError(CompanyReachError):
+    """profile.toml is missing, malformed, or has no goal."""
+
+
 class LlmError(CompanyReachError):
     """The model endpoint failed, or its answer did not match the schema."""
 
