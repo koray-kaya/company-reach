@@ -1,0 +1,12 @@
+# Copy to profile.toml (gitignored) and edit.
+#
+# goal     — one sentence. What kind of company do you want to reach?
+#            Name the sector or the activity, not a size: the commercial
+#            register records neither headcount nor revenue, so a goal that
+#            asks for "10-49 employees" only invites the model to guess.
+#            Size is established later, from the company's own website.
+# about_me — who is writing. Used in M6 to draft the invitation.
+
+goal = "Swiss companies in manufacturing or technical services — firms that make, assemble, install, repair, maintain or engineer something."
+
+about_me = "A master's student at a Swiss university, writing a thesis on how small firms find customers, suppliers and competitors. I am looking for a short conversation, not a sale."

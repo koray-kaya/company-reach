@@ -17,3 +17,6 @@ __pycache__/
 # Local, per-developer agent setup — not part of the project
 .claude/
 CLAUDE.local.md
+
+# Personal: the research goal and who is writing
+profile.toml

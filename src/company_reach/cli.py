@@ -3,17 +3,29 @@
 
 import asyncio
 import uuid
+from pathlib import Path
 from typing import Annotated
 
 import typer
 
 from company_reach.nodes.load_pool import load_pool
 from company_reach.nodes.screen_pool import screen_pool
+from company_reach.nodes.write_criteria import format_criteria, write_criteria
+from company_reach.profile import goal_hash, load_profile
 from company_reach.settings import get_settings
 from company_reach.tools.db import init_db
 from company_reach.tools.doctor import run_checks
 
 app = typer.Typer(help="Find Swiss companies, find the person, draft the mail.")
+
+PROFILE_PATH = Path("profile.toml")
+
+
+def _resolve_goal(explicit: str | None) -> str:
+    """--goal wins; otherwise profile.toml. Trying a goal on the command line
+    without editing the file is the common case while wording is still being
+    worked out."""
+    return explicit.strip() if explicit else load_profile(PROFILE_PATH).goal
 
 
 def _run_id(explicit: str | None) -> str:
@@ -29,6 +41,22 @@ def doctor() -> None:
         typer.echo(f"{mark}  {check.name:<13} {check.detail}")
     if not all(check.ok for check in checks):
         raise typer.Exit(1)
+
+
+@app.command()
+def criteria(goal: str | None = None) -> None:
+    """Show the selection criteria a goal produces, before scoring anything."""
+    s = get_settings()
+    text = _resolve_goal(goal)
+    result, prov = asyncio.run(write_criteria(text, settings=s))
+    typer.echo(f"goal   {text}")
+    typer.echo(f"hash   {goal_hash(text)}")
+    typer.echo(
+        f"model  {prov.model} · {prov.prompt}@{prov.prompt_version} · "
+        f"{prov.seconds:.1f}s"
+    )
+    typer.echo("")
+    typer.echo(format_criteria(result))
 
 
 @app.command()
