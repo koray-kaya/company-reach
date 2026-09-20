@@ -82,9 +82,13 @@ def score(
         score_pool(rid, text, criteria_result, settings=s, limit=limit, seed=seed)
     )
     typer.echo(
-        f"scored {report.scored}, already cached {report.cached}, "
-        f"dropped {report.dropped}, failed batches {report.failed_batches} "
-        f"in {report.seconds:.0f}s (run {rid})"
+        f"{report.scored} newly scored · {report.cached} already scored, skipped"
+        f" · {report.dropped} answers dropped · {report.failed_batches} batches "
+        f"failed · {report.seconds:.0f}s · run {rid}"
+    )
+    typer.echo(
+        "run `score --limit N` again to score N more; "
+        "nothing already scored for this goal is asked twice."
     )
 
 
