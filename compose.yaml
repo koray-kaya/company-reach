@@ -1,26 +1,24 @@
-# The app and its search engine. `docker compose up` serves the review page
-# (M7); `docker compose run --rm app run ...` executes a pipeline run.
+# The search engine this project depends on. Start it with:
 #
-# SearXNG's port is published on the loopback interface only. It is not
-# reachable from outside this machine, and publishing it is what lets the app
-# be developed with `uv run` against the same instance the container uses —
-# without it, SEARXNG_URL would have to differ between the two.
+#     docker compose up -d searxng
+#     curl 'http://127.0.0.1:8080/search?q=test&format=json'
+#
+# The port is published on the loopback interface only: not reachable from
+# outside this machine, and publishing it is what lets the app run under
+# `uv run` against the same instance a container would use. Without it,
+# SEARXNG_URL would have to differ between the two.
+#
+# The `app` service (the review page, M7) and `playwright` (an optional
+# fallback, only if the JavaScript counter ever says we need one) join this
+# file when they exist. Listing a service whose Dockerfile is not written
+# would make `docker compose up` fail on a file that is supposed to explain
+# how to start the project.
 
 services:
-  app:
-    build: .
-    env_file: .env
-    ports:
-      - "127.0.0.1:8000:8000"
-    volumes:
-      - ./data:/app/data
-    depends_on:
-      - searxng
-
   searxng:
     # Pinned: an engine's parser changing under us would look like a bug in
-    # our code, and a dated tag makes that visible in a diff.
-    image: docker.io/searxng/searxng:2026.9.1-9c7c2e2
+    # our own code, and a dated tag makes that visible in a diff.
+    image: docker.io/searxng/searxng:2026.9.20-2e624bed4
     environment:
       - SEARXNG_SECRET=${SEARXNG_SECRET}
       - SEARXNG_BASE_URL=http://localhost:8080/
@@ -28,5 +26,7 @@ services:
       - "127.0.0.1:8080:8080"
     volumes:
       - ./searxng:/etc/searxng
+    restart: unless-stopped
     # The official template also runs valkey for the rate limiter. The
-    # limiter is off, so it would be a container doing nothing.
+    # limiter is off (see searxng/settings.yml), so it would be a container
+    # doing nothing.

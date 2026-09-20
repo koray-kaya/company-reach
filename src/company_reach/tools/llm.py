@@ -49,10 +49,17 @@ def load_prompt(name: str) -> tuple[str, str]:
     return version, body.strip()
 
 
-def render(name: str, **variables: str) -> tuple[str, str]:
+def render(name: str, /, **variables: str) -> tuple[str, str]:
     """Return (version, rendered text). Missing variables are an error, not
     an empty string: a prompt silently missing its goal would score nothing
-    sensible and nobody would notice."""
+    sensible and nobody would notice.
+
+    The `/` makes `name` positional-only, which is not decoration. Without
+    it, a prompt with a `$name` placeholder cannot be rendered at all: the
+    caller's `name=` lands on this parameter instead of in `variables`, and
+    Python raises "got multiple values for argument 'name'". A mocked test
+    never sees it, because the mock replaces this function.
+    """
     version, template = load_prompt(name)
     try:
         return version, Template(template).substitute(**variables)
@@ -118,6 +125,7 @@ def _client(
 async def ask[ModelT: BaseModel](
     prompt_name: str,
     output_model: type[ModelT],
+    /,
     *,
     settings: Settings,
     max_tokens: int | None = None,
