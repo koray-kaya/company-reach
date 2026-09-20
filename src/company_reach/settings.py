@@ -53,6 +53,11 @@ class Settings(BaseSettings):
     playwright_url: str | None = None
 
     max_pages_per_site: int = 10
+    max_page_urls: int = 200
+    # Per candidate page sent to pick_site. An Impressum is short and the
+    # identifying lines sit at the top; the window is not the constraint,
+    # attention is.
+    pick_site_chars: int = 3000
     max_chars_per_page: int = 8000
     # A Wix home page is 0.8-1.5 MB of HTML; two megabytes is generous and
     # still bounds what one bad URL can cost.
