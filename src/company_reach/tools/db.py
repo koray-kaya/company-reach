@@ -13,7 +13,12 @@ from importlib.resources import files
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from company_reach.models import CompanyRecord, Score, SelectionCriteria
+from company_reach.models import (
+    CompanyRecord,
+    CompanyResult,
+    Score,
+    SelectionCriteria,
+)
 
 if TYPE_CHECKING:  # avoids pulling langchain into every db import
     from company_reach.tools.llm import Provenance
@@ -253,3 +258,49 @@ def record_seen(
         [(u, run_id, batch_no, now()) for u in uids],
     )
     return len(uids)
+
+
+def record_result(
+    conn: sqlite3.Connection, result: CompanyResult, *, run_id: str
+) -> None:
+    """One row per (run, company). A retry of a company that errored replaces
+    its row, so a recovered company leaves no error behind."""
+    conn.execute(
+        """INSERT INTO results (run_id, uid, recommendation, reason,
+             error_kind, error_text, finished_at)
+           VALUES (?,?,?,?,?,?,?)
+           ON CONFLICT(run_id, uid) DO UPDATE SET
+             recommendation=excluded.recommendation, reason=excluded.reason,
+             error_kind=excluded.error_kind, error_text=excluded.error_text,
+             finished_at=excluded.finished_at""",
+        (
+            run_id,
+            result.uid,
+            result.recommendation,
+            result.reason,
+            result.error_kind,
+            result.error_text,
+            now(),
+        ),
+    )
+
+
+def result_for(
+    conn: sqlite3.Connection, uid: str, *, run_id: str
+) -> CompanyResult | None:
+    row = conn.execute(
+        """select uid, recommendation, reason, error_kind, error_text
+             from results where run_id = ? and uid = ?""",
+        (run_id, uid),
+    ).fetchone()
+    return CompanyResult(**dict(row)) if row else None
+
+
+def count_sendable(conn: sqlite3.Connection, run_id: str) -> int:
+    """From the table, never from state. A resumed run has an empty `results`
+    list in state and a full table; counting state would draw a fresh batch
+    on every rerun (audit A1, third P0 finding)."""
+    return conn.execute(
+        "select count(*) from results where run_id = ? and recommendation = 'send'",
+        (run_id,),
+    ).fetchone()[0]
