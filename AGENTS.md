@@ -35,7 +35,10 @@ Decided (2026-09-19), details in the design doc:
   over the clever one.
 - Keep the system simple. No framework until a step clearly needs one.
 - Prompts live in `prompts/`, versioned, easy to read and edit.
-- All files in English.
+- All files in English, with one exception: `docs/milestones/` is written in
+  Turkish. Those pages explain a finished milestone to the repository's owner
+  and have no other reader; library names and settled technical terms stay in
+  English inside them.
 
 ## Hard rules
 - **This repository is public.** Company and person data only in `data/`

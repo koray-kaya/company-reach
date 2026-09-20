@@ -1,11 +1,14 @@
-# M1 — Skeleton and Pool
+# M1 — İskelet ve Havuz
 
-What was built, why each library is there, and the five things worth
-understanding before M2. Plan: `docs/plans/2026-09-19-m1-skeleton-and-pool.md`.
+Ne yapıldı, her kütüphane neden orada, ve M2'ye geçmeden önce anlaşılmaya
+değer beş şey. Plan: `docs/plans/2026-09-19-m1-skeleton-and-pool.md`.
 
-## What exists now
+> Bu klasördeki dosyalar Türkçedir (bkz. `AGENTS.md`); deponun geri kalanı
+> İngilizce. Kütüphane adları ve yerleşik terimler İngilizce bırakıldı.
 
-Two commands work end to end against the live register:
+## Şu an ne çalışıyor
+
+İki komut, gerçek sicile karşı uçtan uca:
 
 ```bash
 uv run company-reach pool --municipality 3203 --run-id first
@@ -15,95 +18,96 @@ uv run company-reach screen --run-id first
 # → kept 4335, dropped 1132
 ```
 
-Measured on 2026-09-20, municipality 3203 (St. Gallen): 5,467 companies, all
-UIDs unique, 96.7% carrying the boilerplate purpose tail. 18 tests, all
-offline. No LangGraph, no LLM, no web search — those start at M2.
+2026-09-20'de 3203 numaralı belediyede (St. Gallen) ölçüldü: 5.467 şirket,
+kimliklerin tamamı benzersiz, %96,7'si standart amaç kuyruğu taşıyor. 18 test,
+hepsi ağsız çalışıyor. LangGraph yok, LLM yok, web araması yok — onlar M2 ve
+sonrasında.
 
-## Libraries used and why
+## Kullanılan kütüphaneler ve nedenleri
 
-- **uv** — project, virtual environment, lockfile and Python 3.13 itself, in
-  one tool. Chosen over pip+venv+pip-tools because it replaces all three and
-  `uv.lock` pins the exact tree for a fresh clone.
-- **pydantic** — `CompanyRecord` validates on construction, so every record
-  that exists is well-formed. The same class becomes an LLM output schema in
-  M2; one definition, two jobs.
-- **pydantic-settings** — `.env` into one typed object. Chosen over
-  `os.environ` because it converts types, fails at startup rather than
-  mid-run, and keeps secrets in `SecretStr` (never in `repr()` or a log).
-- **httpx** — the SPARQL POST. Chosen over `requests` for its explicit
-  timeout object and because `respx` mocks it cleanly in tests.
-- **sqlite3** (stdlib) — one file, no server, and WAL lets the M7 review page
-  read while a run writes.
-- **typer** — turns a function signature into a command with `--help`. A
-  parameter with a default becomes an option, one without becomes a
-  positional argument.
-- **respx** + **pytest** — every deterministic test runs offline.
-- **ruff** — lint and format. Note `extend-exclude = ["*.md"]` in
-  `pyproject.toml`: ruff 0.16 formats Python fenced in Markdown and rewrote
-  the design docs on first run.
+- **uv** — proje, sanal ortam, lockfile ve Python 3.13'ün kendisi; hepsi tek
+  araçta. pip + venv + pip-tools üçlüsü yerine seçildi, çünkü üçünün yerini
+  alıyor ve `uv.lock` temiz bir clone'da tam olarak aynı bağımlılık ağacını
+  kuruyor.
+- **pydantic** — `CompanyRecord` nesne oluşurken doğrulanıyor, yani var olan
+  her kayıt doğru biçimde. Aynı sınıf M2'de LLM çıktı şeması olacak: tek
+  tanım, iki iş.
+- **pydantic-settings** — `.env` dosyasını tek bir tipli nesneye çeviriyor.
+  `os.environ` yerine seçildi, çünkü tipleri dönüştürüyor, hatayı çalıştırmanın
+  ortasında değil başında veriyor, ve gizli değerleri `SecretStr` içinde
+  tutuyor (`repr()`'de ve loglarda görünmüyor).
+- **httpx** — SPARQL POST isteği. `requests` yerine seçildi: timeout nesnesi
+  açık, ve `respx` onu testlerde temiz biçimde taklit ediyor.
+- **sqlite3** (standart kütüphane) — tek dosya, sunucu yok. WAL sayesinde M7
+  review page'i bir çalıştırma sürerken okuma yapabilecek.
+- **typer** — fonksiyon imzasını `--help` destekli bir komuta çeviriyor.
+  Varsayılanı olan parametre seçenek (option), olmayan konumsal argüman olur.
+- **respx** + **pytest** — deterministik testlerin tamamı ağsız çalışıyor.
+- **ruff** — lint ve format. `pyproject.toml`'daki `extend-exclude = ["*.md"]`
+  satırına dikkat: ruff 0.16 Markdown içindeki Python bloklarını da
+  biçimlendiriyor ve ilk çalıştırmada tasarım dokümanlarını değiştirdi.
 
-## Worth understanding
+## Anlaşılmaya değer beş şey
 
-1. **PRAGMA order, then transaction control** — `tools/db.py:22-27`.
-   `autocommit=False` opens a transaction before the first statement, and
-   `PRAGMA journal_mode=WAL` cannot run inside one. So the connection opens
-   in autocommit mode, the three PRAGMAs run, and only then does
-   `conn.autocommit = False` take over. The plan had this the other way
-   round; the test caught it.
+1. **Önce PRAGMA, sonra transaction kontrolü** — `tools/db.py:22-27`.
+   `autocommit=False`, ilk komuttan önce bir transaction açıyor;
+   `PRAGMA journal_mode=WAL` ise bir transaction'ın içinde çalışamıyor. Bu
+   yüzden bağlantı önce autocommit modunda açılıyor, üç PRAGMA çalışıyor, ve
+   ancak ondan sonra `conn.autocommit = False` kontrolü devralıyor. Planda
+   sıra tersti; hatayı test yakaladı.
 
-2. **`with conn:` commits, it does not close** — `tools/db.py:45-48`.
-   Success commits, an exception rolls back, and neither closes the
-   connection; the `finally` does. All writes inside one `with` block are
-   all-or-nothing.
+2. **`with conn:` commit eder, kapatmaz** — `tools/db.py:45-48`. Başarılıysa
+   commit, hata varsa rollback; ikisi de bağlantıyı kapatmıyor — kapatmayı
+   `finally` yapıyor. Tek bir `with` bloğundaki tüm yazmalar ya hep ya hiç.
 
-3. **A finding is not an error** — `tools/lindas.py:68` and `112`. Three
-   attempts, then `LindasError`; and zero companies also raises. If both
-   returned an empty list, "this municipality has no companies" and "LINDAS
-   is down" would be indistinguishable, and the pool would silently be
-   written empty. The same distinction is a P1 audit condition for M4.
+3. **Bulgu ile hata aynı şey değildir** — `tools/lindas.py:68` ve `112`. Üç
+   deneme, sonra `LindasError`; sıfır şirket de hata fırlatıyor. İkisi de boş
+   liste döndürseydi "bu belediyede şirket yok" ile "LINDAS çökmüş" ayırt
+   edilemezdi ve havuz sessizce boş yazılırdı. Aynı ayrım M4 için de bir P1
+   denetim şartı.
 
-4. **Screening labels, it never deletes** — `screen.py:26-33` decides,
-   `nodes/screen_pool.py` writes `screen_reason` onto the existing row.
-   Survivors are not a list anywhere: they are the rows where
-   `screen_reason IS NULL`. Every row is rewritten on each run, so changing a
-   rule and re-running clears stale labels.
+4. **Eleme etiketler, asla silmez** — `screen.py:26-33` karar veriyor,
+   `nodes/screen_pool.py` `screen_reason` değerini mevcut satırın üstüne
+   yazıyor. Kalanlar hiçbir yerde liste değil: `screen_reason IS NULL` olan
+   satırlar. Her çalıştırmada tüm satırlar yeniden yazılıyor, böylece kural
+   değişip komut tekrar çalıştırıldığında eski etiketler temizleniyor.
 
-5. **The head clause carries the meaning** — `screen.py:9,21-23`. 96.7% of
-   purpose texts end in a notary boilerplate tail that mentions
-   `Grundstücke`. Cutting it before the rules run is what stops a joinery
-   being read as a property firm. `Dienstleistung` and `Entwicklung` are
-   deliberately absent from `_OPERATING` (`screen.py:13`): property firms use
-   both (LEARNINGS §2).
+5. **Anlam head clause'da** — `screen.py:9,21-23`. Amaç metinlerinin %96,7'si
+   noterin standart kuyruğuyla bitiyor ve o kuyrukta `Grundstücke` geçiyor.
+   Kuralları çalıştırmadan önce kuyruğu kesmek, bir marangozun emlak firması
+   sanılmasını engelleyen şey. `Dienstleistung` ve `Entwicklung` bilerek
+   `_OPERATING` listesinde değil (`screen.py:13`): emlak firmaları da bu iki
+   kelimeyi kullanıyor (LEARNINGS §2).
 
-## Where to look, in reading order
+## Nereye bakmalı — okuma sırası
 
 ```
-settings.py          (47 lines)  what is configurable
-models.py            (34 lines)  what a company record is
-screen.py            (33 lines)  the two rules
-schema.sql           (36 lines)  the 12 tables; M1 fills one
-tools/db.py          (85 lines)  connect · transaction · upsert
-tools/lindas.py     (116 lines)  build_query · _post · _record · fetch_companies
-nodes/load_pool.py   (11 lines)  lindas + db, three lines
-nodes/screen_pool.py (28 lines)  read · decide · label
-cli.py               (39 lines)  two commands
+settings.py          (47 satır)  neler ayarlanabilir
+models.py            (34 satır)  bir şirket kaydı nedir
+screen.py            (33 satır)  iki kural
+schema.sql           (36 satır)  12 tablo; M1 bir tanesini dolduruyor
+tools/db.py          (85 satır)  bağlantı · transaction · upsert
+tools/lindas.py     (116 satır)  build_query · _post · _record · fetch_companies
+nodes/load_pool.py   (11 satır)  lindas + db, üç satır
+nodes/screen_pool.py (28 satır)  oku · karar ver · etiketle
+cli.py               (39 satır)  iki komut
 ```
 
-`load_pool.py` is the one place that splits `Settings` and hands each layer
-only what it needs — `lindas.py` never imports `Settings` at all, which is
-why its tests can point it at a fake URL.
+`load_pool.py`, `Settings`'i parçalayıp her katmana yalnızca ihtiyacı olanı
+veren tek yer — `lindas.py` `Settings`'i hiç import etmiyor. Testlerinin onu
+sahte bir URL'e yönlendirebilmesinin sebebi bu.
 
-## Check this
+## Şunları kontrol et
 
 ```bash
-cp .env.example .env                       # any placeholder key works in M1
-uv run pytest -q                           # 18 passed, offline
+cp .env.example .env                       # M1'de anahtar kullanılmıyor, dosya yeterli
+uv run pytest -q                           # 18 passed, ağsız
 uv run company-reach --help
 uv run company-reach pool --municipality 3203 --run-id first
 uv run company-reach screen --run-id first
 ```
 
-Then look at the data:
+Sonra veriye bak:
 
 ```bash
 sqlite3 data/company_reach.db \
@@ -111,24 +115,28 @@ sqlite3 data/company_reach.db \
   -header -column
 ```
 
-Expect roughly `(kept) 4335 · property only 799 · in liquidation 333`. Run
-`pool` a second time: the row count stays 5,467 — `ON CONFLICT(uid) DO UPDATE`
-(`tools/db.py:78`) makes re-running safe.
+Beklenen: yaklaşık `(kept) 4335 · property only 799 · in liquidation 333`.
+`pool`'u ikinci kez çalıştır: satır sayısı 5.467'de kalıyor —
+`ON CONFLICT(uid) DO UPDATE` (`tools/db.py:78`) tekrar çalıştırmayı güvenli
+kılıyor.
 
-Worth reading once: `tests/test_lindas.py`, to see how `respx` answers the
-SPARQL POST with a fixture so the test never touches the network.
+Bir kez okumaya değer: `tests/test_lindas.py` — `respx`'in SPARQL POST
+isteğine fixture'dan nasıl cevap verdiğini, yani testin ağa hiç çıkmadığını
+görürsün.
 
-## Open threads
+## Açık uçlar
 
-- `llm_api_key` and `llm_model` are required by `Settings`, so `pool` needs a
-  `.env` although it makes no model call. Left as is by decision on
-  2026-09-20; revisit with `doctor` in M2.
-- v0 kept 3,993 of 5,462; the same municipality now keeps 4,335 of 5,467.
-  The two rules here are more permissive than v0's. Acceptable — over-keeping
-  is the cheap error, and M2 scores the rest — but worth confirming against
-  v0's full rule set.
-- The research note records `schema:description` as missing on 3.2% of
-  records; municipality 3203 returned it on 100% on 2026-09-20. `_record`
-  still treats it as optional, and the fixture keeps a company without one.
-- The phase-2 diagram in `docs/design/diagrams/` is stale (noted in the
-  audit) and was not touched here.
+- `Settings`, `llm_api_key` ve `llm_model` alanlarını zorunlu tutuyor; bu
+  yüzden `pool` hiç model çağrısı yapmadığı hâlde bir `.env` istiyor.
+  2026-09-20'de olduğu gibi bırakılmasına karar verildi; M2'de `doctor` ile
+  tekrar bakılacak.
+- v0'da 5.462 şirketin 3.993'ü kalmıştı; aynı belediyede şimdi 5.467'nin
+  4.335'i kalıyor. Buradaki iki kural v0'ınkinden daha geçirgen. Kabul
+  edilebilir — fazla tutmak ucuz hata ve gerisini M2 puanlıyor — ama v0'ın
+  tam kural setiyle karşılaştırmaya değer.
+- Araştırma notu `schema:description` alanının kayıtların %3,2'sinde eksik
+  olduğunu söylüyor; 3203 numaralı belediye 2026-09-20'de %100 dolu döndü.
+  `_record` yine de alanı isteğe bağlı sayıyor ve fixture'da metinsiz bir
+  şirket duruyor.
+- `docs/design/diagrams/` altındaki phase-2 diyagramı güncel değil (denetimde
+  not edilmişti); bu milestone'da dokunulmadı.
