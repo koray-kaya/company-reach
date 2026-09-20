@@ -397,6 +397,16 @@ different set of mistakes.
    placeholder is fine for now.
 3. **Golden-set labelling effort.** 30 companies, a few minutes each.
 
+## Known rough edge
+
+`prompts/` sits at the repository root, not inside the package, because the
+point of the directory is that the prompts are easy to find and edit. It is
+resolved from `__file__`, which works for the editable install this project
+uses and for the "clone and run" path M8 targets, but a wheel installed from
+PyPI would not carry it. `load_prompt` fails with the path it looked in, so
+the failure is legible rather than mysterious. Revisit only if the tool ever
+ships as a wheel.
+
 ## Self-review
 
 - **Spec coverage:** audit A2 (`llm_structured_method` setting, `include_raw`,

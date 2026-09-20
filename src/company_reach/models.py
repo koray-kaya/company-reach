@@ -4,7 +4,7 @@ exists is a record that is well-formed."""
 
 import re
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 _UID_DIGITS = re.compile(r"\D")
 
@@ -32,3 +32,28 @@ class CompanyRecord(BaseModel):
     def uid_dotted(self) -> str:
         d = self.uid[3:]
         return f"CHE-{d[:3]}.{d[3:6]}.{d[6:]}"
+
+
+class SelectionCriteria(BaseModel):
+    """The goal, expanded into rules a scorer can apply. Produced by the model
+    from one sentence, stored on the run and shown to the user before any
+    scoring is paid for, so the rules are data he can read and correct."""
+
+    must: list[str] = Field(description="all must hold for a good fit")
+    must_not: list[str] = Field(description="any one of these rules a company out")
+    positive_signals: list[str] = Field(description="raise the score when present")
+
+
+class Score(BaseModel):
+    """One company's fit with the goal. Also the schema the model must obey."""
+
+    uid: str
+    score: int = Field(ge=0, le=10)
+    reason: str
+
+
+class ScoreBatch(BaseModel):
+    """What one scoring call returns. The list is checked against the UIDs
+    that were sent — the model may drop, duplicate or invent one."""
+
+    scores: list[Score]
