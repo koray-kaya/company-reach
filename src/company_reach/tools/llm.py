@@ -75,33 +75,34 @@ class Provenance:
     seconds: float
 
 
-_semaphore: asyncio.Semaphore | None = None
+def _truncated(prompt_name: str, budget: int, effort: Effort) -> LlmError:
+    """The answer ran out of budget. Never retried: the same budget runs out
+    the same way, and the message has to say what to change."""
+    return LlmError(
+        f"{prompt_name}: answer truncated at max_completion_tokens={budget}. "
+        f"Raise llm_max_tokens or lower reasoning_effort (currently {effort})."
+    )
 
 
-def _get_semaphore(settings: Settings) -> asyncio.Semaphore:
-    """One semaphore for the whole process. The school endpoint is a shared
-    vLLM server: measured, ten concurrent requests made four of them time out
-    without raising throughput, so the cap is a courtesy as well as a
-    safeguard."""
-    global _semaphore
-    if _semaphore is None:
-        _semaphore = asyncio.Semaphore(settings.llm_concurrency)
-    return _semaphore
-
-
-def reset_semaphore() -> None:
-    """Tests change llm_concurrency between cases."""
-    global _semaphore
-    _semaphore = None
+@lru_cache
+def _get_semaphore(concurrency: int) -> asyncio.Semaphore:
+    """One semaphore per concurrency value, for the whole process. The school
+    endpoint is a shared vLLM server: measured, ten concurrent requests made
+    four of them time out without raising throughput, so the cap is a
+    courtesy as well as a safeguard. Caching on the value rather than holding
+    a module global means a test that changes the setting simply gets its own
+    semaphore — no reset hook that exists only for tests."""
+    return asyncio.Semaphore(concurrency)
 
 
 def _client(
     settings: Settings, max_tokens: int, effort: Effort, http_client: httpx.AsyncClient
 ) -> ChatOpenAI:
-    """The httpx client is passed in rather than left to the OpenAI SDK.
-    Two reasons: the SDK's own client is not interceptable by respx, so tests
-    could not run offline; and its default timeout is far below what this
-    endpoint needs — a scoring call measured 41-130 seconds."""
+    """The httpx client is passed in rather than left to the OpenAI SDK, so
+    that respx can intercept it and the whole suite runs offline in under a
+    second. (The long timeout could also be set with `request_timeout`; the
+    client is injected for the tests.) The cost is one TCP connection per
+    call, against a call that measured 41-130 seconds."""
     return ChatOpenAI(
         model=settings.llm_model,
         base_url=settings.llm_base_url,
@@ -135,7 +136,7 @@ async def ask[ModelT: BaseModel](
     budget = max_tokens or settings.llm_max_tokens
 
     last: Exception | str | None = None
-    async with _get_semaphore(settings):
+    async with _get_semaphore(settings.llm_concurrency):
         async with httpx.AsyncClient(
             timeout=httpx.Timeout(settings.llm_timeout_seconds, connect=10.0)
         ) as http_client:
@@ -149,13 +150,7 @@ async def ask[ModelT: BaseModel](
                 try:
                     answer = await chain.ainvoke(text)
                 except LengthFinishReasonError as e:
-                    # The SDK raises before we ever see finish_reason. Never
-                    # retry: the budget that ran out once runs out again.
-                    raise LlmError(
-                        f"{prompt_name}: answer truncated at "
-                        f"max_completion_tokens={budget}. Raise llm_max_tokens "
-                        f"or lower reasoning_effort (currently {effort})."
-                    ) from e
+                    raise _truncated(prompt_name, budget, effort) from e
                 except Exception as e:  # transport, rate limit, endpoint error
                     last = e
                     continue
@@ -164,13 +159,12 @@ async def ask[ModelT: BaseModel](
                 meta = raw.response_metadata
                 finish = meta.get("finish_reason", "")
 
-                if finish == "length":
-                    raise LlmError(
-                        f"{prompt_name}: answer truncated at max_tokens={budget}. "
-                        f"Raise llm_max_tokens or lower reasoning_effort "
-                        f"(currently {effort})."
-                    )
                 if answer["parsing_error"] is not None or answer["parsed"] is None:
+                    # With json_schema the SDK raises above; with the other
+                    # structured-output methods a truncated answer arrives
+                    # here instead, as an unparsable one.
+                    if finish == "length":
+                        raise _truncated(prompt_name, budget, effort)
                     last = f"{answer['parsing_error']}: {str(raw.content)[:300]}"
                     continue
 

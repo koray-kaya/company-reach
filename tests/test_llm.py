@@ -100,7 +100,6 @@ async def test_concurrency_is_capped(settings, monkeypatch):
     import asyncio
 
     monkeypatch.setattr(settings, "llm_concurrency", 2)
-    llm.reset_semaphore()
     in_flight = 0
     peak = 0
 
