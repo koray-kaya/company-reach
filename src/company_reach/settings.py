@@ -49,6 +49,14 @@ class Settings(BaseSettings):
     # Scoring is incremental: one pass takes this many companies and stops,
     # so work can start long before the whole pool is scored.
     score_limit: int = 500
+    # How many companies one batch draws. Ten, because review starts once ten
+    # candidates are ready (design doc, "Candidate selection").
+    batch_size: int = 10
+    # A company scoring below this is never drawn, so pool_exhausted means
+    # "nothing left that clears the bar" rather than "nothing left at all".
+    # Five is the highest threshold that still keeps every golden-set company
+    # hand-rated 6 or above: at six, the one Koray scored 6 (model: 5) is lost.
+    draw_min_score: int = 5
     max_batches_per_run: int = 3
     langsmith_tracing: bool = False
 

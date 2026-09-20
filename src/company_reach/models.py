@@ -3,6 +3,7 @@ the LLM output schemas. Pydantic validates on construction, so a record that
 exists is a record that is well-formed."""
 
 import re
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -71,3 +72,23 @@ class Score(BaseModel):
     uid: str
     score: int = Field(ge=0, le=10)
     reason: str
+
+
+Recommendation = Literal["send", "hold", "skip"]
+ErrorKind = Literal["search", "fetch", "llm", "other"]
+
+
+class CompanyResult(BaseModel):
+    """What one company's child graph produced — a recommendation or a
+    failure, never both and never neither once the wrapper is done with it.
+
+    Literal types rather than free strings: a typo in `error_kind` would
+    otherwise reach the results table and quietly break every count that
+    groups by it. Pydantic rejects it here instead.
+    """
+
+    uid: str
+    recommendation: Recommendation | None = None
+    reason: str | None = None
+    error_kind: ErrorKind | None = None
+    error_text: str | None = None
