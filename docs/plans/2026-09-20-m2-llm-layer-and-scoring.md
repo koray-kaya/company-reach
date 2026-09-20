@@ -44,12 +44,18 @@ Taken 2026-09-20 against a university-hosted endpoint (vLLM serving
 constrains which tokens may be generated; it does not stop generation being
 cut off at the cap, and a cut-off answer is invalid JSON. The measured usage
 for 50 companies at `max` effort was 4,741–4,951 tokens, but a loaded server
-exceeded 8,000. `llm_max_tokens` is therefore **32,000** — six to seven times
-the measured need, and far below the model's 128K output limit. The cap stays
-finite so that a runaway generation fails in minutes rather than occupying a
-shared university GPU for half an hour, and the `finish_reason` check stays
-regardless, because raising a cap lowers the chance of truncation without
-removing it.
+exceeded 8,000. `llm_max_tokens` is therefore **50,000** — ten times the
+measured need at `max` effort, forty times at `low`.
+
+The cap is ours, not the model's. The deployment reports `max_model_len =
+max_total_tokens = 1,000,000`, so the context window is nowhere near a
+constraint: a 50-company scoring call uses about 4,650 tokens, and M5's worst
+case — ten pages of 8,000 characters, at roughly 5.5 German characters per
+token — is about 17,000. The cap exists so that a runaway generation dies in
+minutes rather than occupying a shared university GPU: at the measured ~38
+tokens per second, 50,000 tokens is about twenty-two minutes. The
+`finish_reason` check stays regardless, because raising a cap lowers the
+chance of truncation without removing it.
 
 **The noise floor is the reason for the decision.** The model is not
 deterministic at `temperature=0` — vLLM batches requests, and what else is in
@@ -246,7 +252,7 @@ Behaviour:
   call.
 
 **New settings:** `llm_reasoning_effort: Effort = "low"` where
-`Effort = Literal["low", "high", "max"]`, `llm_max_tokens: int = 32000`;
+`Effort = Literal["low", "high", "max"]`, `llm_max_tokens: int = 50000`;
 `llm_concurrency` default changes 5 → 3.
 
 GLM-5.3 cannot have thinking switched off — the chat template always opens a

@@ -200,7 +200,7 @@ Ne verirsen onu geri alıyorsun — `ScoreBatch` verdiysen `ScoreBatch`.
 ### `tools/doctor.py` — beş kontrol, 4 saniye
 
 ```
-ok    settings      model=GLM-5.3-Flash effort=low max_tokens=32000 concurrency=3
+ok    settings      model=GLM-5.3-Flash effort=low max_tokens=50000 concurrency=3
 ok    prompts       criteria@1, score@1, doctor@1
 ok    database      schema applies, WAL ok
 ok    endpoint      GLM-5.3-Flash answered in 1.0s, schema honoured
