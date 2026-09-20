@@ -412,15 +412,17 @@ where the manifest is.
       sqlite finding, each with the test that pins it.
 - [ ] PR, review, merge.
 
-## Open points to settle before Task 5
+## Open points, settled 2026-09-20
 
-- Does `run --dry` also run the pool stages (`load_pool` hits LINDAS), or
-  start from an already-populated database? Proposed: start from the database
-  and let `--dry` skip `load_pool` and `score_pool`, so the command is
-  offline and fast.
-- Where the stub child graph lives: `nodes/child.py` now, or inline in
-  `graph.py` until M4 gives it nodes. Proposed: `graph.py`, so M4 moves it
-  once rather than twice.
+- **`run --dry` starts from a populated database.** It skips `load_pool` and
+  `score_pool` and begins at `probe_search` → `draw_batch`. The command is
+  then fully offline and runs in seconds, which is what makes it testable and
+  demonstrable before M4 exists. The cost is that it is meaningless on an
+  empty database, so it must fail with a message naming `pool`, `screen` and
+  `score` as the commands to run first — not with a zero-row report that
+  looks like a working run.
+- **The stub child graph lives in `graph.py`** until M4 gives it nodes, so it
+  is moved once rather than twice.
 
 ## Known rough edge
 
