@@ -119,23 +119,85 @@ Ordinary engineering choices, recorded so they can be argued with.
 - **The SearXNG port is published on `127.0.0.1:8080`** (contradiction E), and
   `SEARXNG_SECRET` is added to `.env.example`, which the compose snippets
   require and the example file omits.
+## The four open points, settled 2026-09-20
 
-## Still open, to settle before Task 5
+Koray asked for these to be decided rather than asked, the way the routine
+decisions above were. Each carries its reasoning so it can be argued with.
 
-- The **domain-guess rule**. Named in three documents (`design.md:132`,
-  `graph.spec.yaml:157`, `ux/review-onepager.html:204`) and defined in none:
-  how a domain is built from the name, which TLDs are tried, and whether it is
-  probed by DNS or by fetch.
-- The **200-URL pruning rule** and the no-sitemap path. The only guidance is
-  "drop product/blog paths first" (`research/website-reading.md:167`), with no
-  path patterns, and nothing about link-harvesting depth.
-- The operational definition of "**all baseline engines unresponsive**".
-  SearXNG returns `unresponsive_engines`; the audit says the fallback fires
-  when it "covers the baseline engines", but the baseline list is not in
-  settings or `.env.example`.
-- `pick_site.md`'s **exact input variables**: how many candidates, home text
-  and Impressum text or only one, truncated to how many characters, and
-  whether confidence is a number or an enum.
+### 1. The domain guess
+
+Built from the name, not from search: strip the legal form (`AG`, `GmbH`,
+`SA`, `Sàrl`, `SAGL`) and `in Liquidation`, lowercase, transliterate umlauts
+the German way (`ä→ae`, `ö→oe`, `ü→ue`, `ß→ss` — `müller.ch` and
+`mueller.ch` are different hosts and the second is the common registration),
+drop everything that is not a letter or digit.
+
+Four candidates: the tokens joined and the tokens hyphenated, each with `.ch`
+and `.com`. `.swiss` is left out — it is restricted and rare. Each is
+resolved by **DNS only**; a name that does not resolve costs nothing and is
+dropped. Those that resolve join the candidate list.
+
+The point that keeps this honest: **a guessed domain is a candidate, not an
+answer.** It goes through the same three tiers as a search result, so a
+parked domain or a namesake in another canton fails verification like
+anything else. No special trust, therefore no special rule.
+
+### 2. Pruning to 200 URLs, and the no-sitemap path
+
+With a sitemap: follow `<sitemapindex>`, collect every `<loc>`. If more than
+200 remain, prune in this order, stopping as soon as 200 is reached.
+
+1. Drop bulk paths — `/produkt`, `/product`, `/shop`, `/blog`, `/news`,
+   `/artikel`, `/tag/`, `/category/`, `/kategorie`, and any segment that
+   looks like a year (`/20\d\d/`). These are the pages a sitemap has
+   thousands of and a company profile needs none of.
+2. Sort by path depth, then by length. What M5 needs — Impressum, Kontakt,
+   Über uns, a products overview — sits near the root. Deep paths are
+   individual items.
+3. Take the first 200.
+
+Without a sitemap: harvest the links of the home page, same host only, one
+level deep. That reaches Impressum, Kontakt and Über uns, which is what the
+next milestone reads. Crawling deeper is M5's problem if M5 finds it needs
+to, and guessing now would be building for an unmeasured need.
+
+Normalisation before the cap: lowercase scheme and host, drop the fragment,
+drop a trailing slash, then dedupe.
+
+### 3. "All baseline engines unresponsive"
+
+`baseline_engines` joins `settings.py`, defaulting to
+`duckduckgo,mojeek,brave` (`research/search-layer.md:155`). SearXNG reports
+`unresponsive_engines` in every response.
+
+`SearchError` is raised when the request itself fails or times out, **or**
+when the result list is empty *and* every baseline engine is in
+`unresponsive_engines`.
+
+Both halves of the second condition matter. One or two suspended engines is
+the normal weather — the research recorded suspension timers from three
+minutes to fifteen days — so a suspension alone must not raise. And if
+results came back, they came from somewhere; an unresponsive baseline is then
+irrelevant. The error is for the one case where the empty list is not an
+answer but an absence of one, because reporting "no site" then would be a
+lie about the company.
+
+### 4. `pick_site.md` inputs
+
+Receives the register's facts to match against — name, seat, street, postal
+code, UID — and up to **three** candidates, each with its home page text and
+its Impressum text, **3,000 characters per page**.
+
+3,000 rather than the 8,000 of `max_chars_per_page`: an Impressum is short
+and the identifying lines sit at the top, and the endpoint's million-token
+window is not the constraint — attention is. Three candidates × two pages is
+then about 6,000 tokens.
+
+It returns `chosen_url` (or null for "none of these"), `quote`, and `reason`.
+**It is not asked for a confidence number.** `SiteChoice` has a confidence
+field (`design.md:110`), and it is filled in code from the tier that verified
+the site. A model's self-reported confidence is poorly calibrated, and we
+already hold a better signal: whether a check-digit-verified UID matched.
 
 ## Global constraints
 
@@ -156,40 +218,54 @@ src/company_reach/
   data/blocklist.txt             # new: 44 domains
   errors.py                      # FetchError docstring: M4, not M5
   settings.py                    # + search_concurrency, per_host_delay_s,
-                                 #   baseline_engines, max_page_urls
-  tools/search.py                # new: SearchProvider, SearXNG, Serper
-  tools/fetcher.py               # new: get(url) -> Page
-  tools/textify.py               # new: trafilatura + html2txt fallback
+                                 #   baseline_engines, max_page_urls,
+                                 #   pick_site_chars
   tools/uid.py                   # new: UID regex + check digit
+  tools/blocklist.py             # new: loader + subdomain matching
+  tools/textify.py               # new: trafilatura + html2txt fallback
+  tools/fetcher.py               # new: get(url) -> Page
+  tools/search.py                # new: SearchProvider, SearXNG, Serper
   nodes/probe_search.py          # the real body
   nodes/find_site.py             # new
 prompts/pick_site.md             # new
 tests/
   fixtures/sites/                # new: fictional companies, saved HTML
-  test_uid.py  test_search.py  test_fetcher.py  test_textify.py
-  test_find_site.py  test_blocklist.py
+  test_uid.py  test_blocklist.py  test_textify.py
+  test_fetcher.py  test_search.py  test_find_site.py
 ```
+
+Five tasks, merged from eight at Koray's request on 2026-09-20. The merges
+follow the seams that were already there: the three deterministic helpers
+share one test cycle, `probe_search` is three lines on top of `search`, and
+page listing was always part of `find_site`'s contract in the design. The
+fetcher stays alone because the audit's two security items live in it, and a
+break there should be obvious about where it broke.
 
 ---
 
-### Task 1: UID matching and the blocklist
+### Task 1: the deterministic helpers
 
-**Files:** `tools/uid.py`, `data/blocklist.txt`, a loader.
-**Test:** `tests/test_uid.py`, `tests/test_blocklist.py`
+**Files:** `tools/uid.py`, `tools/blocklist.py`, `tools/textify.py`,
+`data/blocklist.txt`.
+**Test:** `tests/test_uid.py`, `tests/test_blocklist.py`,
+`tests/test_textify.py`
 
-The two purely deterministic pieces, first because everything else leans on
-them and neither needs the network.
+Three pure pieces, no network anywhere, and everything later leans on them.
 
 The check digit is what makes tier 1 decisive: weights 5,4,3,2,7,6,5,4, sum
 mod 11, digit = 11 − remainder, 11 counts as 0, 10 is invalid
 (`research/website-reading.md:139-153`).
 
-- [ ] **Step 1** — failing tests: a valid UID in all spellings
-      (`CHE-123.456.789`, `CHE123456789`, `CHE 123 456 789`, with a trailing
+- [ ] **Step 1** — failing tests. *UID:* every spelling
+      (`CHE-123.456.789`, `CHE123456789`, `CHE 123 456 789`, trailing
       `MWST`/`TVA`/`IVA`/`VAT`/`HR`) normalises to `CHE123456789`; an invalid
       check digit is rejected; a *different* valid UID is reported as such,
-      not as "no match"; `linkedin.com` and `jobs.linkedin.com` are both
-      blocked; `mylinkedin.com` is not; the blocklist file carries 44 entries.
+      not as "no match". *Blocklist:* `linkedin.com` and `jobs.linkedin.com`
+      are both blocked, `mylinkedin.com` is not; the file carries 44 entries.
+      *Textify:* a normal page extracts its text; a page whose `favor_recall`
+      extraction is under 80 words falls back to `html2txt` and keeps the
+      address block; whitespace, NBSP and `ß` normalise so that a later
+      substring match cannot fail on typography alone.
 - [ ] **Step 2** — run, see them fail.
 - [ ] **Step 3** — write them.
 - [ ] **Step 4** — green.
@@ -198,10 +274,11 @@ mod 11, digit = 11 − remainder, 11 counts as 0, 10 is invalid
 
 ### Task 2: the fetcher
 
-**Files:** `tools/fetcher.py`, `errors.py` (docstring).
+**Files:** `tools/fetcher.py`, `errors.py` (docstring), `settings.py`.
 **Test:** `tests/test_fetcher.py`
 
-The security surface of the milestone. Audit A5's two items live here.
+The security surface of the milestone. Audit A5's two items live here, and
+they are the reason this task was not merged into another.
 
 - [ ] **Step 1** — failing tests, all offline: `javascript:` and `data:` URLs
       are refused before any request; `http://127.0.0.1/`, `http://10.0.0.1/`,
@@ -209,90 +286,74 @@ The security surface of the milestone. Audit A5's two items live here.
       address are refused after DNS; a response over 2 MB is dropped; a
       cached URL is not fetched twice; `--refetch` bypasses the cache; a
       robots.txt disallow skips the URL without raising; `Crawl-delay` is
-      honoured; a single failed page returns a `Page` with an error and does
-      **not** raise; a home page failing twice raises `FetchError`.
+      honoured; a single failed page returns a `Page` carrying the error and
+      does **not** raise; a home page failing twice raises `FetchError`.
 - [ ] **Step 2** — run, see them fail.
 - [ ] **Step 3** — write it.
 - [ ] **Step 4** — green.
 
 ---
 
-### Task 3: search
+### Task 3: search and `probe_search`
 
-**Files:** `tools/search.py`, `settings.py`.
-**Test:** `tests/test_search.py`
+**Files:** `tools/search.py`, `nodes/probe_search.py`, `settings.py`.
+**Test:** `tests/test_search.py`, extend `tests/test_graph.py`
 
 - [ ] **Step 1** — failing tests: a SearXNG JSON response maps to results; an
       empty `results` list returns `[]` and does **not** raise; SearXNG
-      unreachable raises `SearchError`; `unresponsive_engines` covering the
-      baseline raises `SearchError` while one unresponsive engine does not;
-      Serper is called only after a `SearchError` and only when a key is set;
-      Serper failing too raises `SearchError`; the semaphore serialises to two
-      in flight with a gap.
-- [ ] **Step 2** — run, see them fail.
-- [ ] **Step 3** — write it.
-- [ ] **Step 4** — green.
-
----
-
-### Task 4: `textify` and the real `probe_search`
-
-**Files:** `tools/textify.py`, `nodes/probe_search.py`.
-**Test:** `tests/test_textify.py`, extend `tests/test_graph.py`
-
-- [ ] **Step 1** — failing tests: a normal page extracts its text; a page
-      whose `favor_recall` extraction is under 80 words falls back to
-      `html2txt` and keeps the address block; whitespace, NBSP and `ß` are
-      normalised for later substring matching; `probe_search` raises
-      `SearchError` when the known query returns nothing, and returns no
-      updates when it returns something.
+      unreachable raises `SearchError`; an empty result **with** every
+      baseline engine in `unresponsive_engines` raises, while one
+      unresponsive engine does not, and a non-empty result never raises
+      whatever `unresponsive_engines` says; Serper is called only after a
+      `SearchError` and only when a key is set; Serper failing too raises
+      `SearchError`; the semaphore holds at two in flight with a gap;
+      `probe_search` raises when its known query returns nothing and writes
+      no updates when it returns something.
 - [ ] **Step 2** — run, see them fail.
 - [ ] **Step 3** — write them.
 - [ ] **Step 4** — green.
 
 ---
 
-### Task 5: `find_site`
+### Task 4: `find_site`
 
-**Files:** `nodes/find_site.py`, `prompts/pick_site.md`.
+**Files:** `nodes/find_site.py`, `prompts/pick_site.md`, `settings.py`.
 **Test:** `tests/test_find_site.py`
 
-The node itself, once its parts are proven. **The four open points above are
-settled before this task starts.**
+The node itself, once its parts are proven — queries, the domain guess,
+candidate filtering, the three tiers, and the page listing that the design
+puts in the same contract.
 
-- [ ] **Step 1** — failing tests with fictional companies: queries are built
-      in order with the legal form stripped; blocklisted results never reach
-      the model; a UID match records tier `uid`; an address match without a
-      UID records tier `address`; neither, plus a model choice whose quote is
+**Koray reads the plan and the first three tasks before this one starts.**
+The three tiers are the milestone's judgement, and it is the right place to
+stop.
+
+- [ ] **Step 1** — failing tests, fictional companies throughout.
+      *Candidates:* queries are built in order with the legal form stripped;
+      the domain guess produces at most four names, transliterates umlauts,
+      and only DNS-resolving ones survive; blocklisted results never reach
+      the model; candidates are deduped by registered domain.
+      *Tiers:* a UID match records tier `uid`; an address match without a UID
+      records tier `address`; neither, plus a model choice whose quote is
       found verbatim, records tier `model`; a quote **not** found in the page
       is rejected; a UID match plus a model "none of these" accepts the site
       and records the disagreement; an address match plus a model "none of
-      these" rejects the site; no candidate at all returns
-      `recommendation="skip"` with a reason naming the queries tried; search
-      failing raises `SearchError` rather than reporting "no site".
+      these" rejects the site.
+      *Outcomes:* no candidate at all returns `recommendation="skip"` with a
+      reason naming the queries tried; search failing raises `SearchError`
+      rather than reporting "no site".
+      *Pages:* a sitemap index is followed; 4,000 URLs prune to 200 with bulk
+      paths dropped first and shallow paths kept; no sitemap falls back to
+      same-host home-page links; `page_urls` is normalised and deduped.
 - [ ] **Step 2** — run, see them fail.
 - [ ] **Step 3** — write the node and the prompt.
 - [ ] **Step 4** — green.
 
 ---
 
-### Task 6: page listing
+### Task 5: wiring, compose, and the finish
 
-**Files:** `nodes/find_site.py`.
-**Test:** `tests/test_find_site.py`
-
-- [ ] **Step 1** — failing tests: a sitemap index is followed; 4,000 URLs are
-      pruned to 200; no sitemap falls back to same-host links; `page_urls` is
-      deduped and normalised.
-- [ ] **Step 2** — run, see them fail.
-- [ ] **Step 3** — write it.
-- [ ] **Step 4** — green.
-
----
-
-### Task 7: wiring, compose, CLI
-
-**Files:** `graph.py` (child graph), `compose.yaml`, `searxng/settings.yml`,
+**Files:** `graph.py`, `compose.yaml`, `searxng/settings.yml`,
 `.env.example`, `cli.py`.
 **Test:** `tests/test_graph.py`, `tests/test_cli.py`
 
@@ -300,17 +361,14 @@ The stub child is replaced by a real one: `load_company → find_site`, with
 `has_site` routing to `__end__` for now (M5 adds `pick_pages`).
 
 - [ ] **Step 1** — failing tests: the child graph runs `find_site` and
-      returns a recommendation or a site; `enrich --uid … --until site` prints
-      the site, tier and evidence; `run` without `--dry` no longer refuses.
+      returns a recommendation or a site; `enrich --uid … --until site`
+      prints the site, tier and evidence; `run` without `--dry` no longer
+      refuses.
 - [ ] **Step 2** — run, see them fail.
-- [ ] **Step 3** — write them; `docker compose up searxng` and one real query
-      by hand.
+- [ ] **Step 3** — write them; then `docker compose up searxng` and one real
+      query by hand, because every other test in this milestone is mocked and
+      something has to touch the real thing once.
 - [ ] **Step 4** — green.
-
----
-
-### Task 8: explanation, audit, PR
-
 - [ ] `docs/milestones/m4-finding-the-site.md`, Turkish, local only.
 - [ ] Close audit A5's URL-scheme and SSRF items with their tests.
 - [ ] **State plainly in the PR that the ≥ 13/15 site-choice criterion is not
@@ -324,6 +382,9 @@ The stub child is replaced by a real one: `load_company → find_site`, with
   jobs, and it is the design's shape, not a slip. If M5 finds it hard to
   follow, the page listing is the natural piece to split off.
 - The two chained pull requests mean any change to M3 forces a rebase here.
+- Merging eight tasks into five means a failing test localises less precisely.
+  The fetcher was kept separate for exactly that reason; if Task 4 becomes
+  hard to debug, the page listing splits back out.
 
 ## Self-review
 
