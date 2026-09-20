@@ -1,0 +1,12 @@
+{"head": {"vars": ["uid", "name", "lf", "desc", "street", "plz", "city"]},
+ "results": {"bindings": [
+  {"uid": {"type": "literal", "value": "CHE000000001"}, "name": {"type": "literal", "value": "Muster Metallbau AG"},
+   "lf": {"type": "literal", "value": "0106"},
+   "desc": {"type": "literal", "value": "Betrieb eines Metallbauunternehmens. Die Gesellschaft kann Zweigniederlassungen errichten."},
+   "street": {"type": "literal", "value": "Musterstrasse 12"}, "plz": {"type": "literal", "value": "9000"},
+   "city": {"type": "literal", "value": "St. Gallen"}},
+  {"uid": {"type": "literal", "value": "CHE000000002"}, "name": {"type": "literal", "value": "Beispiel Immobilien GmbH"},
+   "lf": {"type": "literal", "value": "0107"},
+   "street": {"type": "literal", "value": "Beispielweg 4"}, "plz": {"type": "literal", "value": "9000"},
+   "city": {"type": "literal", "value": "St. Gallen"}}
+ ]}}
