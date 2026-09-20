@@ -1,6 +1,7 @@
 """Command line. typer turns each function's signature into a command with
 --help; the wiring to the `company-reach` executable is [project.scripts]."""
 
+import asyncio
 import uuid
 from typing import Annotated
 
@@ -10,12 +11,24 @@ from company_reach.nodes.load_pool import load_pool
 from company_reach.nodes.screen_pool import screen_pool
 from company_reach.settings import get_settings
 from company_reach.tools.db import init_db
+from company_reach.tools.doctor import run_checks
 
 app = typer.Typer(help="Find Swiss companies, find the person, draft the mail.")
 
 
 def _run_id(explicit: str | None) -> str:
     return explicit or f"r{uuid.uuid4().hex[:8]}"
+
+
+@app.command()
+def doctor() -> None:
+    """Check settings, prompts, database and model endpoint before a run."""
+    checks = asyncio.run(run_checks(get_settings()))
+    for check in checks:
+        mark = "ok  " if check.ok else "FAIL"
+        typer.echo(f"{mark}  {check.name:<13} {check.detail}")
+    if not all(check.ok for check in checks):
+        raise typer.Exit(1)
 
 
 @app.command()
