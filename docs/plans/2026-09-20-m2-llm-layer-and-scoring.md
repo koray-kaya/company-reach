@@ -34,8 +34,19 @@ Taken 2026-09-20 against the school hub (`api.llmhub.infs.ai`, vLLM,
 | Same, thinking off (`reasoning_effort: low`) | 37.6 s, 1,465 tokens |
 | Thinking off vs on, same 50 companies | 38/50 identical; the 12 that differ are **all** scored higher with thinking off — it is less able to separate the bottom of the pool |
 | 10 concurrent requests | 6/10 succeeded, 4 × HTTP 500 after 600 s; per-request latency 330–590 s |
-| 3 concurrent requests | first wave 213 / 233 / 306 s, no failures |
+| 3 concurrent requests | first wave 213 / 233 / 306 s clean; **second wave returned truncated JSON** — `max_tokens=8000` was not enough under load |
 | Throughput, any concurrency | ~0.5 companies/s — the server is compute-bound, concurrency buys ~20% |
+
+**Truncation is the real hazard, not concurrency.** A strict `json_schema`
+constrains which tokens may be generated; it does not stop generation being
+cut off at the cap, and a cut-off answer is invalid JSON. The measured usage
+for 50 companies at `max` effort was 4,741–4,951 tokens, but a loaded server
+exceeded 8,000. `llm_max_tokens` is therefore **32,000** — six to seven times
+the measured need, and far below the model's 128K output limit. The cap stays
+finite so that a runaway generation fails in minutes rather than occupying a
+shared university GPU for half an hour, and the `finish_reason` check stays
+regardless, because raising a cap lowers the chance of truncation without
+removing it.
 
 **Decisions that follow.** Thinking stays **on** for scoring (a one-time cost,
 sharper discrimination). `LLM_CONCURRENCY=3`. `max_tokens` must be generous —
@@ -193,7 +204,7 @@ async def ask(
     output_model: type[BaseModelT],
     *,
     settings: Settings,
-    max_tokens: int = 8000,
+    max_tokens: int | None = None,    # None → settings.llm_max_tokens
     thinking: bool | None = None,     # None → settings.llm_thinking
     **variables,
 ) -> tuple[BaseModelT, Provenance]
@@ -211,9 +222,14 @@ Behaviour:
 - A module-level `asyncio.Semaphore(settings.llm_concurrency)` guards every
   call.
 
-**New settings:** `llm_thinking: bool = True`, `llm_max_tokens: int = 8000`;
-`llm_concurrency` default changes 5 → 3. When `thinking` is false the request
-carries `reasoning_effort="low"` (measured to work on this endpoint).
+**New settings:** `llm_reasoning_effort: Literal["low","high","max"]`,
+`llm_max_tokens: int = 32000`; `llm_concurrency` default changes 5 → 3.
+
+GLM-5.3 cannot have thinking switched off — the chat template always opens a
+`<think>` block — but `reasoning_effort` selects one of three levels and the
+endpoint **defaults to `max`**. Every measurement above was therefore taken at
+the most expensive setting. The chosen default is recorded in Task 6 after
+the three levels are compared on top-10 overlap.
 
 - [ ] **Step 1** — failing tests with `respx`: happy path returns model +
       provenance; `finish_reason="length"` raises; malformed JSON raises after
