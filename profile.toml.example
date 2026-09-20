@@ -1,12 +1,23 @@
 # Copy to profile.toml (gitignored) and edit.
 #
 # goal     — one sentence. What kind of company do you want to reach?
-#            Name the sector or the activity, not a size: the commercial
-#            register records neither headcount nor revenue, so a goal that
-#            asks for "10-49 employees" only invites the model to guess.
-#            Size is established later, from the company's own website.
+#
+#            Name the activity, not a size: the register records neither
+#            headcount nor revenue, so asking for "10-49 employees" only
+#            invites the model to guess. Size is established later, from the
+#            company's own website.
+#
+#            Name what you actually mean. The example below says "makes a
+#            product and sells it on" rather than "manufacturing", because
+#            hand-labelling thirty companies showed that a repair workshop
+#            and a roofer are manufacturing by any dictionary but were not
+#            the intended target: they have no suppliers to find and no
+#            customers to look for. Writing that distinction into the goal
+#            moved top-5 agreement with the labels from 1/5 to 3/5 and
+#            removed a +1.6-point generosity bias.
+#
 # about_me — who is writing. Used in M6 to draft the invitation.
 
-goal = "Swiss companies in manufacturing or technical services — firms that make, assemble, install, repair, maintain or engineer something."
+goal = "Swiss companies that make or process a product and sell it on — firms that have to find suppliers to buy from and customers to sell to. Not local trades whose customers come to them: repair workshops, on-site installers, building crafts, architecture and planning offices. Not pure services."
 
 about_me = "A master's student at a Swiss university, writing a thesis on how small firms find customers, suppliers and competitors. I am asking for 15 minutes to fill in a short online form — no phone call, no meeting, nothing to sell."
