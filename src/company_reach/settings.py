@@ -45,6 +45,9 @@ class Settings(BaseSettings):
     max_pages_per_site: int = 10
     max_chars_per_page: int = 8000
     score_batch_size: int = 50
+    # Scoring is incremental: one pass takes this many companies and stops,
+    # so work can start long before the whole pool is scored.
+    score_limit: int = 500
     max_batches_per_run: int = 3
     langsmith_tracing: bool = False
 
