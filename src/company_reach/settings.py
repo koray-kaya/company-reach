@@ -45,6 +45,12 @@ class Settings(BaseSettings):
 
     max_pages_per_site: int = 10
     max_chars_per_page: int = 8000
+    # A Wix home page is 0.8-1.5 MB of HTML; two megabytes is generous and
+    # still bounds what one bad URL can cost.
+    max_page_bytes: int = 2_000_000
+    # Politeness between two requests to the same host. A robots.txt
+    # Crawl-delay replaces this rather than adding to it.
+    per_host_delay_s: float = 1.0
     score_batch_size: int = 50
     # Scoring is incremental: one pass takes this many companies and stops,
     # so work can start long before the whole pool is scored.
