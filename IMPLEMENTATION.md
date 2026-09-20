@@ -118,35 +118,70 @@ company-reach/
 
 ## 5. What "explain" looks like
 
-`docs/milestones/m<N>-<slug>.md`, one to two pages:
+`docs/milestones/m<N>-<slug>.md`, written in Turkish (§2), is the one
+deliverable of this project that is not code. Its reader is someone whose
+foundations are thin, who is building this with an AI assistant, and whose
+stated goal is **not** to end up with thousands of lines he cannot read. Every
+choice in the template below serves that.
+
+### Six rules the page obeys
+
+1. **Map before detail.** A detail is only retained if there is a structure to
+   hang it on. Open with the shape of the system and where this milestone sits
+   in it; go into files afterwards, never before.
+2. **Follow the data, not the files.** Understanding a system means being able
+   to trace one piece of data from entry to exit. One worked journey —
+   "the `3203` you typed became these rows" — teaches more than any file list.
+3. **Every library gets "why this, why not the other".** "We used pydantic"
+   does not transfer to the next project; "pydantic-settings over os.environ,
+   because it fails at startup instead of halfway through a run" does.
+4. **Every new concept arrives in three parts:** the problem it solves, where
+   it sits in *our* code, and **what it is called in general** — so it can be
+   searched for later. Never use a term the page has not introduced. "All or
+   nothing" is not enough; say "this is called a transaction".
+5. **Say what does not need to be understood yet.** Naming what to skip is
+   cognitive-load management, and it is what keeps the reader from drowning.
+6. **End with questions, not a summary.** Recall builds memory; re-reading
+   does not. These questions feed the cards in
+   `alignor-thesis/learning/cards/`.
+
+Conventions of the language (a leading underscore means internal, `*` makes
+parameters keyword-only, and so on) are named inline, in one sentence, the
+first time they appear.
+
+### The template
 
 ```
-# M1 — Skeleton and pool
+# M<N> — <title>
 
-## What exists now
-Three commands work: … (with the exact commands)
+## Tek cümlede            what became possible that was not possible before
 
-## Libraries used and why
-- pydantic-settings: reads .env into a typed object; we chose it over os.environ because …
-- …
+## Genel resim            the 8-milestone arc, where we are, what is still
+                          a blank; a diagram of the parts that exist now
 
-## Worth understanding (3–5 items)
-1. `with conn:` in sqlite3 commits or rolls back but does not close — see tools/db.py:18
-2. …
+## Verinin yolculuğu      ONE input traced through every file it touches,
+                          in order, with the shape it has at each hop
 
-## Where to look
-tools/lindas.py (60 lines) → nodes/load_pool.py (25 lines) → cli.py `pool`
+## Dosya dosya            for each file: its one job · which library · why
+                          that library and not the obvious alternative
 
-## Check this
-- run `company-reach pool --municipality 3203`; expect ~5,400 rows
-- open data/company_reach.db with `sqlite3` and look at one company row
-- read tests/test_lindas.py: how the SPARQL call is mocked
+## Yeni kavramlar         per concept: the problem → our code (file:line) →
+                          its general name, for searching later
 
-## Open threads
-…
+## Kendin dene            exact commands with their expected output, and one
+                          thing to break on purpose to see what happens
+
+## Kendini sına           5–8 questions whose answers are in this page
+
+## Şimdilik gerek yok     what was deliberately skipped, and which milestone
+                          it belongs to
+
+## Açık uçlar             decisions deferred, measurements that disagreed
+                          with the research, known rough edges
 ```
 
-Each item names a file and line. No paragraph longer than five lines.
+No paragraph longer than five lines. Every claim about behaviour is either
+anchored to a `file:line` or to a command the reader can run.
 
 ## 6. Tracking
 
