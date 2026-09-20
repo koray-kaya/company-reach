@@ -3,21 +3,26 @@
 Three ways to believe a site is the right one, strongest first:
 
 * **uid** — the register's UID is on the page, check digit and all. That
-  cannot be a coincidence, so it outranks everything else, including the
-  model's reading of the whole page.
+  cannot be a coincidence, so it is the strongest label a site can carry.
 * **address** — the register's street and postal code are on the page.
-  Corroboration, not proof: hundreds of firms share a town. So when the
-  model disagrees with an address match, the model wins.
+  Corroboration, not proof: hundreds of firms share a town.
 * **model** — the model read the candidates and chose, returning a quote
   that this code then looks for in the page it was taken from. The quote is
   the point: it proves grounding, not identity, which is exactly why it is
   the weakest tier rather than the strongest.
 
-The model is asked in every case, even when a UID already matched. It costs
-a call per company, and it buys one thing: the golden evaluation exercises
-the same path production does. A ladder that stopped at tier 1 would call the
-model twice in a real run and fifteen times in the evaluation, and the
-evaluation would be measuring something we never ship.
+None of these outranks the model's own "none of these", and the first real
+run is why. A company directory publishes the UIDs of the firms it lists, so
+its page matched tier 1; the model saw a directory and rejected it; the
+rejection was overruled and a directory was recorded as the company's
+website, with the highest confidence label we have. A UID on a page proves
+the page is *about* the company. It never proved the page *belongs to* it —
+which is exactly the distinction tier 3 was already built around.
+
+So the model is the gate and the tiers are the label. It is asked for every
+company, which also keeps the golden evaluation honest: a ladder stopping at
+tier 1 would call the model twice in a real run and fifteen times in the
+evaluation, and the evaluation would be measuring something we never ship.
 
 Finally, the distinction the milestone turns on. No candidate found is a
 **finding** — five of twenty companies in the earlier prototype had no
@@ -353,17 +358,20 @@ def _decide(
     answer: SiteAnswer,
     candidates: list[str],
 ) -> dict:
-    # Tier 1 first, and it is allowed to stand against the model.
-    for url, text in texts.items():
-        tier, evidence = verify(record, text)
-        if tier == "uid":
-            note = "" if answer.chosen_url == url else "the model disagreed"
-            return {
-                "site": SiteChoice(url, "uid", evidence, url, note),
-                "recommendation": None,
-                "reason": None,
-            }
+    """The model is the gate; the tiers are the label.
 
+    An earlier version let a UID match stand against a "none of these", on
+    the reasoning that a check-digit-verified UID cannot be a coincidence.
+    It cannot — but that proves the page is *about* the company, not that it
+    *belongs to* the company. The first real run found the difference: a
+    company directory publishes UIDs, so a directory page matched tier 1,
+    the model correctly rejected it, and the rejection was overruled. It is
+    the same grounding-is-not-identity trap tier 3 was already built around.
+
+    So a rejection stands. A UID still outranks everything as *evidence* —
+    it decides which label the site carries — it just no longer decides
+    whether there is a site at all.
+    """
     if answer.chosen_url is None or answer.chosen_url not in texts:
         return _no_site(record, candidates)
 
@@ -373,14 +381,19 @@ def _decide(
         return _no_site(record, candidates)
 
     tier, evidence = verify(record, texts[chosen])
-    if tier == "address":
-        return {
-            "site": SiteChoice(chosen, "address", evidence, chosen),
-            "recommendation": None,
-            "reason": None,
-        }
+    if tier is None:
+        tier, evidence = "model", quote
+
+    # Worth recording: the register's UID sat on a page the model passed over.
+    elsewhere = [
+        url
+        for url, text in texts.items()
+        if url != chosen and verify(record, text)[0] == "uid"
+    ]
+    note = f"the register UID is also on {elsewhere[0]}" if elsewhere else ""
+
     return {
-        "site": SiteChoice(chosen, "model", quote, chosen),
+        "site": SiteChoice(chosen, tier, evidence, chosen, note),
         "recommendation": None,
         "reason": None,
     }
