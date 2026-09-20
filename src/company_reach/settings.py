@@ -30,8 +30,9 @@ class Settings(BaseSettings):
     # per call.
     llm_reasoning_effort: Literal["low", "high", "max"] = "low"
     # Measured need for 50 companies is ~1.3k-5k tokens; 8k truncated under
-    # load. Finite so a runaway generation fails in minutes, not an hour.
-    llm_max_tokens: int = 32000
+    # load. Finite so a runaway generation fails in minutes, not an hour:
+    # at the measured ~38 tokens/s this cap is reached in about 22 minutes.
+    llm_max_tokens: int = 50000
     # A scoring call measured 41-130 s; httpx defaults to 5 s.
     llm_timeout_seconds: float = 600.0
     # Ten concurrent requests timed out four of ten on the shared endpoint
