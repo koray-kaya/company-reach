@@ -23,8 +23,8 @@ and the database before a run. No LangGraph yet — that is M3.
 
 ## Measurements this plan is built on
 
-Taken 2026-09-20 against the school hub (`api.llmhub.infs.ai`, vLLM,
-`GLM-5.3-Flash`), municipality 3203:
+Taken 2026-09-20 against a university-hosted endpoint (vLLM serving
+`GLM-5.3-Flash`, shared with other users), municipality 3203:
 
 | Question | Answer |
 |---|---|
