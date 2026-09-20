@@ -41,9 +41,9 @@ Decided (2026-09-19), details in the design doc:
   write, not to whether we depend on the standard tool.
 - Prompts live in `prompts/`, versioned, easy to read and edit.
 - All files in English, with one exception: `docs/milestones/` is written in
-  Turkish. Those pages explain a finished milestone to the repository's owner
-  and have no other reader; library names and settled technical terms stay in
-  English inside them.
+  Turkish and kept out of git. Those pages explain a finished milestone to the
+  repository's owner, have no other reader, and quote the hand-labelled golden
+  set; library names and settled technical terms stay in English inside them.
 
 ## Hard rules
 - **This repository is public.** Company and person data only in `data/`
@@ -61,5 +61,5 @@ Decided (2026-09-19), details in the design doc:
 ## Map
 `IMPLEMENTATION.md` milestones and the explain loop · `docs/design/` design,
 spec, validation, audit, `ux/` · `docs/research/` · `docs/plans/` task plans
-per milestone · `docs/milestones/` explanations per milestone ·
-`LEARNINGS.md` prototype lessons · `docs/sketches/` · `data/` local only.
+per milestone · `LEARNINGS.md` prototype lessons · `docs/sketches/` ·
+`data/` and `docs/milestones/` local only.

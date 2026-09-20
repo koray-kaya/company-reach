@@ -18,5 +18,9 @@ __pycache__/
 .claude/
 CLAUDE.local.md
 
+# Milestone explanations — written for the repository's owner alone, and
+# they quote the hand-labelled golden set, which is real company data
+docs/milestones/
+
 # Personal: the research goal and who is writing
 profile.toml

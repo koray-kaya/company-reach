@@ -18,7 +18,9 @@ Every milestone runs the same four steps:
 3. **Explain.** Claude writes `docs/milestones/m<N>-<slug>.md` — short and
    concrete: what was built, which libraries and why, the three to five
    things worth understanding, where to look in the code, how to run it, and
-   what to check. Then walks Koray through it in chat, one topic at a time.
+   what to check. The page is gitignored: it is written for one reader and
+   quotes the hand-labelled golden set. Then walks Koray through it in chat,
+   one topic at a time.
 4. **Review.** Koray reads the code with the explanation beside it, runs the
    demo command, asks, changes what he wants changed. The PR merges on his
    approval.
@@ -41,8 +43,8 @@ pass. No milestone starts before the previous one is merged.
 - Company and person data only under `data/` (gitignored). Fixtures use
   fictional companies.
 - English in files, Turkish in chat — except `docs/milestones/`, which is
-  Turkish (its only reader is Koray); library names and settled technical
-  terms stay English there. Conventional commits, ≤ 60 chars.
+  Turkish and gitignored (its only reader is Koray); library names and settled
+  technical terms stay English there. Conventional commits, ≤ 60 chars.
 
 ## 3. Milestones
 
@@ -114,15 +116,15 @@ company-reach/
 │   ├── design/                # design doc, spec, validation, audit, ux/, diagrams/
 │   ├── research/              # five research notes
 │   ├── plans/                 # one task plan per milestone
-│   ├── milestones/            # one explanation per milestone, written for Koray
+│   ├── milestones/            # gitignored: one explanation per milestone, for Koray
 │   └── sketches/
 └── data/                      # gitignored: company_reach.db, cache/, runs/, golden/, v0/
 ```
 
 ## 5. What "explain" looks like
 
-`docs/milestones/m<N>-<slug>.md`, written in Turkish (§2), is the one
-deliverable of this project that is not code. Its reader is someone whose
+`docs/milestones/m<N>-<slug>.md`, written in Turkish (§2) and kept out of git,
+is the one deliverable of this project that is not code. Its reader is someone whose
 foundations are thin, who is building this with an AI assistant, and whose
 stated goal is **not** to end up with thousands of lines he cannot read. Every
 choice in the template below serves that.
