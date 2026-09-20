@@ -29,7 +29,11 @@ def test_fetch_pages_until_empty_and_handles_missing_purpose():
     )
     records = fetch_companies("3203", url=URL, page_size=2)
     assert route.call_count == 2
-    assert [r.uid for r in records] == ["CHE000000001", "CHE000000002"]
+    assert [r.uid for r in records] == [
+        "CHE000000001",
+        "CHE000000002",
+        "CHE000000003",
+    ]
     assert records[0].purpose_head == "Betrieb eines Metallbauunternehmens."
     assert records[1].purpose == "" and records[1].city == "St. Gallen"
 
