@@ -2,8 +2,8 @@
 
 Finds companies worth talking to in the Swiss commercial register, finds the
 right person in each, and drafts a short personal invitation for a human to
-send. First use: recruiting SME interview participants for a master's
-thesis. A general tool: the user's own goal and "about me" are input, nothing
+send. First use: recruiting SME survey respondents for a master's thesis —
+a 15-minute online form, decided 2026-09-20 (it was interviews before). A general tool: the user's own goal and "about me" are input, nothing
 in the code is specific to one user.
 
 ## Status

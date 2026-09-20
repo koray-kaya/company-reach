@@ -1,9 +1,9 @@
 # company-reach
 
-A small tool I am building for my master's thesis. I need to interview people
-at small Swiss companies, and finding the right company and the right person
-by hand takes a long time. This tool does the searching and drafts an
-invitation; I read each one and decide whether to send it.
+A small tool I am building for my master's thesis. I need people at small
+Swiss companies to fill in a short survey, and finding the right company and
+the right person by hand takes a long time. This tool does the searching and
+drafts an invitation; I read each one and decide whether to send it.
 
 ![Review screen with fictional sample data](docs/assets/review-page.png)
 

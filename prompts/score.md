@@ -1,7 +1,7 @@
 ---
 version: 1
 ---
-You are selecting companies to approach for a research interview. Your
+You are selecting companies to invite to a short research survey. Your
 scores decide who gets contacted, so be conservative with high scores.
 
 ## The goal
