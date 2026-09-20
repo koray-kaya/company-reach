@@ -10,7 +10,11 @@ through every superstep.
 import operator
 from typing import Annotated, TypedDict
 
+from langgraph.graph import END
+
 from company_reach.models import CompanyResult, SelectionCriteria
+from company_reach.settings import Settings
+from company_reach.tools.db import connect, count_sendable
 
 
 class ReachState(TypedDict):
@@ -40,3 +44,28 @@ class ReachState(TypedDict):
 
     results: Annotated[list[CompanyResult], operator.add]
     sendable_count: int
+
+
+def collect(state: ReachState, *, settings: Settings) -> dict:
+    """How many candidates this run has ready for review.
+
+    From the `results` table, never from `state["results"]`. This is the
+    audit's third P0 finding: on a rerun of the same run_id every child is
+    skipped, so state carries an empty list while the table is full. Counting
+    state would report zero, the router would ask for another batch, and the
+    resume rule would be broken by the very code meant to honour it.
+    """
+    with connect(settings.db_path) as conn:
+        return {"sendable_count": count_sendable(conn, state["run_id"])}
+
+
+def need_another_batch(state: ReachState, *, settings: Settings) -> str:
+    """The loop's only exit decision. Three ways out: a candidate was found,
+    the pool ran dry, or the batch budget is spent."""
+    if (
+        state["sendable_count"] == 0
+        and state["batches_drawn"] < settings.max_batches_per_run
+        and not state["pool_exhausted"]
+    ):
+        return "draw_batch"
+    return END
