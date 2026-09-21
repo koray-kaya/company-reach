@@ -2,6 +2,7 @@
 candidates said, and the page list of the site we expect.
 
     uv run python scripts/capture_golden_sites.py [--force]
+    uv run python scripts/capture_golden_sites.py --only CHE… CHE…
 
 It touches the network, so it runs by hand and never from the tests. The
 tests read what it wrote. Search results change from day to day, and a golden
@@ -95,15 +96,26 @@ def compare(row: dict) -> str:
     return f"{flag} {row['uid']}  {verdict}: {', '.join(found) or '-'}"
 
 
-async def main(force: bool) -> None:
+async def main(force: bool, only: list[str]) -> None:
+    """`--only` redoes some companies and keeps every other row as it is —
+    including any answer a human already corrected. Search engines throttle
+    now and then, and one throttled company should not cost a full rerun."""
     expected_file = OUT / "expected.jsonl"
-    if expected_file.exists() and not force:
+    if expected_file.exists() and not (force or only):
         raise SystemExit(f"{OUT} already captured; pass --force to redo it")
+
+    kept = {}
+    if only:
+        lines = expected_file.read_text(encoding="utf-8").splitlines()
+        kept = {row["uid"]: row for row in map(json.loads, lines)}
 
     settings = get_settings()
     fetcher = Fetcher(settings)
     rows = []
     for uid, expected in v0_answers().items():
+        if only and uid not in only:
+            rows.append(kept[uid])
+            continue
         print(f"capturing {uid} …", flush=True)
         rows.append(await capture(uid, expected, settings=settings, fetcher=fetcher))
 
@@ -115,4 +127,6 @@ async def main(force: bool) -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main(force="--force" in sys.argv))
+    args = sys.argv[1:]
+    only = args[args.index("--only") + 1 :] if "--only" in args else []
+    asyncio.run(main(force="--force" in args, only=only))
