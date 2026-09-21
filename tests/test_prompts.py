@@ -29,11 +29,14 @@ from pathlib import Path
 import pytest
 
 from company_reach.models import CompanyRecord, ScoreBatch
+from company_reach.nodes.find_site import _ask_model, _decide
 from company_reach.nodes.score_pool import _as_prompt_data, _check
 from company_reach.nodes.write_criteria import format_criteria, write_criteria
 from company_reach.profile import load_profile
 from company_reach.settings import Settings
 from company_reach.tools import llm
+from company_reach.tools.candidate_pages import CandidatePages
+from company_reach.tools.db import company_by_uid, connect
 
 GOLDEN = Path("data/golden/labels.jsonl")
 
@@ -104,3 +107,88 @@ async def test_scoring_matches_the_hand_labels():
     assert top5 >= BASELINE["top5"], f"top-5 overlap fell to {top5}"
     assert top10 >= BASELINE["top10"], f"top-10 overlap fell to {top10}"
     assert abs(bias) <= BASELINE["abs_bias"] + 0.5, f"bias drifted to {bias:+.2f}"
+
+
+# --- site choice --------------------------------------------------------------
+
+SITES = Path("data/golden/sites")
+
+
+def _domain(url: str) -> str:
+    from urllib.parse import urlsplit
+
+    return (urlsplit(url).hostname or "").lower().removeprefix("www.")
+
+
+async def _choose(row: dict, settings: Settings) -> tuple[str | None, str]:
+    """What production would decide for one company, from the saved pages.
+    Returns (chosen domain or None, the quote the decision rests on)."""
+    with connect(settings.db_path) as conn:
+        record = company_by_uid(conn, row["uid"])
+    saved = json.loads((SITES / row["uid"] / "candidates.json").read_text())
+    pages = {
+        item["url"]: CandidatePages(
+            home=item["home"],
+            impressum=item["impressum"],
+            about=item["about"],
+            schema=item["schema"],
+        )
+        for item in saved
+    }
+    if not pages:
+        return None, ""
+    texts = {url: read.full_text() for url, read in pages.items()}
+    answer = await _ask_model(record, pages, settings=settings)
+    decided = _decide(record, texts, answer, list(pages))
+    site = decided["site"]
+    return (_domain(site.url) if site else None), (answer.quote or "")
+
+
+async def test_site_choice_matches_the_golden_set():
+    """Twenty companies, labelled by hand on 2026-09-21: fourteen with a
+    site, six without. The six are the valuable half — the easy way for a
+    site finder to fail is to find a site for everyone.
+
+    Every candidate list already contains the right site where there is
+    one, so a miss here is the prompt's, not search's. Run twice, because
+    one run cannot tell a real difference from the model's own noise.
+    """
+    import asyncio
+
+    expected_file = SITES / "expected.jsonl"
+    if not expected_file.is_file():
+        pytest.skip(f"no golden sites at {SITES} (they live outside git)")
+
+    rows = [json.loads(line) for line in expected_file.read_text().splitlines()]
+    settings = Settings()
+    runs: list[tuple[int, int, list[str]]] = []
+    for _ in range(2):
+        chosen = await asyncio.gather(*[_choose(row, settings) for row in rows])
+        sites_right = no_site_right = 0
+        misses: list[str] = []
+        for row, (domain, _quote) in zip(rows, chosen, strict=True):
+            if row["expected"]:
+                ok = domain in row["expected"]
+                sites_right += ok
+            else:
+                ok = domain is None
+                no_site_right += ok
+            if not ok:
+                misses.append(
+                    f"{row['uid']} expected {row['expected'] or 'none'}, "
+                    f"got {domain or 'none'}"
+                )
+        runs.append((sites_right, no_site_right, misses))
+
+    with_site = sum(1 for row in rows if row["expected"])
+    without = len(rows) - with_site
+    print(f"\nsite choice on {len(rows)} golden companies, prompt pick_site")
+    for n, (sites_right, no_site_right, misses) in enumerate(runs, 1):
+        print(
+            f"  run {n}: sites right {sites_right}/{with_site}, "
+            f"no-site right {no_site_right}/{without}, "
+            f"total {sites_right + no_site_right}/{len(rows)}"
+        )
+        for miss in misses:
+            print(f"    miss  {miss}")
+    print("  design bar for comparison: 13/15 (87 %)")
