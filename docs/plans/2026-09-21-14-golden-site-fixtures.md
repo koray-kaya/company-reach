@@ -131,3 +131,38 @@ audit item for site choice is closed with it.
 - `data/evals/results.jsonl`. The scoring test does not write it either; it
   lands for both at once, or not at all.
 - A redacted, fictional subset for the public repository — M8.
+
+## What changed on the way (2026-09-21)
+
+The first capture could not become a golden set, and fixing why took most of
+the day. Recorded here because the branch does more than the tasks above.
+
+- **Search was feeding noise.** Through SearXNG, Bing answered every query
+  with unrelated pages, and because engines are interleaved it filled the
+  three candidate slots. Only 8 of 13 v0 sites were among the candidates.
+  Bing is off; domain guesses now come first; a deep result becomes its
+  site's root; the cap is ten, as in the earlier prototype, not three. On
+  the saved results that raised the count to 12 of 13 before any recapture.
+- **Pages are read the prototype's way.** Impressum from the home page's
+  own link, then the usual Impressum paths, then Kontakt or Datenschutz;
+  an About page and the schema.org block too; each part with its own length
+  in the prompt, so a long home page can no longer push the Impressum out.
+  Candidates are read at the same time. (`tools/candidate_pages.py`)
+- **textify returned JavaScript** for Wix pages and CSS for some
+  directories: its fallback kept `<script>` and `<style>`. Fixed.
+- **Quotes stitched with "..." were rejected** although every piece was on
+  the page. Three of the first run's four misses were this. Each piece is
+  now checked on its own.
+- **v0 was wrong four times.** Two sites it found belong to other firms
+  with a similar name in another town — exactly the trap the prompt warns
+  about — and two companies it called site-less have one. The
+  labels are Koray's, with a note per company, in `expected.jsonl`.
+
+Result: 14 companies with a site and 6 without; the right site is among the
+candidates for all 14. Site choice 20/20 and 19/20 (design bar 13/15). The
+one miss moves between runs: a site with no address and no UID on it.
+
+Found and not fixed here: when throttled engines return an empty list
+instead of an error, the empty result reads as "no website". Four companies
+came back empty during one capture. That is the finding-versus-error rule
+leaking, and it belongs in its own issue.
