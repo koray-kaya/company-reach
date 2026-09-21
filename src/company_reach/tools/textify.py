@@ -19,6 +19,9 @@ import trafilatura
 _THIN_WORDS = 80
 
 _SHARP_S = str.maketrans({"ß": "ss"})
+# Code, not text. The fallback below keeps page furniture on purpose, and
+# without this it kept a Wix page's JavaScript as if it were the page.
+_CODE = re.compile(r"<(script|style|noscript)\b.*?</\1\s*>", re.IGNORECASE | re.DOTALL)
 
 
 def textify(html: str) -> str:
@@ -30,7 +33,7 @@ def textify(html: str) -> str:
         # which is where an Impressum lives. Cleaning here would re-apply the
         # very judgement that lost the address block, and the fallback would
         # quietly return nothing at all.
-        fallback = trafilatura.html2txt(html, clean=False) or ""
+        fallback = trafilatura.html2txt(_CODE.sub(" ", html), clean=False) or ""
         if len(fallback.split()) > len(text.split()):
             return fallback.strip()
     return text.strip()

@@ -39,3 +39,19 @@ def test_typography_cannot_break_a_quote_check():
     assert normalise("Beispielstrasse 1") == normalise("Beispielstrasse 1")
     assert normalise("Strasse") == normalise("Straße")
     assert normalise("a  \n b") == normalise("a b")
+
+
+def test_scripts_and_styles_are_not_text():
+    """The fallback keeps page furniture on purpose, for the Impressum's
+    sake — but a script is not furniture. A Wix home page came back as its
+    own JavaScript, and the model was shown code instead of the company."""
+    html = (
+        "<html><head><style>.fc-header { width: 186px; }</style></head><body>"
+        "<script>var bodyCacheable = true;</script>"
+        "<div id='footer'>Muster Metallbau AG, Beispielstrasse 1, 8000 Musterstadt"
+        "</div></body></html>"
+    )
+    text = textify(html)
+    assert "Muster Metallbau AG" in text
+    assert "bodyCacheable" not in text
+    assert "186px" not in text
