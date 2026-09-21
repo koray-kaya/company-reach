@@ -43,9 +43,10 @@ from company_reach.models import CompanyRecord
 from company_reach.settings import Settings
 from company_reach.tools import llm
 from company_reach.tools.blocklist import is_blocked
+from company_reach.tools.candidate_pages import CandidatePages, read_candidate
 from company_reach.tools.fetcher import Fetcher, resolve_host
 from company_reach.tools.search import Result, search
-from company_reach.tools.textify import normalise, textify
+from company_reach.tools.textify import normalise
 from company_reach.tools.uid import uid_match
 
 Tier = Literal["uid", "address", "model"]
@@ -270,10 +271,10 @@ def verify(
 # --- the node ----------------------------------------------------------------
 
 
-def _candidate_block(url: str, text: str, limit: int) -> str:
+def _candidate_block(url: str, pages: CandidatePages) -> str:
     """Page text is data, and it is delimited so it cannot be read as
     instructions — the same convention the scoring prompt uses."""
-    return f"<<<PAGE url={url}>>>\n{text[:limit]}\n<<<END>>>"
+    return f"<<<PAGE url={url}>>>\n{pages.for_prompt()}\n<<<END>>>"
 
 
 def narrowing_query(record: CompanyRecord) -> str:
@@ -315,23 +316,22 @@ def choose_candidates(results: list[Result]) -> list[str]:
     return dedupe_candidates(results)[:_MAX_CANDIDATES]
 
 
-async def read_candidates(candidates: list[str], *, fetcher: Fetcher) -> dict[str, str]:
-    """Home page and Impressum of each candidate, as one text. A candidate
-    with no text at all is left out: the model cannot choose what it cannot
-    read.
+async def read_candidates(
+    candidates: list[str], *, fetcher: Fetcher
+) -> dict[str, CandidatePages]:
+    """What each candidate says about itself. A candidate with no text at all
+    is left out: the model cannot choose what it cannot read.
 
     Candidates are read at the same time, the way the earlier prototype
     did. They are different sites, so this does not touch the per-host
-    delay; one site's two pages are still read one after the other."""
-
-    async def read_one(url: str) -> str:
-        home = await fetcher.get(url)
-        impressum = await fetcher.get(urljoin(url, "/impressum"))
-        return "\n".join(textify(page.html) for page in (home, impressum) if page.html)
-
-    joined = await asyncio.gather(*[read_one(url) for url in candidates])
+    delay; one site's pages are still read one after the other."""
+    read = await asyncio.gather(
+        *[read_candidate(url, fetcher=fetcher) for url in candidates]
+    )
     return {
-        url: text for url, text in zip(candidates, joined, strict=True) if text.strip()
+        url: pages
+        for url, pages in zip(candidates, read, strict=True)
+        if pages is not None and pages.full_text().strip()
     }
 
 
@@ -346,12 +346,12 @@ async def find_site(
     candidates = choose_candidates(await search_results(record, settings=settings))
 
     fetcher = fetcher or Fetcher(settings)
-    texts = await read_candidates(candidates, fetcher=fetcher)
-
-    if not texts:
+    pages = await read_candidates(candidates, fetcher=fetcher)
+    if not pages:
         return _no_site(record, candidates)
 
-    answer = await _ask_model(record, texts, settings=settings)
+    texts = {url: read.full_text() for url, read in pages.items()}
+    answer = await _ask_model(record, pages, settings=settings)
     decided = _decide(record, texts, answer, candidates)
     if decided["site"] is not None:
         decided["page_urls"] = await list_pages(
@@ -392,12 +392,9 @@ async def all_page_urls(site: str, *, fetcher: Fetcher, limit: int) -> list[str]
 
 
 async def _ask_model(
-    record: CompanyRecord, texts: dict[str, str], *, settings: Settings
+    record: CompanyRecord, pages: dict[str, CandidatePages], *, settings: Settings
 ) -> SiteAnswer:
-    blocks = "\n\n".join(
-        _candidate_block(url, text, settings.pick_site_chars)
-        for url, text in texts.items()
-    )
+    blocks = "\n\n".join(_candidate_block(url, read) for url, read in pages.items())
     address = ", ".join(
         part for part in (record.street, record.postal_code, record.city) if part
     )

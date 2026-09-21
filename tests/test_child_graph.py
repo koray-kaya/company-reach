@@ -76,6 +76,7 @@ def serve(html: str = IMPRESSUM) -> None:
     respx.get(f"{SITE}/").mock(return_value=httpx.Response(200, html=html))
     respx.get(f"{SITE}/impressum").mock(return_value=httpx.Response(200, html=html))
     respx.get(f"{SITE}/sitemap.xml").mock(return_value=httpx.Response(404))
+    respx.get(host="muster-metallbau.ch").mock(return_value=httpx.Response(404))
 
 
 def child(settings: Settings):

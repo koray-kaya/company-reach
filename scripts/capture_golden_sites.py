@@ -64,13 +64,13 @@ async def capture(uid: str, expected: str, *, settings, fetcher: Fetcher) -> dic
 
     results = await search_results(record, settings=settings)
     candidates = choose_candidates(results)
-    texts = await read_candidates(candidates, fetcher=fetcher)
+    read = await read_candidates(candidates, fetcher=fetcher)
 
     folder = OUT / uid
     write_json(folder / "search.json", [asdict(r) for r in results])
     write_json(
         folder / "candidates.json",
-        [{"url": url, "text": text} for url, text in texts.items()],
+        [{"url": url, **asdict(pages)} for url, pages in read.items()],
     )
     if expected != "none":
         pages = await all_page_urls(
