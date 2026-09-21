@@ -11,6 +11,12 @@
 # reliably. Hence the baseline in settings.py is duckduckgo, mojeek, brave —
 # Google is a bonus, never something to depend on.
 #
+# Bing is left out on purpose. Measured 2026-09-21 on the twenty golden
+# companies: through SearXNG it answered every query with results unrelated
+# to it — Arabic news, Italian science blogs, Vietnamese maps — and because
+# results are interleaved by engine, that noise filled the candidate list
+# ahead of DuckDuckGo's correct answers.
+#
 # Do not add `network:` lines to engines: engines sharing a named network
 # object share one suspension bucket, so one CAPTCHA takes them all out.
 
@@ -22,7 +28,6 @@ use_default_settings:
       - brave
       - startpage
       - mojeek
-      - bing
 
 search:
   formats:
@@ -50,6 +55,4 @@ engines:
   - name: startpage
     disabled: false
   - name: mojeek
-    disabled: false
-  - name: bing
     disabled: false
