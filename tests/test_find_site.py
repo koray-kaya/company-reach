@@ -17,6 +17,7 @@ from company_reach.models import CompanyRecord
 from company_reach.nodes import find_site as node
 from company_reach.nodes.find_site import (
     build_queries,
+    choose_candidates,
     dedupe_candidates,
     find_site,
     guess_domains,
@@ -113,6 +114,13 @@ def test_non_http_results_are_dropped():
         Result(f"{SITE}/", "x", "y", "e"),
     ]
     assert dedupe_candidates(results) == [f"{SITE}/"]
+
+
+def test_a_deep_page_becomes_its_site_root():
+    """Search often finds a company through an inner page. The candidate is
+    the site: its home page and Impressum are what get read."""
+    results = [Result("https://www.muster-metallbau.ch/home/impressum/", "", "", "e")]
+    assert dedupe_candidates(results) == ["https://www.muster-metallbau.ch/"]
 
 
 # --- page listing ------------------------------------------------------------
@@ -445,3 +453,42 @@ async def test_no_fourth_query_when_a_real_candidate_was_found(
 
     await find_site(state(), settings=settings, fetcher=quick(settings))
     assert not any("site:.ch" in q for q in asked)
+
+
+async def test_domain_guesses_come_before_search_results(
+    settings: Settings, monkeypatch
+):
+    """A resolving guess is built from the company's own name. Put after the
+    search results, it lost its place to whatever search ranked first — on
+    the golden set that cost the right site more than once."""
+
+    async def searcher(query, *, settings, limit=10):
+        return [Result(f"https://other-{i}.ch/", "", "", "ddg") for i in range(12)]
+
+    async def guesses(names, **kw):
+        return [f"{SITE}/"]
+
+    monkeypatch.setattr(node, "resolving_domains", guesses)
+    monkeypatch.setattr(node, "search", searcher)
+
+    results = await node.search_results(company(), settings=settings)
+    assert choose_candidates(results)[0] == f"{SITE}/"
+
+
+async def test_a_guess_does_not_stop_the_fourth_query(settings: Settings, monkeypatch):
+    """The fourth query asks whether *search* found anything but directories.
+    A guess is not a search result, so it must not answer that question."""
+    asked: list[str] = []
+
+    async def searcher(query, *, settings, limit=10):
+        asked.append(query)
+        return [Result("https://moneyhouse.ch/muster", "x", "y", "ddg")]
+
+    async def guesses(names, **kw):
+        return [f"{SITE}/"]
+
+    monkeypatch.setattr(node, "resolving_domains", guesses)
+    monkeypatch.setattr(node, "search", searcher)
+
+    await node.search_results(company(), settings=settings)
+    assert any("site:.ch" in q for q in asked)

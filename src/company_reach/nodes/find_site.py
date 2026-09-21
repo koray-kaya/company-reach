@@ -52,7 +52,11 @@ Tier = Literal["uid", "address", "model"]
 
 _LEGAL_FORMS = ("AG", "GmbH", "SA", "Sàrl", "Sarl", "SAGL", "SagL")
 _UMLAUTS = str.maketrans({"ä": "ae", "ö": "oe", "ü": "ue", "ß": "ss"})
-_MAX_CANDIDATES = 3
+# The earlier prototype sent every plausible candidate, about ten, to one
+# model call. A cap of three was tried here and lost the right site behind
+# directories whenever search ranked them first; the model compares
+# candidates side by side, so more of them costs tokens, not accuracy.
+_MAX_CANDIDATES = 10
 # Paths a sitemap has thousands of and a company profile needs none of.
 _BULK = re.compile(
     r"/(produkt|product|shop|blog|news|artikel|tag|category|kategorie)(/|$)"
@@ -144,9 +148,19 @@ def _registered_domain(url: str) -> str | None:
     return host.lower().removeprefix("www.") if host else None
 
 
+def site_root(url: str) -> str:
+    """`https://muster.ch/home/impressum/` → `https://muster.ch/`.
+
+    Search often finds a company through one of its inner pages. The
+    candidate is the site, not the page: the home page and the Impressum
+    are what get read, and both hang off the root."""
+    parts = urlsplit(url)
+    return urlunsplit((parts.scheme.lower(), parts.netloc.lower(), "/", "", ""))
+
+
 def dedupe_candidates(results: list[Result]) -> list[str]:
-    """One URL per registered domain, blocklisted domains dropped, order
-    preserved. Three pages of the same site are one candidate."""
+    """One root URL per registered domain, blocklisted domains dropped,
+    order preserved. Three pages of the same site are one candidate."""
     seen: set[str] = set()
     kept: list[str] = []
     for result in results:
@@ -158,7 +172,7 @@ def dedupe_candidates(results: list[Result]) -> list[str]:
         if domain is None or domain in seen:
             continue
         seen.add(domain)
-        kept.append(result.url)
+        kept.append(site_root(result.url))
     return kept
 
 
@@ -278,18 +292,22 @@ def narrowing_query(record: CompanyRecord) -> str:
 async def search_results(record: CompanyRecord, *, settings: Settings) -> list[Result]:
     """Every result, before dedupe and the cap. Kept apart from the choice of
     candidates so the golden-set capture can save what search returned —
-    directories included, which is what the candidates exist to leave out."""
-    results: list[Result] = []
+    directories included, which is what the candidates exist to leave out.
+
+    Domain guesses come first. A guess that resolves is built from the
+    company's own name, which no search result can say; put last, it lost
+    its place to whatever search ranked above it."""
+    guessed = await resolving_domains(guess_domains(record.name))
+    results: list[Result] = [Result(url, "", "", "guess") for url in guessed]
     for query in build_queries(record):
         results.extend(await search(query, settings=settings))
 
-    # Everything came back, and every single result was a directory or a
-    # social profile. Narrowing to .ch is the one cheap thing left.
-    if results and not dedupe_candidates(results):
+    # Search came back, and every single result was a directory or a social
+    # profile. Narrowing to .ch is the one cheap thing left.
+    searched = results[len(guessed) :]
+    if searched and not dedupe_candidates(searched):
         results.extend(await search(narrowing_query(record), settings=settings))
 
-    guessed = await resolving_domains(guess_domains(record.name))
-    results.extend(Result(url, "", "", "guess") for url in guessed)
     return results
 
 
