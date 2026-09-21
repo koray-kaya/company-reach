@@ -275,7 +275,10 @@ def narrowing_query(record: CompanyRecord) -> str:
     return f'site:.ch "{name}" {seat}'
 
 
-async def _gather_candidates(record: CompanyRecord, *, settings: Settings) -> list[str]:
+async def search_results(record: CompanyRecord, *, settings: Settings) -> list[Result]:
+    """Every result, before dedupe and the cap. Kept apart from the choice of
+    candidates so the golden-set capture can save what search returned —
+    directories included, which is what the candidates exist to leave out."""
     results: list[Result] = []
     for query in build_queries(record):
         results.extend(await search(query, settings=settings))
@@ -287,7 +290,27 @@ async def _gather_candidates(record: CompanyRecord, *, settings: Settings) -> li
 
     guessed = await resolving_domains(guess_domains(record.name))
     results.extend(Result(url, "", "", "guess") for url in guessed)
+    return results
+
+
+def choose_candidates(results: list[Result]) -> list[str]:
     return dedupe_candidates(results)[:_MAX_CANDIDATES]
+
+
+async def read_candidates(candidates: list[str], *, fetcher: Fetcher) -> dict[str, str]:
+    """Home page and Impressum of each candidate, as one text. A candidate
+    with no text at all is left out: the model cannot choose what it cannot
+    read."""
+    texts: dict[str, str] = {}
+    for url in candidates:
+        home = await fetcher.get(url)
+        impressum = await fetcher.get(urljoin(url, "/impressum"))
+        joined = "\n".join(
+            textify(page.html) for page in (home, impressum) if page.html
+        )
+        if joined.strip():
+            texts[url] = joined
+    return texts
 
 
 async def find_site(
@@ -298,18 +321,10 @@ async def find_site(
     are per-instance, so a fetcher per node would forget the delay between
     find_site's pages and the next node's, and re-read robots.txt each time."""
     record: CompanyRecord = state["company"]
-    candidates = await _gather_candidates(record, settings=settings)
+    candidates = choose_candidates(await search_results(record, settings=settings))
 
     fetcher = fetcher or Fetcher(settings)
-    texts: dict[str, str] = {}
-    for url in candidates:
-        home = await fetcher.get(url)
-        impressum = await fetcher.get(urljoin(url, "/impressum"))
-        joined = "\n".join(
-            textify(page.html) for page in (home, impressum) if page.html
-        )
-        if joined.strip():
-            texts[url] = joined
+    texts = await read_candidates(candidates, fetcher=fetcher)
 
     if not texts:
         return _no_site(record, candidates)
@@ -329,6 +344,12 @@ async def list_pages(site: str, *, fetcher: Fetcher, limit: int) -> list[str]:
 
     M5 chooses which of these to read; this only has to make sure the right
     ones are in the list at all."""
+    found = await all_page_urls(site, fetcher=fetcher, limit=limit)
+    return prune_page_urls(found, limit=limit)
+
+
+async def all_page_urls(site: str, *, fetcher: Fetcher, limit: int) -> list[str]:
+    """The list before pruning — what the prune patterns are judged against."""
     found: list[str] = []
     pending = [urljoin(site, "/sitemap.xml")]
     while pending and len(found) < limit * 10:
@@ -345,7 +366,7 @@ async def list_pages(site: str, *, fetcher: Fetcher, limit: int) -> list[str]:
             found = harvest_links(home.html, site)
 
     found.append(site)
-    return prune_page_urls(found, limit=limit)
+    return found
 
 
 async def _ask_model(
