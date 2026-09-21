@@ -172,6 +172,7 @@ def test_enrich_until_site_prints_the_site_and_its_tier(settings, monkeypatch):
     respx.get("https://muster-metallbau.ch/sitemap.xml").mock(
         return_value=httpx.Response(404)
     )
+    respx.get(host="muster-metallbau.ch").mock(return_value=httpx.Response(404))
 
     r = runner.invoke(cli.app, ["enrich", "--uid", "CHE000000046", "--until", "site"])
     assert r.exit_code == 0, r.output

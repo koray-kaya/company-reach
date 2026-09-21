@@ -202,6 +202,9 @@ def serve(html: str) -> None:
     respx.get(f"{SITE}/").mock(return_value=httpx.Response(200, html=html))
     respx.get(f"{SITE}/impressum").mock(return_value=httpx.Response(200, html=html))
     respx.get(f"{SITE}/sitemap.xml").mock(return_value=httpx.Response(404))
+    # Every other page of the site — About, the fallback Impressum paths —
+    # does not exist. Routes match in order, so this one comes last.
+    respx.get(host="muster-metallbau.ch").mock(return_value=httpx.Response(404))
 
 
 def model_says(monkeypatch, chosen: str | None, quote: str | None = None) -> None:
@@ -356,6 +359,7 @@ async def test_a_chosen_site_gets_its_pages_listed(wired, monkeypatch):
             ),
         )
     )
+    respx.get(host="muster-metallbau.ch").mock(return_value=httpx.Response(404))
     model_says(monkeypatch, f"{SITE}/", "Muster Metallbau AG")
 
     out = await find_site(state(), settings=wired, fetcher=quick(wired))
@@ -376,6 +380,7 @@ async def test_without_a_sitemap_the_home_page_links_are_used(wired, monkeypatch
     respx.get(f"{SITE}/").mock(return_value=httpx.Response(200, html=html))
     respx.get(f"{SITE}/impressum").mock(return_value=httpx.Response(200, html=html))
     respx.get(f"{SITE}/sitemap.xml").mock(return_value=httpx.Response(404))
+    respx.get(host="muster-metallbau.ch").mock(return_value=httpx.Response(404))
     model_says(monkeypatch, f"{SITE}/", "Muster Metallbau AG")
 
     out = await find_site(state(), settings=wired, fetcher=quick(wired))
