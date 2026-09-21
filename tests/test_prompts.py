@@ -113,6 +113,11 @@ async def test_scoring_matches_the_hand_labels():
 
 SITES = Path("data/golden/sites")
 
+# Measured 2026-09-21, pick_site@1, GLM-5.3-Flash: 20/20 and 19/20. The one
+# miss moves between runs — a site with no address and no UID on it — so the
+# floor is the worse run, not the better one.
+SITE_BASELINE = {"sites_right": 13, "no_site_right": 6}
+
 
 def _domain(url: str) -> str:
     from urllib.parse import urlsplit
@@ -192,3 +197,11 @@ async def test_site_choice_matches_the_golden_set():
         for miss in misses:
             print(f"    miss  {miss}")
     print("  design bar for comparison: 13/15 (87 %)")
+
+    for sites_right, no_site_right, _ in runs:
+        assert no_site_right >= SITE_BASELINE["no_site_right"], (
+            "a site was chosen for a company that has none"
+        )
+        assert sites_right >= SITE_BASELINE["sites_right"], (
+            f"sites right fell to {sites_right}/{with_site}"
+        )
