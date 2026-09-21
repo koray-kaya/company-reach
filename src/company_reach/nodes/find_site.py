@@ -268,6 +268,19 @@ def verify(
     return None, ""
 
 
+def quote_found(quote: str, text: str) -> bool:
+    """Every piece of the quote is on the page.
+
+    The model often quotes the name, skips a few lines and quotes the UID,
+    joining the two with "...". Each piece is still copied from the page, so
+    the choice is still grounded — what must not pass is a piece that is not
+    there, and that is what is checked."""
+    page = normalise(text)
+    pieces = [normalise(p) for p in re.split(r"\.\.\.|…", quote)]
+    pieces = [p for p in pieces if p]
+    return bool(pieces) and all(piece in page for piece in pieces)
+
+
 # --- the node ----------------------------------------------------------------
 
 
@@ -436,7 +449,7 @@ def _decide(
 
     chosen = answer.chosen_url
     quote = answer.quote or ""
-    if not quote or normalise(quote) not in normalise(texts[chosen]):
+    if not quote_found(quote, texts[chosen]):
         return _no_site(record, candidates)
 
     tier, evidence = verify(record, texts[chosen])

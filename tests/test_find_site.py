@@ -522,3 +522,18 @@ async def test_candidates_are_read_at_the_same_time():
     texts = await node.read_candidates(sites, fetcher=SlowFetcher())
     assert list(texts) == sites
     assert most == 3
+
+
+def test_a_quote_stitched_with_an_ellipsis_is_found():
+    """Measured on the golden set: the model quotes the name, skips a line
+    and quotes the UID, joined by '...'. Every piece is on the page, so the
+    choice is grounded; rejecting it cost three right answers in twenty."""
+    page = "Muster Metallbau AG\nBeispielstrasse 1\nTelefon 000\nUID: CHE-000.000.046"
+    assert node.quote_found("Muster Metallbau AG ... UID: CHE-000.000.046", page)
+    assert node.quote_found("Muster Metallbau AG … CHE-000.000.046", page)
+
+
+def test_one_invented_piece_still_rejects_the_quote():
+    page = "Muster Metallbau AG\nBeispielstrasse 1"
+    assert not node.quote_found("Muster Metallbau AG ... UID: CHE-999.999.999", page)
+    assert not node.quote_found(" ... ", page)
