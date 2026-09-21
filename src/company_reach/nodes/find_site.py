@@ -318,17 +318,21 @@ def choose_candidates(results: list[Result]) -> list[str]:
 async def read_candidates(candidates: list[str], *, fetcher: Fetcher) -> dict[str, str]:
     """Home page and Impressum of each candidate, as one text. A candidate
     with no text at all is left out: the model cannot choose what it cannot
-    read."""
-    texts: dict[str, str] = {}
-    for url in candidates:
+    read.
+
+    Candidates are read at the same time, the way the earlier prototype
+    did. They are different sites, so this does not touch the per-host
+    delay; one site's two pages are still read one after the other."""
+
+    async def read_one(url: str) -> str:
         home = await fetcher.get(url)
         impressum = await fetcher.get(urljoin(url, "/impressum"))
-        joined = "\n".join(
-            textify(page.html) for page in (home, impressum) if page.html
-        )
-        if joined.strip():
-            texts[url] = joined
-    return texts
+        return "\n".join(textify(page.html) for page in (home, impressum) if page.html)
+
+    joined = await asyncio.gather(*[read_one(url) for url in candidates])
+    return {
+        url: text for url, text in zip(candidates, joined, strict=True) if text.strip()
+    }
 
 
 async def find_site(
