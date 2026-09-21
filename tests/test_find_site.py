@@ -492,3 +492,28 @@ async def test_a_guess_does_not_stop_the_fourth_query(settings: Settings, monkey
 
     await node.search_results(company(), settings=settings)
     assert any("site:.ch" in q for q in asked)
+
+
+async def test_candidates_are_read_at_the_same_time():
+    """Ten candidates read one after another made site choice the slowest
+    step. They are different sites, so reading them together costs no
+    politeness; the check is that requests to several hosts overlap."""
+    import asyncio
+
+    from company_reach.tools.fetcher import Page
+
+    open_now, most = 0, 0
+
+    class SlowFetcher:
+        async def get(self, url):
+            nonlocal open_now, most
+            open_now += 1
+            most = max(most, open_now)
+            await asyncio.sleep(0.01)
+            open_now -= 1
+            return Page(url=url, html="<html><body><p>Muster AG</p></body></html>")
+
+    sites = [f"https://site-{i}.ch/" for i in range(3)]
+    texts = await node.read_candidates(sites, fetcher=SlowFetcher())
+    assert list(texts) == sites
+    assert most == 3
