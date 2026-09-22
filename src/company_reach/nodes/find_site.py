@@ -28,7 +28,9 @@ Finally, the distinction the milestone turns on. No candidate found is a
 **finding** — five of twenty companies in the earlier prototype had no
 website, and that is a fact about the population. Search being broken is an
 **error**, and it is raised, because "we could not look" must never be
-written down as "this company has no website".
+written down as "this company has no website". Search answering nothing at
+all, to every query and again after a pause, counts as broken: such a
+company still has its directory entries, so silence means we were not heard.
 """
 
 import asyncio
@@ -39,6 +41,7 @@ from urllib.parse import urljoin, urlsplit, urlunsplit
 
 from pydantic import BaseModel, Field
 
+from company_reach.errors import SearchError
 from company_reach.models import CompanyRecord
 from company_reach.settings import Settings
 from company_reach.tools import llm
@@ -312,16 +315,37 @@ async def search_results(record: CompanyRecord, *, settings: Settings) -> list[R
     company's own name, which no search result can say; put last, it lost
     its place to whatever search ranked above it."""
     guessed = await resolving_domains(guess_domains(record.name))
-    results: list[Result] = [Result(url, "", "", "guess") for url in guessed]
-    for query in build_queries(record):
-        results.extend(await search(query, settings=settings))
+    searched = await _ask_every_query(record, settings=settings)
+
+    # Silence from every query is not an answer. A real company almost always
+    # has at least a directory entry, and a throttled engine can return
+    # nothing without listing itself as unresponsive (#17). Ask once more
+    # after a pause; still nothing, and it is an error a later run retries —
+    # never "no website". A resolving guess does not change that: it is
+    # built from the name and says nothing about whether search was heard.
+    if not searched:
+        await asyncio.sleep(settings.search_retry_pause_s)
+        searched = await _ask_every_query(record, settings=settings)
+    if not searched:
+        raise SearchError(
+            "every query returned nothing, twice; search was probably "
+            "throttled, and the company is not recorded as having no website"
+        )
 
     # Search came back, and every single result was a directory or a social
     # profile. Narrowing to .ch is the one cheap thing left.
-    searched = results[len(guessed) :]
-    if searched and not dedupe_candidates(searched):
-        results.extend(await search(narrowing_query(record), settings=settings))
+    if not dedupe_candidates(searched):
+        searched.extend(await search(narrowing_query(record), settings=settings))
 
+    return [Result(url, "", "", "guess") for url in guessed] + searched
+
+
+async def _ask_every_query(
+    record: CompanyRecord, *, settings: Settings
+) -> list[Result]:
+    results: list[Result] = []
+    for query in build_queries(record):
+        results.extend(await search(query, settings=settings))
     return results
 
 

@@ -46,6 +46,10 @@ class Settings(BaseSettings):
     # suspended. The fetcher's per-host delay does not cover these.
     search_concurrency: int = 2
     search_gap_s: float = 1.0
+    # When every query for one company came back empty, wait this long and
+    # ask again. Long enough for an engine's short suspension to lapse; the
+    # 2026-09-21 capture got its sites back on a rerun minutes later.
+    search_retry_pause_s: float = 30.0
     # The engines that must all be unresponsive before an empty result stops
     # meaning "this company has no website". Google is a bonus, not baseline:
     # measured, a self-hosted SearXNG behaves like a DuckDuckGo proxy.
