@@ -21,6 +21,7 @@ goal at that date. Raise it when a change genuinely improves the numbers;
 that is the point of having it.
 """
 
+import asyncio
 import json
 import os
 import statistics
@@ -205,3 +206,95 @@ async def test_site_choice_matches_the_golden_set():
         assert sites_right >= SITE_BASELINE["sites_right"], (
             f"sites right fell to {sites_right}/{with_site}"
         )
+
+
+# --- extraction ---------------------------------------------------------------
+
+LABELS = Path("data/golden/extraction.jsonl")
+
+# Not measured yet: the labels are being written by hand, the way the site
+# labels were on 2026-09-21. Until they exist this reports and asserts
+# nothing, because a baseline invented before a measurement is a number that
+# only looks like evidence. Set it from the first labelled run and then hold
+# changes to it, exactly as the two evals above do.
+EXTRACT_BASELINE: dict[str, int] | None = None
+
+
+def _labelled_site(uid: str) -> str:
+    """The site the labels were written against, from the site-choice set —
+    so the extraction labels need to carry only what a human wrote."""
+    for line in (SITES / "expected.jsonl").read_text().splitlines():
+        row = json.loads(line)
+        if row["uid"] == uid and row["expected"]:
+            return f"https://{row['expected'][0]}/"
+    raise AssertionError(f"{uid} has no labelled site")
+
+
+async def _profile_for(row: dict, settings: Settings):
+    """What production would extract for one company.
+
+    `read.json` is the exact page list the labelling document was built from.
+    It has to be saved rather than recomputed: `pick_pages` asks the model on
+    a large site, so a second run can choose different pages, and the labels
+    would then be graded against evidence nobody read.
+    """
+    from company_reach.nodes.extract import extract
+    from company_reach.nodes.read_pages import read_pages
+    from company_reach.tools.checks import checked
+    from company_reach.tools.fetcher import Fetcher
+
+    with connect(settings.db_path) as conn:
+        record = company_by_uid(conn, row["uid"])
+    fetcher = Fetcher(settings, delay_s=0.0)
+    urls = json.loads((SITES / row["uid"] / "read.json").read_text())
+    read = await read_pages({"pages_to_read": urls}, settings=settings, fetcher=fetcher)
+    raw = (
+        await extract(
+            {"company": record, "page_texts": read["page_texts"]}, settings=settings
+        )
+    )["raw_profile"]
+    return checked(raw, texts=read["page_texts"], site_url=_labelled_site(row["uid"]))
+
+
+async def test_extraction_matches_the_hand_labels():
+    """Persons and e-mail addresses, compared as sets.
+
+    `description` and `size_signal` are not graded. They are prose, and an
+    exact-match threshold on prose measures noise — the same argument the
+    scoring eval above makes for exact agreement.
+
+    The valuable half is the same as it is for site choice: the companies
+    whose pages name nobody. The easy way for an extractor to look good is to
+    find a person everywhere.
+    """
+    if not LABELS.is_file():
+        pytest.skip(f"no extraction labels at {LABELS} (they live outside git)")
+
+    rows = [json.loads(line) for line in LABELS.read_text().splitlines()]
+    settings = Settings()
+    profiles = await asyncio.gather(*[_profile_for(r, settings) for r in rows])
+
+    names_right = mails_right = extra = 0
+    for row, profile in zip(rows, profiles, strict=True):
+        want_names = {n.casefold() for n in row["persons"]}
+        want_mails = {m.casefold() for m in row["emails"]}
+        got_names = {p.name.casefold() for p in profile.persons}
+        got_mails = {p.email.casefold() for p in profile.persons if p.email}
+        names_right += len(want_names & got_names)
+        mails_right += len(want_mails & got_mails)
+        extra += len(got_names - want_names) + len(got_mails - want_mails)
+
+    want_n = sum(len(r["persons"]) for r in rows)
+    want_m = sum(len(r["emails"]) for r in rows)
+    print(
+        f"\nextraction on {len(rows)} golden companies, prompt extract\n"
+        f"  persons found  {names_right}/{want_n}\n"
+        f"  e-mails found  {mails_right}/{want_m}\n"
+        f"  not on the labels  {extra}  (invented, or a label that is missing)"
+    )
+
+    if EXTRACT_BASELINE is None:
+        pytest.skip("baseline not set yet; the numbers above are the first run")
+    assert names_right >= EXTRACT_BASELINE["persons"]
+    assert mails_right >= EXTRACT_BASELINE["emails"]
+    assert extra <= EXTRACT_BASELINE["extra"]
