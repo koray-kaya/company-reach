@@ -74,6 +74,81 @@ class Score(BaseModel):
     reason: str
 
 
+# --- the profile -------------------------------------------------------------
+
+
+class RawPerson(BaseModel):
+    """A person as the model read them off the page, unchecked."""
+
+    name: str = Field(description="exactly as the page writes it")
+    role: str | None = Field(default=None, description="their function, or null")
+    email: str | None = Field(default=None, description="their address, or null")
+
+
+class RawProfile(BaseModel):
+    """What `extract.md` returns, before anything has been checked.
+
+    Split from `CompanyProfile` for the reason `RawScore` is split from
+    `Score`, and for one more that matters here. `Person.email_offsite` is
+    `check_profile`'s verdict, and a field absent from the schema the model
+    is given is a field the model cannot fill in. On the one boundary this
+    milestone exists to hold, "who wrote this field" should be answerable
+    from the type rather than from reading the node.
+    """
+
+    description: str = Field(
+        description="what the company makes or does, two or three sentences, English"
+    )
+    size_signal: str | None = Field(
+        default=None,
+        description="anything the pages say about how many people work there, or null",
+    )
+    persons: list[RawPerson] = Field(
+        default_factory=list,
+        description="people named on the pages; empty when the pages name none",
+    )
+    addresses: list[str] = Field(
+        default_factory=list, description="postal addresses, as written"
+    )
+    distributor_only: bool = Field(
+        default=False, description="true when the company only resells what others make"
+    )
+    foreign_group: bool = Field(
+        default=False, description="true when the site belongs to a foreign parent"
+    )
+
+
+class Person(BaseModel):
+    """A person `check_profile` has been over.
+
+    `email_offsite` is set by that node and nowhere else: true when the
+    address is real but its domain is not the verified site's, which is how a
+    hostile page plants a contact (`audit-2026-09-19.md:177`). The person is
+    kept rather than dropped — the mark is what M6 reads to hold them.
+    """
+
+    name: str
+    role: str | None = None
+    email: str | None = None
+    email_offsite: bool = False
+
+
+class CompanyProfile(BaseModel):
+    """What the company's own pages say, after the checks.
+
+    A profile naming nobody is a valid profile and a finding: the pages were
+    read and named no one. "We never read the pages" is the absence of a
+    profile, not an empty one.
+    """
+
+    description: str
+    size_signal: str | None = None
+    persons: list[Person] = Field(default_factory=list)
+    addresses: list[str] = Field(default_factory=list)
+    distributor_only: bool = False
+    foreign_group: bool = False
+
+
 Recommendation = Literal["send", "hold", "skip"]
 ErrorKind = Literal["search", "fetch", "llm", "other"]
 
