@@ -83,45 +83,52 @@ useless unless its hits are counted somewhere a human later reads
 counter is the natural answer for #20 too, and the two should be decided
 together rather than twice.
 
-## Open points
+## Open points, and what Koray decided (2026-09-23)
 
 The loop says one question per open point, answered before code
-(`IMPLEMENTATION.md:13-16`). These are the four.
+(`IMPLEMENTATION.md:13-16`). There were four; all four are settled.
 
 **1. Where does the `third_party` mark live in M5?**
 `check_profile` must mark an e-mail whose domain is not the verified site's,
-but `email_kind` belongs to `Contact`, which M6 builds. Three options: add a
-field to each person entry in `CompanyProfile`; keep a parallel list on the
-profile; or have `check_profile` drop nothing and let M6 re-derive the
-comparison. *Recommendation:* a field on the person entry. The evidence then
-travels with the thing it describes, M6's `find_contact` reads a decision
-instead of repeating it, and the review card in M7 can show why an address
-was held without recomputing anything.
+but `email_kind` belongs to `Contact`, which M6 builds.
+
+**Decided: a field on the person entry in `CompanyProfile`.** The evidence
+travels with the thing it describes; M6's `find_contact` reads a decision
+instead of repeating the comparison, and M7's review card can show why an
+address was held without recomputing anything.
 
 **2. How are the extraction labels produced, and for how many companies?**
 The 14 golden companies with a site have saved candidate pages, but nothing
-says what `extract` *should* return for them — no expected persons, e-mails
-or flags. Someone has to label that by hand, the way the site labels were
-done on 2026-09-21. *Recommendation:* label all 14, but grade as a set
-comparison on e-mails and person names only, leaving `description` and
-`size_signal` ungraded. Those two are prose; an exact-match threshold on them
-would measure noise, the same argument `tests/test_prompts.py:14-18` already
-makes for exact score agreement.
+says what `extract` *should* return for them.
 
-**3. Does M5 build the needs-JS counter, the Playwright service, or neither?**
-The design leaves this to the counter and the probe saw zero hits.
-*Recommendation:* build the detector, count its hits, build no service and
-touch neither `compose.yaml` nor `tools/browser.py`. The open question in
-`design.md:355` is answered by data we do not have yet, and M5 is what
-produces it. See also #20 on where the count should live.
+**Decided: label all 14; grade person names and e-mail addresses only.**
+`description` and `size_signal` stay ungraded — both are prose, and an
+exact-match threshold on prose mostly measures noise, which is the argument
+`tests/test_prompts.py:14-18` already makes for exact score agreement.
 
-**4. Which pages does `pick_pages` get to see when the site has no sitemap?**
+**3. Does M5 build the needs-JS detector, the Playwright service, or neither?**
+
+**Decided: both.** The detector and `tools/browser.py` with its Compose
+service land in this milestone rather than waiting for the counter.
+
+This overrides a written decision, so it is recorded rather than quietly
+applied. `design.md:355` lists "whether the Playwright service is ever
+needed" as an open question and says the needs-JS counter decides it; the
+probe measured zero hits in 15 sites (`research/website-reading.md:115`), and
+the cost is a 1 GB image and a second Compose service. Building it now
+answers that open question by decision instead of by data. Task 10 therefore
+updates `design.md` §16 and the research note's recommendation, so the
+documents do not contradict the code. The counter is still built and still
+reported: it is what tells us afterwards whether the service earns its place.
+
+**4. Which pages does `pick_pages` get to see on a small site?**
 `find_site` lists pages from the sitemap or from links, capped at 200
 (`design.md:132`). For a small site the whole list may be under ten URLs, in
-which case asking a model to choose is a model call that cannot be wrong.
-*Recommendation:* skip the call when `len(page_urls) <= max_pages_per_site`
-and read them all. It is one branch, it saves a call on the small sites that
-are most of this population, and it makes the node's test trivial.
+which case asking a model to choose is a call that cannot be wrong.
+
+**Decided: skip the call when `len(page_urls) <= max_pages_per_site`** and
+read them all. One branch; it saves a call and a round trip on the small
+sites that are most of this population, and it makes the node's test trivial.
 
 ## Tasks
 
@@ -155,11 +162,25 @@ the home page.
 
 **Task 3 — `nodes/read_pages.py`, the needs-JS detector and the counter.**
 Fetch the chosen pages through the shared `Fetcher`, `textify` each, truncate
-to `max_chars_per_page`, and record a needs-JS hit per
-`research:109-115`. No `browser.py`, no Compose change (open point 3).
+to `max_chars_per_page`, and record a needs-JS hit per `research:109-115`.
+The detector stays a pure function of the fetched HTML and its text, so it is
+testable without a browser and still meaningful if the service is later
+removed.
 *Test:* `respx`-mocked pages; a framework-shell fixture trips the detector, a
 thin-but-static one does not; truncation is at a word boundary; a page that
 fails to fetch is skipped without failing the node.
+
+**Task 3b — `tools/browser.py` and the Compose service (open point 3).**
+`render(url) -> str | None` against a Playwright service, called only when
+Task 3's detector fires, with the static text kept on failure
+(`design.md:154`, `graph.spec.yaml:217`). Service in `compose.yaml` from
+`mcr.microsoft.com/playwright/python`, pinned to a dated tag the way SearXNG
+is, `--ipc=host` and `--init` per `research:103-106`, and `PLAYWRIGHT_URL`
+already exists in settings (`settings.py:57`) and `.env.example`.
+*Test:* `respx`-mocked service; a render that fails, times out or returns
+empty leaves the static text untouched and does not raise; the node never
+calls `render` when the detector did not fire. The service itself is not
+exercised in tests — it is opt-in infrastructure, like SearXNG.
 
 **Task 4 — write the `pages` table.**
 Index what was read: url, fetched_at, status, text, raw_path
@@ -206,6 +227,14 @@ look-alike cases are `check_profile`'s job and must pass with no endpoint.
 The graded half is opt-in, n=2, printing the spread like the two evals
 already there.
 
+**Task 10 — reconcile the documents with open point 3.**
+`design.md` §16 no longer has "whether the Playwright service is ever needed"
+as an open question, and its §5 `browser` row and the research note's
+recommendation (`research:19-21`) say the service is built rather than
+optional. The needs-JS counter's purpose changes with it: it no longer
+decides whether to build, it measures whether the built thing was worth it.
+*Test:* none — documentation. Reviewed as part of the milestone PR.
+
 ## Acceptance
 
 - `company-reach enrich --uid CHE… --until profile` prints the profile
@@ -216,13 +245,13 @@ already there.
   invented person, deterministically, 3 of 3 (`audit:186`). The `recommend=hold`
   half of that criterion belongs to M6 and is checked there.
 - `uv run pytest -q`, `ruff check`, `ruff format --check` green.
-- Needs-JS counter reported for the run, so `design.md:355` can be answered
-  with a number at M8 rather than an opinion.
+- Needs-JS counter reported for the run, so at M8 the Playwright service can
+  be kept or dropped on a number rather than an opinion.
+- `docker compose up` brings the Playwright service up and `read_pages`
+  reaches it; with the service down, reading still succeeds on static text.
 
 ## Deliberately not in M5
 
-- `tools/browser.py` and a Playwright Compose service — gated on the counter
-  this milestone produces (open point 3).
 - `recommend=hold` for third-party-only contacts — M6 owns `recommend`; M5
   only marks.
 - `Contact` and `email_kind` — M6.
