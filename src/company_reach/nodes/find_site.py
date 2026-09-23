@@ -52,6 +52,7 @@ from company_reach.tools.search import Result, search
 from company_reach.tools.textify import normalise
 from company_reach.tools.uid import uid_match
 from company_reach.tools.untrusted import as_data
+from company_reach.tools.urls import registered_domain
 
 Tier = Literal["uid", "address", "model"]
 
@@ -160,11 +161,6 @@ async def resolving_domains(names: list[str]) -> list[str]:
 # --- candidates --------------------------------------------------------------
 
 
-def _registered_domain(url: str) -> str | None:
-    host = urlsplit(url).hostname
-    return host.lower().removeprefix("www.") if host else None
-
-
 def site_root(url: str) -> str:
     """`https://muster.ch/home/impressum/` → `https://muster.ch/`.
 
@@ -185,7 +181,7 @@ def dedupe_candidates(results: list[Result]) -> list[str]:
             continue
         if is_blocked(result.url):
             continue
-        domain = _registered_domain(result.url)
+        domain = registered_domain(result.url)
         if domain is None or domain in seen:
             continue
         seen.add(domain)
