@@ -1,0 +1,60 @@
+# Domains a company's own website is never on. A hit means "skip this search
+# result", never anything about the company itself. Registered domains only:
+# matching covers every subdomain, so tel.search.ch is a hit through search.ch.
+#
+# Verified reachable 2026-09-19 (docs/research/search-layer.md). cylex.ch now
+# redirects to cylex-swiss.ch and monetas.ch to dnb.com, so only the targets
+# are listed. firmenwegweiser.ch, gelbeseiten.ch, swissfirms.ch, companies.ch
+# and firmenabc.ch did not resolve and are left out.
+
+# Swiss registers, directories, credit and monitoring
+zefix.ch
+uid.admin.ch
+shab.ch
+handelsregister.ch
+moneyhouse.ch
+local.ch
+search.ch
+help.ch
+firmenverzeichnis-schweiz.ch
+kompass.com
+cylex-swiss.ch
+firmen.ch
+vschweiz.ch
+firmenfinden.ch
+unternehmensindex.ch
+lokalesgewerbe.ch
+firmen-liste.ch
+opendi.ch
+easymonitoring.ch
+northdata.com
+dnb.com
+creditreform.ch
+wlw.ch
+europages.com
+gmbh.ch
+ibiz.ch
+industrie-schweiz.ch
+firmen.info
+firma.ch
+kmu.ch
+startupticker.ch
+startup.ch
+b2bhint.com
+crunchbase.com
+zoominfo.com
+
+# Social, jobs, reviews, encyclopaedias. LinkedIn is blocked for finding a
+# *website*; the separate, manual LinkedIn lead is a different step entirely.
+linkedin.com
+xing.com
+facebook.com
+instagram.com
+youtube.com
+kununu.com
+jobs.ch
+jobscout24.ch
+indeed.com
+trustpilot.com
+yelp.ch
+wikipedia.org

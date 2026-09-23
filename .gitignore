@@ -1,5 +1,8 @@
-# Company and person data — never committed
-data/
+# Company and person data — never committed.
+# Anchored to the repository root on purpose: an unanchored `data/` also
+# matched `src/company_reach/data/`, which is the package's own blocklist,
+# so a fresh clone had no blocklist at all. Caught by CI's first run.
+/data/
 
 # Secrets
 .env
