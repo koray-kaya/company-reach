@@ -7,7 +7,7 @@ from typer.testing import CliRunner
 
 from company_reach import cli
 from company_reach.manifest import manifest_path
-from company_reach.models import CompanyRecord, Score
+from company_reach.models import CompanyRecord, RawPerson, Score
 from company_reach.nodes import find_site as find_site_node
 from company_reach.profile import goal_hash
 from company_reach.tools import llm
@@ -178,6 +178,83 @@ def test_enrich_until_site_prints_the_site_and_its_tier(settings, monkeypatch):
     assert r.exit_code == 0, r.output
     assert "muster-metallbau.ch" in r.output
     assert "uid" in r.output
+
+
+@respx.mock
+def test_enrich_until_profile_prints_the_checked_profile(settings, monkeypatch):
+    """M5's demo command. The person printed is the one the served page
+    names; a person the stub invents would be dropped before printing,
+    which is the point of check_profile standing between them."""
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    _seed_one_company(settings)
+
+    async def resolve(host):
+        return ["93.184.216.34"]
+
+    async def no_guesses(names, **kw):
+        return []
+
+    async def one_candidate(query, *, settings, limit=10):
+        return [
+            Result("https://muster-metallbau.ch/", "Muster Metallbau AG", "x", "ddg")
+        ]
+
+    async def ask(prompt_name, output_model, *, settings, **variables):
+        if prompt_name == "pick_site":
+            answer = dict(
+                chosen_url="https://muster-metallbau.ch/",
+                quote="Muster Metallbau AG",
+                reason="fits",
+            )
+        elif prompt_name == "pick_pages":
+            answer = dict(urls=["https://muster-metallbau.ch/impressum"])
+        else:
+            answer = dict(
+                description="Baut Metallteile in Musterstadt.",
+                size_signal="seit 1974",
+                persons=[
+                    RawPerson(name="Anna Muster", role="GL"),
+                    RawPerson(name="Klara Erfunden"),
+                ],
+                addresses=["Beispielstrasse 1, 8000 Musterstadt"],
+            )
+        return output_model(**answer), None
+
+    monkeypatch.setattr("company_reach.tools.fetcher.resolve_host", resolve)
+    monkeypatch.setattr(find_site_node, "resolving_domains", no_guesses)
+    monkeypatch.setattr(find_site_node, "search", one_candidate)
+    monkeypatch.setattr(find_site_node.llm, "ask", ask)
+
+    html = (
+        "<html><body><div id='footer'><p>Muster Metallbau AG<br>"
+        "Beispielstrasse 1<br>8000 Musterstadt<br>CHE-000.000.046 MWST<br>"
+        "seit 1974, Anna Muster</p></div></body></html>"
+    )
+    for path in ("/robots.txt", "/sitemap.xml"):
+        respx.get(f"https://muster-metallbau.ch{path}").mock(
+            return_value=httpx.Response(404)
+        )
+    for path in ("/", "/impressum"):
+        respx.get(f"https://muster-metallbau.ch{path}").mock(
+            return_value=httpx.Response(200, html=html)
+        )
+    respx.get(host="muster-metallbau.ch").mock(return_value=httpx.Response(404))
+
+    r = runner.invoke(
+        cli.app, ["enrich", "--uid", "CHE000000046", "--until", "profile"]
+    )
+
+    assert r.exit_code == 0, r.output
+    assert "Baut Metallteile in Musterstadt." in r.output
+    assert "Anna Muster" in r.output
+    assert "seit 1974" in r.output
+    assert "Klara Erfunden" not in r.output
+
+
+def test_enrich_refuses_a_stopping_point_it_does_not_have(settings, monkeypatch):
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    r = runner.invoke(cli.app, ["enrich", "--uid", "CHE000000046", "--until", "draft"])
+    assert r.exit_code != 0
 
 
 def test_enrich_on_an_unknown_company_says_so(settings, monkeypatch):

@@ -11,7 +11,7 @@ import respx
 
 from company_reach.errors import CompanyReachError, LlmError
 from company_reach.graph import build_child
-from company_reach.models import CompanyRecord
+from company_reach.models import CompanyRecord, RawPerson
 from company_reach.nodes import find_site as node
 from company_reach.nodes.enrich_company import enrich_company
 from company_reach.settings import Settings
@@ -23,7 +23,8 @@ UID = "CHE000000046"
 SITE = "https://muster-metallbau.ch"
 IMPRESSUM = (
     "<html><body><div id='footer'><h2>Impressum</h2><p>Muster Metallbau AG<br>"
-    "Beispielstrasse 1<br>8000 Musterstadt<br>CHE-000.000.046 MWST</p>"
+    "Beispielstrasse 1<br>8000 Musterstadt<br>CHE-000.000.046 MWST<br>"
+    "Anna Muster, anna@muster-metallbau.ch</p>"
     "</div></body></html>"
 )
 
@@ -60,9 +61,27 @@ def seeded(settings: Settings, monkeypatch) -> Settings:
         return [Result(f"{SITE}/", "Muster Metallbau AG", "Metallteile", "ddg")]
 
     async def ask(prompt_name, output_model, *, settings, **variables):
-        return output_model(
-            chosen_url=f"{SITE}/", quote="Muster Metallbau AG", reason="fits"
-        ), None
+        """One stub for every prompt the child now reaches. Dispatching on
+        the name rather than the shape keeps each answer readable, and a new
+        prompt fails loudly here instead of silently returning the wrong
+        schema."""
+        if prompt_name == "pick_site":
+            answer = dict(
+                chosen_url=f"{SITE}/", quote="Muster Metallbau AG", reason="fits"
+            )
+        elif prompt_name == "pick_pages":
+            answer = dict(urls=[f"{SITE}/impressum"])
+        elif prompt_name == "extract":
+            answer = dict(
+                description="Baut Metallteile.",
+                persons=[
+                    RawPerson(name="Anna Muster", email="anna@muster-metallbau.ch")
+                ],
+                addresses=["Beispielstrasse 1, 8000 Musterstadt"],
+            )
+        else:  # pragma: no cover - a prompt nobody taught this stub about
+            raise AssertionError(f"no stubbed answer for {prompt_name!r}")
+        return output_model(**answer), None
 
     monkeypatch.setattr("company_reach.tools.fetcher.resolve_host", resolve)
     monkeypatch.setattr(node, "resolving_domains", no_guesses)
@@ -145,3 +164,35 @@ async def test_a_child_error_still_becomes_an_error_result(
         settings=seeded,
     )
     assert out["results"][0].error_kind == "llm"
+
+
+@respx.mock
+async def test_a_company_with_a_site_walks_on_to_a_checked_profile(seeded: Settings):
+    """M5's promise: the yes branch no longer ends at find_site. The profile
+    that arrives is the checked one — Anna Muster is on the served page, so
+    she survives the verbatim check and her address is on the site domain."""
+    serve()
+    out = await child(seeded).ainvoke(
+        {"run_id": "r1", "uid": UID, "goal": "g", "about_me": "a"}
+    )
+    assert out["pages_to_read"]
+    assert out["page_texts"]
+    assert [p.name for p in out["profile"].persons] == ["Anna Muster"]
+    assert out["profile"].persons[0].email_offsite is False
+
+
+@respx.mock
+async def test_a_company_without_a_site_still_stops_at_find_site(
+    seeded: Settings, monkeypatch
+):
+    """The no branch is unchanged: nothing is read, so no profile exists."""
+
+    async def only_directories(query, *, settings, limit=10):
+        return [Result("https://www.moneyhouse.ch/de/company/muster", "x", "y", "ddg")]
+
+    monkeypatch.setattr(node, "search", only_directories)
+    out = await child(seeded).ainvoke(
+        {"run_id": "r1", "uid": UID, "goal": "g", "about_me": "a"}
+    )
+    assert out.get("profile") is None
+    assert out.get("page_texts") in (None, {})
