@@ -108,7 +108,7 @@ exact-match threshold on prose mostly measures noise, which is the argument
 
 **3. Does M5 build the needs-JS detector, the Playwright service, or neither?**
 
-**Detector: built (`f5dd723`). Service: reopened, awaiting Koray's call.**
+**Decided: the detector only. No `browser.py`, no Compose service.**
 
 First decided as "both", against the plan's recommendation, on the evidence
 then available: the probe had measured zero hits across 15 sites
@@ -119,10 +119,12 @@ pages M4 left in the cache, the detector fires 3 times — `khatabook.com`,
 *finding* a site, none of them a page `read_pages` would ever be given. Of
 the fourteen golden sites whose pages it would actually read, none trips it.
 
-Koray parked the decision on seeing that, so `tools/browser.py` and the
-Compose service are not written and `design.md:355` is left standing. The
-detector and its count are in either way — that is what the decision will
-be made on. Task 3b and Task 10 below are held, not cancelled.
+Koray settled it there: the detector ships, the service does not. That
+leaves `design.md:355` correct as written — "whether the Playwright service
+is ever needed" stays an open question, and M5 built the thing that will
+answer it rather than answering it by decision. Tasks 3b and 10 are
+cancelled, and Task 10 was only ever needed to repair a contradiction that
+now does not exist.
 
 For the record, the same 419 pages say the detector's shape is right: thin
 text alone would fire 43 times and a framework mount point alone 98, while
@@ -145,14 +147,14 @@ sites that are most of this population, and it makes the node's test trivial.
 | 1 — CompanyProfile and the profile store | done (`ddf347f`) |
 | 2 — pick_pages | done (`d24f15b`) |
 | 3 — read_pages and the needs-JS detector | done (`f5dd723`) |
-| 3b — browser.py and the Compose service | **held**, open point 3 |
+| 3b — browser.py and the Compose service | **cancelled**, open point 3 |
 | 4 — the pages table | done (`798ed6a`) |
 | 5 — extract | done (`46975a0`) |
 | 6 — check_profile and checks | done (`f066c6e`) |
 | 7, 8 — wiring and `--until profile` | done (`18d7562`) |
 | 9 — adversarial fixtures | done (`79a61c0`) |
 | 9 — extraction eval | code done (`6e9eb84`), **waiting on hand labels** |
-| 10 — reconcile the documents | **held** with 3b |
+| 10 — reconcile the documents | **cancelled** with 3b |
 
 Found along the way and fixed here: nothing neutralised the prompt
 delimiters, so a page could close its own data block (`ddadb60`). Found and
@@ -213,9 +215,9 @@ removed.
 thin-but-static one does not; truncation is at a word boundary; a page that
 fails to fetch is skipped without failing the node.
 
-**Task 3b — `tools/browser.py` and the Compose service (open point 3). HELD.**
-Not written: the decision that called for it was parked once Task 3 measured
-the detector against 419 real pages. What follows is what it would be.
+**Task 3b — `tools/browser.py` and the Compose service. CANCELLED.**
+Not written. What follows is what it would have been, kept so that whoever
+reads the counter later does not have to design it again.
 `render(url) -> str | None` against a Playwright service, called only when
 Task 3's detector fires, with the static text kept on failure
 (`design.md:154`, `graph.spec.yaml:217`). Service in `compose.yaml` from
@@ -272,9 +274,9 @@ look-alike cases are `check_profile`'s job and must pass with no endpoint.
 The graded half is opt-in, n=2, printing the spread like the two evals
 already there.
 
-**Task 10 — reconcile the documents with open point 3. HELD with 3b.**
-Only needed if the service is built; `design.md` §16 stands as written until
-then.
+**Task 10 — reconcile the documents. CANCELLED with 3b.**
+It existed only to repair the contradiction building the service would have
+created. `design.md` §16 is correct as it stands.
 `design.md` §16 no longer has "whether the Playwright service is ever needed"
 as an open question, and its §5 `browser` row and the research note's
 recommendation (`research:19-21`) say the service is built rather than
@@ -294,8 +296,6 @@ decides whether to build, it measures whether the built thing was worth it.
 - `uv run pytest -q`, `ruff check`, `ruff format --check` green.
 - Needs-JS counter reported for the run, so at M8 the Playwright service can
   be kept or dropped on a number rather than an opinion.
-- `docker compose up` brings the Playwright service up and `read_pages`
-  reaches it; with the service down, reading still succeeds on static text.
 
 ## Deliberately not in M5
 
