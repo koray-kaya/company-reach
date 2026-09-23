@@ -95,10 +95,10 @@ async def test_the_child_loads_the_company_and_finds_its_site(seeded: Settings):
 
 @respx.mock
 async def test_a_company_without_a_site_ends_with_skip(seeded: Settings, monkeypatch):
-    async def nothing(query, *, settings, limit=10):
-        return []
+    async def only_directories(query, *, settings, limit=10):
+        return [Result("https://www.moneyhouse.ch/de/company/muster", "x", "y", "ddg")]
 
-    monkeypatch.setattr(node, "search", nothing)
+    monkeypatch.setattr(node, "search", only_directories)
     out = await child(seeded).ainvoke(
         {"run_id": "r1", "uid": UID, "goal": "g", "about_me": "a"}
     )

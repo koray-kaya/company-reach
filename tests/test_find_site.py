@@ -307,15 +307,16 @@ async def test_no_candidate_at_all_is_a_finding_not_an_error(
     settings: Settings, monkeypatch
 ):
     """Five of twenty companies in the prototype had no findable website.
-    That is a fact about the population."""
+    That is a fact about the population. What such a company looks like to
+    search is directory entries and nothing of its own — not silence."""
 
-    async def nothing(query, *, settings, limit=10):
-        return []
+    async def only_directories(query, *, settings, limit=10):
+        return [Result("https://www.moneyhouse.ch/de/company/muster", "x", "y", "ddg")]
 
     async def no_guesses(names, **kw):
         return []
 
-    monkeypatch.setattr(node, "search", nothing)
+    monkeypatch.setattr(node, "search", only_directories)
     monkeypatch.setattr(node, "resolving_domains", no_guesses)
 
     out = await find_site(state(), settings=settings, fetcher=quick(settings))
@@ -334,6 +335,77 @@ async def test_search_failing_is_an_error_not_a_finding(
         raise SearchError("every baseline engine was unresponsive")
 
     monkeypatch.setattr(node, "search", broken)
+    with pytest.raises(SearchError):
+        await find_site(state(), settings=settings, fetcher=quick(settings))
+
+
+# --- silence is not an answer (#17) ------------------------------------------
+
+
+async def test_every_query_empty_twice_is_an_error_not_a_finding(
+    settings: Settings, monkeypatch
+):
+    """A throttled engine can answer with nothing without saying so. A real
+    company almost always has at least a directory entry, so every query
+    coming back empty means we were not heard, not that nothing is there."""
+    asked: list[str] = []
+
+    async def silent(query, *, settings, limit=10):
+        asked.append(query)
+        return []
+
+    async def no_guesses(names, **kw):
+        return []
+
+    monkeypatch.setattr(node, "search", silent)
+    monkeypatch.setattr(node, "resolving_domains", no_guesses)
+    with pytest.raises(SearchError):
+        await find_site(state(), settings=settings, fetcher=quick(settings))
+    # Every query asked once, then once more after the pause.
+    assert len(asked) == 2 * len(build_queries(company()))
+
+
+@respx.mock
+async def test_an_answer_on_the_second_round_is_used(settings: Settings, monkeypatch):
+    rounds = len(build_queries(company()))
+    asked: list[str] = []
+
+    async def silent_at_first(query, *, settings, limit=10):
+        asked.append(query)
+        if len(asked) <= rounds:
+            return []
+        return [Result(f"{SITE}/", "Muster Metallbau AG", "Metallteile", "ddg")]
+
+    async def no_guesses(names, **kw):
+        return []
+
+    async def resolve(host):
+        return ["93.184.216.34"]
+
+    monkeypatch.setattr("company_reach.tools.fetcher.resolve_host", resolve)
+    monkeypatch.setattr(node, "resolving_domains", no_guesses)
+    monkeypatch.setattr(node, "search", silent_at_first)
+    serve(IMPRESSUM_WITH_UID)
+    model_says(monkeypatch, f"{SITE}/", "Muster Metallbau AG")
+
+    out = await find_site(state(), settings=settings, fetcher=quick(settings))
+    assert out["site"] is not None
+
+
+async def test_a_resolving_guess_does_not_excuse_a_silent_search(
+    settings: Settings, monkeypatch
+):
+    """A guess is built from the name; it says nothing about whether search
+    was working. Holz-Bau-Physik was captured exactly like this."""
+
+    async def silent(query, *, settings, limit=10):
+        return []
+
+    async def one_guess(names, **kw):
+        return [f"{SITE}/"]
+
+    monkeypatch.setattr(node, "search", silent)
+    monkeypatch.setattr(node, "resolving_domains", one_guess)
     with pytest.raises(SearchError):
         await find_site(state(), settings=settings, fetcher=quick(settings))
 
