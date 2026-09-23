@@ -1,0 +1,219 @@
+# M6 — Contact and Draft Implementation Plan
+
+Issue #6. Branch `feat/6-contact-and-draft`, cut from `main` (M5 merged as
+aab045d via #23).
+
+M6 is where the tool stops being a research pipeline and starts producing
+something a human sends. After it, `company-reach run` takes a batch of ten
+from the pool and leaves ten rows a reviewer can act on: a company, a
+person, an address with its provenance, a send / hold / skip verdict, and a
+German invitation short enough to fit in a `mailto:` link.
+
+It is also the milestone that closes the audit's **other** P1 — the one M4
+and M5 only partly answered. `audit-2026-09-19.md:207` describes it: an
+infrastructure failure today consumes a company for ever, because `seen` is
+written at draw time and a rerun skips anything with a result. M4 gave us
+typed errors and a search probe; M6 owes the other half, `error` rows that a
+rerun and a `retry` command pick back up.
+
+And it is the first milestone where the tool touches a **person**. Everything
+before this was about companies; from here on the records are personal data
+under the revDSG, and the constraints in `LEARNINGS.md` §6 stop being
+background.
+
+## What the design already settles
+
+| Decision | Where |
+|---|---|
+| Child tail: `check_profile → find_contact → recommend → (draft → check_draft) → END` | `design.md:79-81`, `graph.spec.yaml:197-201` |
+| `find_contact` order: personal address on the site domain > SHAB name + generic address on the site domain > LinkedIn lead, unverified | `design.md:137`, `graph.spec.yaml:162` |
+| `recommend`: no site / distributor / foreign group → skip; no contact or only third-party → hold; else send; one reason | `design.md:138`, `graph.spec.yaml:163` |
+| `check_draft`: no URL, no e-mail, ≤ 1,200 chars, greets by name, carries the revDSG sentence; one regeneration, then `hold` | `design.md:140`, `graph.spec.yaml:165` |
+| `Contact` = name, role, email, `email_kind` seen \| constructed \| generic \| third_party, source site \| shab, source_url, linkedin_lead? | `design.md:112` |
+| `Draft` = subject, body, mailto_fits | `design.md:114` |
+| `shab.persons(uid)`: `uids=` filter, `publicationStates=PUBLISHED`, XML detail per publication, DE/FR person parser; `[]` on empty, `ShabError` on HTTP failure | `design.md:156` |
+| `mailto.build(to, subject, body)`: RFC 6068, fits below 2,000 encoded characters | `design.md:159`, `design.md:236` |
+| `drafts`, `results`, `ledger`, `contacts` tables already exist | `design.md:200-203`, `schema.sql` |
+| Sending stays human; no automatic mail, ever | `AGENTS.md` hard rules, `LEARNINGS.md` §6 |
+| A company is contacted once, ever: ledger plus a permanent suppression list | `LEARNINGS.md` §6 |
+| The revDSG duty goes in the mail: where the name came from, what it is for, how to have it deleted | `LEARNINGS.md` §6 |
+| No product name, no pitch — a survey invitation is not advertising only while it is hand-sent | `LEARNINGS.md` §6, UWG Art. 3(1)(o) |
+
+### What the research measured, and it shapes the rules
+
+| Finding | Where |
+|---|---|
+| A named mail answers at 8–15%, `info@` at 2–6%. The name is worth real work | `LEARNINGS.md` §5 |
+| `info@` is fine when it is all there is — **never** with "Sehr geehrte Damen und Herren". A named greeting to a general inbox gets forwarded | `LEARNINGS.md` §5 |
+| **4 of 10 on-profile companies published no reachable address at all**, including the best fit of a batch. The bottleneck is mailboxes, not companies | `LEARNINGS.md` §5 |
+| SHAB pilot (n=12): 5 named a person in a target role, 4 had no publication, 2 had no person block, 1 no stated function. Scan every publication, not only the newest | `LEARNINGS.md` §5 |
+| **SHAB names a past state.** In one case SHAB, a directory and the site named three different people. Where the site names someone, the site wins | `LEARNINGS.md` §5, `data-sources.md:187` |
+| `uids=CHE-000.000.003` works — plural, dotted only; `CHE000000003` returns nothing. `uid=` is silently ignored, which is the v0 pitfall | `data-sources.md` §B2 |
+| `publicationStates=PUBLISHED` is mandatory; without it the API answers 401 | `data-sources.md` §B1 |
+| The list call carries no text. The notice is in `GET /publications/{id}/xml` | `data-sources.md` §B1 |
+| Always assert a filter changed `total` before trusting it | `data-sources.md` §B2 |
+| SHAB's terms: cite the source, do not create the impression of an official document; Art. 11 para. 3 VSHAB by analogy for republishing persons | `data-sources.md:195-210` |
+| LinkedIn: a restricted web search finds public profiles without touching LinkedIn; a name alone gives false matches. Lead only, human-checked, never scraped | `LEARNINGS.md` §5 |
+
+## Contradictions between documents
+
+| # | Conflict | Resolution |
+|---|---|---|
+| 1 | `draft`'s inputs: `design.md:139` says "typed fields only (company, contact, goal, about_me)"; `graph.spec.yaml:164` has `reads: [company, profile, contact, goal, about_me]` | Open point 1. M5 made this load-bearing rather than cosmetic — see #22. |
+| 2 | `design.md:138` and `graph.spec.yaml:163` say `recommend` holds on "only third_party", using `Contact.email_kind`. M5 marks `Person.email_offsite` instead, because `Contact` did not exist yet | Mechanical: `find_contact` maps `email_offsite` to `email_kind="third_party"`. Written down so nobody re-derives it. |
+| 3 | `design.md:79` draws `recommend` as unconditional, `graph.spec.yaml:199` routes `skip` straight to `__end__` | The spec. A skipped company needs no draft, and drafting one would spend a model call on a row the reviewer will not read. |
+
+## What M5 left on M6's doorstep
+
+**#22 — `description` can legitimately carry hostile text.** `extract.md`
+tells the model that a page which addresses it should be described rather
+than obeyed, and measured on the live endpoint it does exactly that: one of
+three trials returned a description quoting the injected instruction,
+including `https://evil.example/offer`. Under `design.md:139` that string
+never reaches the drafting prompt; under `graph.spec.yaml:164` it does, and
+`check_draft`'s no-URL rule becomes the last line of the P1 defence rather
+than a tidiness rule. Open point 1.
+
+**Presence is not employment.** `tests/test_adversarial.py` asserts the limit
+in writing: a page naming an invented person beside the company's own address
+gets past `check_profile`, because the verbatim check proves the string is on
+the page, not that the person works there. SHAB is the first source of truth
+about who held a role — but it describes a *past* state, and the research
+rule is that the site wins where it names someone. Open point 3.
+
+**Six names, no addresses.** The live M5 run on one golden company returned
+six people and not one e-mail address; that site takes contact through a
+form. This is the ordinary case, not the exception — the research measured 4
+of 10 with no reachable address. What `find_contact` does with a known name
+and no address is open point 2, and it decides whether the tool produces
+anything for most companies.
+
+**#20 — a throttled run is still invisible.** Two counters now have nowhere
+to live: search's empty answers and M5's needs-JS hits. `run` writing a
+manifest for the first time is the moment to settle it. Not a blocker for
+M6, but M6 is when it becomes cheap.
+
+## Open points
+
+Four, to be answered before code (`IMPLEMENTATION.md:13-16`).
+
+**1. Does the drafting prompt see the profile?**
+*Recommendation:* no — `design.md:139` wins, and `check_draft` is tested
+against `tests/fixtures/golden/poisoned_instructions.html` anyway. Two
+reasons. The draft needs the company, the person and the goal; the profile's
+prose adds flavour the reviewer can already see on the card. And keeping the
+attacker's text out of the prompt is cheaper than catching it in the output,
+because a check that must catch everything is a worse bet than a boundary
+that never lets it in. `graph.spec.yaml:164` gets corrected either way.
+
+**2. What does `find_contact` do with a name and no address?**
+This is the majority case. The research is explicit that `info@` with a name
+is worth having and that a named greeting to a general inbox gets forwarded,
+so the two must travel together. *Recommendation:* construct
+`info@<site domain>` **only when** the site names a person and no personal
+address was found, record it as `email_kind="constructed"`, and let the
+greeting use the name. A constructed address that does not exist bounces,
+which is visible and harmless; the alternative is holding four companies in
+ten for want of an address the research says is worth 2–6%.
+
+**3. When SHAB and the site name different people, and when does SHAB run at all?**
+The research says the site wins, and that SHAB names a past state.
+*Recommendation:* call SHAB only when the site named nobody — it is a
+network call per company and its answer is discarded when the site has one.
+When SHAB is used, record `source="shab"` and the notice date, so the card
+can say how old the claim is. SHAB never overrides a name from the site,
+including the case M5 cannot catch: an injected name on the site still wins,
+and the reviewer is still the control.
+
+**4. Is the LinkedIn lead in M6?**
+*Recommendation:* no. It costs a search query per company, produces
+something explicitly unverified, and the review page that would show it as a
+lead is M7. Defer it to M7 with an issue, and let M6's `find_contact` stop
+at the constructed address. This keeps M6's already-large surface smaller and
+loses nothing measurable.
+
+## Tasks
+
+**Task 1 — `tools/shab.py` and its fixtures.**
+`persons(uid) -> list[Person]`: `uids=` in dotted form, `publicationStates=PUBLISHED`,
+then `/publications/{id}/xml` per hit, then the DE/FR person-block parser.
+Every publication, not only the newest.
+*Test:* saved XML fixtures for a DE notice with a person block, a FR one, one
+with no block and one with no stated function; a test that the dotted form is
+what gets sent, since the undotted one silently returns nothing; `ShabError`
+on HTTP failure, `[]` on a company with no publications.
+
+**Task 2 — `nodes/find_contact.py`.**
+The rules in order, with the noise filters `tools/checks.py` already has.
+Writes `contacts` rows.
+*Test:* a site address wins over SHAB; SHAB is not called at all when the
+site named someone (open point 3); a name with no address becomes a
+constructed `info@` marked as such (open point 2); an `email_offsite` person
+becomes `email_kind="third_party"`; nothing at all is a finding, not an
+error.
+
+**Task 3 — `nodes/recommend.py`.**
+Pure rules, no I/O: no site / distributor / foreign group → skip; no contact
+or only third-party → hold; else send. One reason, always.
+*Test:* one case per branch, and that the reason is never empty — the
+reviewer reads it.
+
+**Task 4 — `tools/mailto.py`.**
+`build(to, subject, body) -> MailtoLink{href, length, fits}`, RFC 6068, fits
+below 2,000 encoded characters.
+*Test:* a body with umlauts, newlines and an ampersand round-trips; the
+length is measured on the encoded string, not the plain one; `fits` is false
+just above the limit.
+
+**Task 5 — `prompts/draft.md` and `nodes/draft.py`.**
+German, plain text, short. Typed fields only (open point 1). Carries the
+revDSG sentence, names no product, makes no pitch.
+*Test:* the rendered prompt contains no page text and no profile prose; the
+draft is stored with its provenance.
+
+**Task 6 — `nodes/check_draft.py`.**
+No URL, no e-mail address, ≤ 1,200 characters, greets the contact by name,
+contains the revDSG sentence. One regeneration on failure, then `hold`.
+*Test:* one case per rule; a draft that fails twice ends as `hold` rather
+than being sent; and the P1 case — a draft generated from a company whose
+profile came from `poisoned_instructions.html` carries no injected link.
+
+**Task 7 — wire the tail and the real wrapper.**
+`check_profile → find_contact → recommend`, conditional to `draft →
+check_draft → END`. `enrich_company` already catches and records; confirm it
+still does with a tail this long.
+*Test:* a company walks the whole child; a skipped one stops at `recommend`;
+one raising in `draft` still produces an error row, not a crashed run.
+
+**Task 8 — `run` end to end, and `retry`.**
+The audit's P1 (`audit:207`, `:215`). A company whose only result is an
+`error` row is eligible for re-enrichment on a rerun, and `company-reach
+retry <run_id>` re-enriches exactly those.
+*Test:* the acceptance from `audit:217` — with search failing for 2 of 10
+children, those 2 get `error`, are not redrawn, and are re-enriched by
+`retry`; `seen` is unchanged throughout.
+
+**Task 9 — the draft checklist eval.**
+Deterministic grading against the golden set, opt-in like the others: does a
+draft greet by name, stay under the length, carry the revDSG sentence, avoid
+URLs. Plus the adversarial case, 3 of 3 trials (`audit:186`).
+
+## Acceptance
+
+- `company-reach run` processes one batch end to end; `drafts` and `results`
+  rows exist; nothing was sent.
+- The draft checklist passes on the golden set, and the adversarial case 3 of
+  3.
+- `audit:217`'s retry scenario behaves as written.
+- `uv run pytest -q`, `ruff check`, `ruff format --check` green, and CI green
+  on the pull request — which from #24 onwards is the real gate rather than a
+  claim in a report.
+
+## Deliberately not in M6
+
+- **The LinkedIn lead** — open point 4, deferred to M7 with an issue.
+- **The review page** — M7 owns everything a human looks at.
+- **Actually sending** — never automated, in any milestone.
+- **The ledger and suppression list** — the tables exist; M7 writes them,
+  because "contacted once, ever" is decided at the moment a human clicks
+  send.
