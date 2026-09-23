@@ -1,0 +1,52 @@
+# The check AGENTS.md already promised: "main via short-lived branch → PR →
+# review → merge". Until now nothing ran the tests on a pull request, so
+# whether they passed depended on somebody having run them by hand.
+#
+# No secrets, no services, no network. The suite takes about fifteen seconds
+# and the only tests it skips are the golden evaluations, which are already
+# opt-in behind RUN_LLM_EVALS because they call a paid endpoint and are not
+# deterministic. That is why this file can stay this short.
+#
+# Actions are pinned to major tags rather than commit SHAs: this workflow is
+# handed no secrets and publishes nothing, so the blast radius of a bad
+# action is a failed build.
+
+name: ci
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# A second push to the same branch makes the first run pointless.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      # --locked fails rather than silently resolving something new, so a
+      # green build means the lockfile really describes what was tested.
+      - name: install
+        run: uv sync --locked
+
+      - name: lint
+        run: uv run ruff check .
+
+      - name: format
+        run: uv run ruff format --check .
+
+      - name: tests
+        run: uv run pytest -q
