@@ -200,7 +200,7 @@ def run(
 def enrich(
     uid: Annotated[str, typer.Option(help="The company to enrich.")],
     until: Annotated[
-        str, typer.Option(help="How far to go. Only 'site' exists until M5.")
+        str, typer.Option(help="How far to go: 'site' or 'profile'.")
     ] = "site",
     run_id: str | None = None,
 ) -> None:
@@ -209,12 +209,12 @@ def enrich(
     The milestone's demo, and the way to look at a single disagreement
     between the register and a website without drawing a batch.
     """
-    if until != "site":
-        raise typer.BadParameter("only --until site exists until M5.")
+    if until not in ("site", "profile"):
+        raise typer.BadParameter("--until takes 'site' or 'profile'.")
 
     s = get_settings()
     rid = _run_id(run_id)
-    child = build_child(settings=s)
+    child = build_child(settings=s, until=until)
 
     try:
         out = asyncio.run(
@@ -235,6 +235,37 @@ def enrich(
     typer.echo(f"  evidence  {site.evidence}")
     typer.echo(f"  from      {site.evidence_url}")
     typer.echo(f"  pages     {len(out.get('page_urls') or [])} listed")
+
+    profile = out.get("profile")
+    if profile is None:
+        return
+
+    read = out.get("page_texts") or {}
+    shells = out.get("needs_js") or []
+    typer.echo(f"  read      {len(read)} of {len(out.get('pages_to_read') or [])}")
+    if shells:
+        typer.echo(f"  needs JS  {len(shells)}")
+    typer.echo("")
+    typer.echo(profile.description)
+    if profile.size_signal:
+        typer.echo(f"size    {profile.size_signal}")
+    for address in profile.addresses:
+        typer.echo(f"address {address}")
+    for person in profile.persons:
+        mail = person.email or "no address on the site"
+        mark = "  [third party]" if person.email_offsite else ""
+        role = f", {person.role}" if person.role else ""
+        typer.echo(f"person  {person.name}{role} — {mail}{mark}")
+    flags = [
+        name
+        for name, on in (
+            ("distributor only", profile.distributor_only),
+            ("foreign group", profile.foreign_group),
+        )
+        if on
+    ]
+    if flags:
+        typer.echo(f"flags   {', '.join(flags)}")
 
 
 if __name__ == "__main__":

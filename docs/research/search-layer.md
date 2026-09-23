@@ -227,8 +227,9 @@ HTTP client: **httpx** (sync `httpx.Client`, one per provider, reused).
 
 ## 4. Query strategy and blocklist
 
-Query formulations (in order; stop early when a candidate passes the UID
-or Impressum check from LEARNINGS 4):
+Query formulations, all three asked (this note originally said to stop early
+once a candidate passed the UID or Impressum check from LEARNINGS 4; two
+later measurements retired that advice — see the note below):
 
 1. `"<name without legal form>" <seat>` — exact phrase plus the municipality
    from the register. Strip `AG`, `GmbH`, `SA`, `Sàrl`, `SAGL` and
@@ -248,6 +249,30 @@ or Impressum check from LEARNINGS 4):
 4. Optional narrowing when 1–3 return only directories:
    `site:.ch "<name>" <seat>`. Do not start with `site:.ch`; Swiss SMEs also
    use `.com` and `.swiss`.
+
+**Why all three are asked, 2026-09-23 (#16).** The early-stopping advice
+above was written before the code existed; two findings since then retired
+it, and both are recorded where they were measured.
+
+The stop signal is gone. Stopping meant "a candidate passed the UID or
+Impressum check", and a UID match no longer settles anything: a company
+directory publishes UIDs too, so a directory page passed tier 1, the model
+correctly rejected it, and the rejection was overruled
+(`find_site._decide`, commit `efffeaf`). The model is the gate now and the
+tier is only the label, so there is nothing left that a single query can
+prove.
+
+Stopping would also cost accuracy. The model is right because it compares
+every candidate side by side; capping the list at three was tried and lost
+the right site behind directories whenever search ranked them first
+(`find_site._MAX_CANDIDATES`). Deciding after query 1 shows the model a
+smaller list, which is that experiment again.
+
+What stopping would have saved: two queries per company at a one-second gap
+through a semaphore of two — about ten seconds on a batch of ten. Measured
+on the golden set, all three queries together reach the ten-candidate cap
+for only 6 of 20 companies, so there is no "the list is already full"
+shortcut either.
 
 Ranking hints for the code, not the model: prefer results whose registered
 domain contains a token of the name; dedupe by registered domain (host

@@ -51,6 +51,8 @@ from company_reach.tools.fetcher import Fetcher, resolve_host
 from company_reach.tools.search import Result, search
 from company_reach.tools.textify import normalise
 from company_reach.tools.uid import uid_match
+from company_reach.tools.untrusted import as_data
+from company_reach.tools.urls import registered_domain
 
 Tier = Literal["uid", "address", "model"]
 
@@ -62,8 +64,20 @@ _UMLAUTS = str.maketrans({"ä": "ae", "ö": "oe", "ü": "ue", "ß": "ss"})
 # candidates side by side, so more of them costs tokens, not accuracy.
 _MAX_CANDIDATES = 10
 # Paths a sitemap has thousands of and a company profile needs none of.
+#
+# The optional ending and the hyphen were measured in, not guessed (#16,
+# 2026-09-23). Of the fourteen golden sites, three are large enough for the
+# 200-URL cap to bite, and all three write the plural: `/products/` 1,597 on
+# one, 350 on another, plus `/blogs/`, `/collections/` and
+# `/product-category/`. The singular-only pattern matched none of them, so
+# exactly the sites that needed pruning received none of it.
+#
+# The ending stays a closed list rather than `s?` or `.*`, and the separator
+# stays `-` or `/`, so that `/newsletter/` and `/produktion/` — a newsletter
+# and a page on how the company manufactures — are still kept.
 _BULK = re.compile(
-    r"/(produkt|product|shop|blog|news|artikel|tag|category|kategorie)(/|$)"
+    r"/(produkt|product|shop|blog|news|artikel|tag|category|kategorie|collection)"
+    r"(e|en|n|s)?([-/]|$)"
     r"|/20\d\d/",
     re.IGNORECASE,
 )
@@ -147,11 +161,6 @@ async def resolving_domains(names: list[str]) -> list[str]:
 # --- candidates --------------------------------------------------------------
 
 
-def _registered_domain(url: str) -> str | None:
-    host = urlsplit(url).hostname
-    return host.lower().removeprefix("www.") if host else None
-
-
 def site_root(url: str) -> str:
     """`https://muster.ch/home/impressum/` → `https://muster.ch/`.
 
@@ -172,7 +181,7 @@ def dedupe_candidates(results: list[Result]) -> list[str]:
             continue
         if is_blocked(result.url):
             continue
-        domain = _registered_domain(result.url)
+        domain = registered_domain(result.url)
         if domain is None or domain in seen:
             continue
         seen.add(domain)
@@ -290,7 +299,7 @@ def quote_found(quote: str, text: str) -> bool:
 def _candidate_block(url: str, pages: CandidatePages) -> str:
     """Page text is data, and it is delimited so it cannot be read as
     instructions — the same convention the scoring prompt uses."""
-    return f"<<<PAGE url={url}>>>\n{pages.for_prompt()}\n<<<END>>>"
+    return as_data(pages.for_prompt(), url=url)
 
 
 def narrowing_query(record: CompanyRecord) -> str:

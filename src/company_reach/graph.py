@@ -9,17 +9,27 @@ through every superstep.
 
 import operator
 from functools import partial
-from typing import Annotated, TypedDict
+from typing import Annotated, Literal, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Send
 
-from company_reach.models import CompanyRecord, CompanyResult, SelectionCriteria
+from company_reach.models import (
+    CompanyProfile,
+    CompanyRecord,
+    CompanyResult,
+    RawProfile,
+    SelectionCriteria,
+)
+from company_reach.nodes.check_profile import check_profile
 from company_reach.nodes.enrich_company import enrich_company
+from company_reach.nodes.extract import extract
 from company_reach.nodes.find_site import SiteChoice, find_site
 from company_reach.nodes.load_company import load_company
+from company_reach.nodes.pick_pages import pick_pages
 from company_reach.nodes.probe_search import probe_search
+from company_reach.nodes.read_pages import read_pages
 from company_reach.profile import goal_hash
 from company_reach.settings import Settings
 from company_reach.tools import llm
@@ -155,14 +165,19 @@ class ChildState(TypedDict, total=False):
     company: CompanyRecord | None
     site: SiteChoice | None
     page_urls: list[str]
+    pages_to_read: list[str]
+    page_texts: dict[str, str]
+    needs_js: list[str]
+    raw_profile: RawProfile | None
+    profile: CompanyProfile | None
     recommendation: str | None
     reason: str | None
 
 
 def has_site(state: ChildState) -> str:
-    """M5 adds `pick_pages` on the yes branch. For now a found site ends the
-    child too — find_site already wrote everything M4 promises."""
-    return END
+    """The one branch the model decides. No site is a finding and the child
+    is done; a site means there are pages to read."""
+    return "pick_pages" if state.get("site") is not None else END
 
 
 def _stub_recommend(state: ChildState) -> dict:
@@ -180,7 +195,12 @@ def build_stub_child():
     return builder.compile()
 
 
-def build_child(*, settings: Settings, fetcher=None) -> CompiledStateGraph:
+Until = Literal["site", "profile"]
+
+
+def build_child(
+    *, settings: Settings, fetcher=None, until: Until = "profile"
+) -> CompiledStateGraph:
     """The real child: load the register record, then find the website.
 
     One `Fetcher` is threaded through rather than built per node, because the
@@ -190,9 +210,31 @@ def build_child(*, settings: Settings, fetcher=None) -> CompiledStateGraph:
     builder = StateGraph(ChildState)
     builder.add_node("load_company", partial(load_company, settings=settings))
     builder.add_node("find_site", partial(find_site, settings=settings, fetcher=shared))
+
     builder.add_edge(START, "load_company")
     builder.add_edge("load_company", "find_site")
-    builder.add_conditional_edges("find_site", has_site, [END])
+
+    # `until` builds a shorter graph rather than interrupting a longer one:
+    # LangGraph's interrupts need a checkpointer, and this project has none
+    # on purpose. `enrich --until site` is how M4 is looked at, and it should
+    # keep costing what M4 cost — no page reads, no extraction.
+    if until == "site":
+        builder.add_edge("find_site", END)
+        return builder.compile()
+
+    builder.add_node("pick_pages", partial(pick_pages, settings=settings))
+    builder.add_node(
+        "read_pages", partial(read_pages, settings=settings, fetcher=shared)
+    )
+    builder.add_node("extract", partial(extract, settings=settings))
+    builder.add_node("check_profile", partial(check_profile, settings=settings))
+
+    builder.add_conditional_edges("find_site", has_site, ["pick_pages", END])
+    builder.add_edge("pick_pages", "read_pages")
+    builder.add_edge("read_pages", "extract")
+    builder.add_edge("extract", "check_profile")
+    # M6 puts find_contact here.
+    builder.add_edge("check_profile", END)
     return builder.compile()
 
 

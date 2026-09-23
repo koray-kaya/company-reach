@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from company_reach.models import (
+    CompanyProfile,
     CompanyRecord,
     CompanyResult,
     Score,
@@ -314,3 +315,57 @@ def company_by_uid(conn: sqlite3.Connection, uid: str) -> CompanyRecord | None:
         (uid,),
     ).fetchone()
     return CompanyRecord(**dict(row)) if row else None
+
+
+def upsert_profile(
+    conn: sqlite3.Connection, run_id: str, uid: str, profile: CompanyProfile
+) -> None:
+    """One row per (run, company), the profile stored as JSON.
+
+    JSON rather than a column each: nothing queries inside a profile — it is
+    read back whole or not at all — and a column per field would have to
+    change every time the extraction schema does.
+    """
+    conn.execute(
+        """INSERT INTO profiles (run_id, uid, profile) VALUES (?,?,?)
+           ON CONFLICT(run_id, uid) DO UPDATE SET profile=excluded.profile""",
+        (run_id, uid, profile.model_dump_json()),
+    )
+
+
+def profile_by_uid(
+    conn: sqlite3.Connection, run_id: str, uid: str
+) -> CompanyProfile | None:
+    """None means this company never got as far as being read. A company
+    whose pages named nobody comes back as a profile with no persons, which
+    is a finding and must not read the same as the absence."""
+    row = conn.execute(
+        "select profile from profiles where run_id = ? and uid = ?", (run_id, uid)
+    ).fetchone()
+    return CompanyProfile.model_validate_json(row["profile"]) if row else None
+
+
+def record_page(
+    conn: sqlite3.Connection,
+    url: str,
+    *,
+    status: int | None,
+    text: str,
+    raw_path: str,
+) -> None:
+    """Index one page that was read: what it said, and where its bytes are.
+
+    The url is the key because this table indexes the disk cache and the
+    cache holds one copy per url — a rerun replaces the row rather than
+    growing the table. The cleaned text is kept here so that the review page
+    and a later run can see what the model was given without re-fetching the
+    site or re-running the extractor over stored HTML.
+    """
+    conn.execute(
+        """INSERT INTO pages (url, fetched_at, status, text, raw_path)
+           VALUES (?,?,?,?,?)
+           ON CONFLICT(url) DO UPDATE SET
+             fetched_at=excluded.fetched_at, status=excluded.status,
+             text=excluded.text, raw_path=excluded.raw_path""",
+        (url, now(), status, text, raw_path),
+    )

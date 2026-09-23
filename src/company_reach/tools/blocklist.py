@@ -8,7 +8,8 @@ us.
 
 from functools import lru_cache
 from importlib.resources import files
-from urllib.parse import urlsplit
+
+from company_reach.tools.urls import registered_domain
 
 
 @lru_cache
@@ -30,10 +31,9 @@ def is_blocked(url: str) -> bool:
     dot, `mylinkedin.com` would be blocked by the `linkedin.com` entry, and a
     company with an unlucky name would silently lose its own website.
     """
-    host = urlsplit(url).hostname
+    host = registered_domain(url)
     if host is None:
         return False
-    host = host.lower().removeprefix("www.")
     return any(
         host == blocked or host.endswith(f".{blocked}") for blocked in load_blocklist()
     )
