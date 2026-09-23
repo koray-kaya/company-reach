@@ -51,6 +51,7 @@ from company_reach.tools.fetcher import Fetcher, resolve_host
 from company_reach.tools.search import Result, search
 from company_reach.tools.textify import normalise
 from company_reach.tools.uid import uid_match
+from company_reach.tools.untrusted import as_data
 
 Tier = Literal["uid", "address", "model"]
 
@@ -302,7 +303,7 @@ def quote_found(quote: str, text: str) -> bool:
 def _candidate_block(url: str, pages: CandidatePages) -> str:
     """Page text is data, and it is delimited so it cannot be read as
     instructions — the same convention the scoring prompt uses."""
-    return f"<<<PAGE url={url}>>>\n{pages.for_prompt()}\n<<<END>>>"
+    return as_data(pages.for_prompt(), url=url)
 
 
 def narrowing_query(record: CompanyRecord) -> str:

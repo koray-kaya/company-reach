@@ -20,6 +20,7 @@ from company_reach.models import CompanyRecord
 from company_reach.nodes.find_site import SiteChoice
 from company_reach.settings import Settings
 from company_reach.tools import llm
+from company_reach.tools.untrusted import as_data
 
 
 class PageChoice(BaseModel):
@@ -29,8 +30,7 @@ class PageChoice(BaseModel):
 
 
 def _as_block(urls: list[str]) -> str:
-    listed = "\n".join(urls)
-    return f"<<<PAGES>>>\n{listed}\n<<<END>>>"
+    return as_data("\n".join(urls), label="PAGES")
 
 
 async def pick_pages(state: dict[str, Any], *, settings: Settings) -> dict:
