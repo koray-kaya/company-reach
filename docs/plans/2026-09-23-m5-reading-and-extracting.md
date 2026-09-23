@@ -136,14 +136,27 @@ Each task is one commit with its test. Tests are network-free except where
 marked; model calls are graded by the golden set, opt-in under
 `RUN_LLM_EVALS=1` (`IMPLEMENTATION.md:41-44`).
 
-**Task 0 — #16: prune patterns and early stopping.**
-Check `_BULK` against the sitemaps of the 20 golden companies; report what
-each pattern drops and correct the ones that drop wanted pages. Then stop
-searching once a candidate passes the UID or Impressum check, instead of
-always running all three queries.
-*Test:* a fixture sitemap with a page each pattern should and should not
-drop; a `find_site` test asserting the second and third queries are never
-issued once tier 1 matches.
+**Task 0 — #16: prune patterns and early stopping. Done, 2026-09-23.**
+
+*Prune patterns — fixed (`8cbafd6`).* Measured against the 14 golden page
+lists first. The patterns turned out to have zero false positives — no
+wanted page was ever matched — but they also matched almost nothing on the
+only three sites where pruning matters, because those sites write the
+plural: `/products/` 1,597 and 350 times, plus `/blogs/`, `/collections/`
+and `/product-category/`, none of which the singular-only pattern reached.
+With the plural endings and a hyphen separator the 200-URL cap no longer
+bites on any of the fourteen, and the worst-hit site keeps 11 of its 12
+wanted pages instead of 3.
+
+*Early stopping — not done, and retired.* Its premise died twice over. The
+stop signal was "a candidate passed the UID or Impressum check", but
+`efffeaf` made the model the gate precisely because a directory page carries
+the UID too; and deciding after query 1 shows the model fewer candidates,
+which is the capped-at-three experiment `_MAX_CANDIDATES` already lost. The
+saving was about ten seconds a batch, and no "candidate list is already
+full" shortcut exists either — all three queries together reach the
+ten-candidate cap for only 6 of 20 companies. `research/search-layer.md` §4
+now carries the reasoning, so the next reader does not re-derive it.
 
 **Task 1 — `CompanyProfile` and the profile store.**
 The model in `models.py`, and `profiles` read/write in `tools/db.py`
