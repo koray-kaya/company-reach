@@ -343,3 +343,29 @@ def profile_by_uid(
         "select profile from profiles where run_id = ? and uid = ?", (run_id, uid)
     ).fetchone()
     return CompanyProfile.model_validate_json(row["profile"]) if row else None
+
+
+def record_page(
+    conn: sqlite3.Connection,
+    url: str,
+    *,
+    status: int | None,
+    text: str,
+    raw_path: str,
+) -> None:
+    """Index one page that was read: what it said, and where its bytes are.
+
+    The url is the key because this table indexes the disk cache and the
+    cache holds one copy per url — a rerun replaces the row rather than
+    growing the table. The cleaned text is kept here so that the review page
+    and a later run can see what the model was given without re-fetching the
+    site or re-running the extractor over stored HTML.
+    """
+    conn.execute(
+        """INSERT INTO pages (url, fetched_at, status, text, raw_path)
+           VALUES (?,?,?,?,?)
+           ON CONFLICT(url) DO UPDATE SET
+             fetched_at=excluded.fetched_at, status=excluded.status,
+             text=excluded.text, raw_path=excluded.raw_path""",
+        (url, now(), status, text, raw_path),
+    )

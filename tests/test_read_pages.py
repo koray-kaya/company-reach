@@ -17,6 +17,7 @@ import respx
 
 from company_reach.nodes.read_pages import needs_javascript, read_pages
 from company_reach.settings import Settings
+from company_reach.tools.db import connect, init_db
 from company_reach.tools.fetcher import Fetcher
 
 SITE = "https://muster-metallbau.ch"
@@ -40,6 +41,13 @@ def public_dns(monkeypatch):
         return ["93.184.216.34"]
 
     monkeypatch.setattr("company_reach.tools.fetcher.resolve_host", resolve)
+
+
+@pytest.fixture(autouse=True)
+def database(settings):
+    """Production reaches this node with a database that already holds the
+    pool, so the node does not defend against a missing one."""
+    init_db(settings.db_path)
 
 
 def quick(settings: Settings) -> Fetcher:
@@ -154,3 +162,42 @@ async def test_a_readable_site_records_nothing(settings):
     )
 
     assert out["needs_js"] == []
+
+
+@respx.mock
+async def test_what_was_read_is_indexed(settings):
+    """The pages table has been in the schema since M1 with nothing filling
+    it. M5 is the milestone that needs it: the review page and a later run
+    should be able to see what the model was shown without re-fetching."""
+    allow_robots()
+    serve("/impressum", REAL_PAGE)
+    serve("/team", REAL_PAGE)
+
+    await read_pages(
+        state([f"{SITE}/impressum", f"{SITE}/team"]),
+        settings=settings,
+        fetcher=quick(settings),
+    )
+
+    with connect(settings.db_path) as conn:
+        rows = conn.execute("select * from pages order by url").fetchall()
+
+    assert [r["url"] for r in rows] == [f"{SITE}/impressum", f"{SITE}/team"]
+    assert all(r["status"] == 200 for r in rows)
+    assert all("Metallbau" in r["text"] for r in rows)
+    assert all(r["raw_path"].endswith(".html") for r in rows)
+
+
+@respx.mock
+async def test_a_page_that_could_not_be_read_is_not_indexed(settings):
+    """The row would say we read it. An index of pages we never got is worse
+    than no index."""
+    allow_robots()
+    serve("/gone", status=404)
+
+    await read_pages(
+        state([f"{SITE}/gone"]), settings=settings, fetcher=quick(settings)
+    )
+
+    with connect(settings.db_path) as conn:
+        assert conn.execute("select count(*) from pages").fetchone()[0] == 0

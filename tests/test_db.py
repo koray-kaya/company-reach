@@ -5,6 +5,7 @@ from company_reach.tools.db import (
     connect,
     init_db,
     profile_by_uid,
+    record_page,
     upsert_companies,
     upsert_profile,
 )
@@ -126,3 +127,37 @@ def test_the_offsite_mark_survives_storage(tmp_path: Path):
     with connect(db) as conn:
         back = profile_by_uid(conn, "run-1", "CHE109047505")
     assert back is not None and back.persons[0].email_offsite is True
+
+
+def test_a_page_that_was_read_is_indexed(tmp_path: Path):
+    db = tmp_path / "t.db"
+    init_db(db)
+    with connect(db) as conn:
+        record_page(
+            conn,
+            "https://muster-metallbau.ch/impressum",
+            status=200,
+            text="Muster Metallbau AG, Beispielstrasse 1",
+            raw_path="data/cache/abc.html",
+        )
+    with connect(db) as conn:
+        row = conn.execute("select * from pages").fetchone()
+    assert row["url"] == "https://muster-metallbau.ch/impressum"
+    assert row["status"] == 200
+    assert "Beispielstrasse" in row["text"]
+    assert row["raw_path"] == "data/cache/abc.html"
+    assert row["fetched_at"]
+
+
+def test_reading_a_page_again_updates_its_row(tmp_path: Path):
+    """The url is the key, because the table indexes the cache and the cache
+    holds one copy per url. A second run must not double the table."""
+    db = tmp_path / "t.db"
+    init_db(db)
+    url = "https://muster-metallbau.ch/impressum"
+    with connect(db) as conn:
+        record_page(conn, url, status=200, text="old", raw_path="a.html")
+        record_page(conn, url, status=200, text="new", raw_path="a.html")
+    with connect(db) as conn:
+        rows = conn.execute("select text from pages").fetchall()
+    assert [r["text"] for r in rows] == ["new"]

@@ -25,6 +25,7 @@ import json
 import socket
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
@@ -99,6 +100,12 @@ class Fetcher:
         self._last_request: dict[str, float] = {}
 
     # -- cache ---------------------------------------------------------------
+
+    def cache_path(self, url: str) -> Path:
+        """Where this URL's HTML is kept. Public because the `pages` table
+        indexes the cache and should record where the bytes are; the naming
+        stays here rather than being recomputed by whoever writes the row."""
+        return self._cache_dir / f"{_cache_key(url)}.html"
 
     def _cached(self, url: str) -> Page | None:
         if self._refetch:

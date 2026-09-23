@@ -15,6 +15,7 @@ import re
 from typing import Any
 
 from company_reach.settings import Settings
+from company_reach.tools.db import connect, record_page
 from company_reach.tools.fetcher import Fetcher
 from company_reach.tools.textify import textify
 
@@ -64,6 +65,7 @@ async def read_pages(
 
     texts: dict[str, str] = {}
     needs_js: list[str] = []
+    indexed: list[tuple[str, int | None, str]] = []
     for url in urls:
         page = await fetcher.get(url)
         if page.error is not None or not page.html:
@@ -72,6 +74,24 @@ async def read_pages(
         if needs_javascript(page.html, text):
             needs_js.append(url)
         if text.strip():
-            texts[url] = _truncate(text, settings.max_chars_per_page)
+            bounded = _truncate(text, settings.max_chars_per_page)
+            texts[url] = bounded
+            indexed.append((url, page.status, bounded))
+
+    # The `pages` table has been in the schema since M1 with nothing filling
+    # it, and `graph.spec.yaml:159` gives this node no database side effect —
+    # but it is the only place that holds a url, its status, its cleaned text
+    # and its place in the cache at once. Recorded so the review page and a
+    # later run can see what the model was shown without fetching again.
+    if indexed:
+        with connect(settings.db_path) as conn:
+            for url, status, text in indexed:
+                record_page(
+                    conn,
+                    url,
+                    status=status,
+                    text=text,
+                    raw_path=str(fetcher.cache_path(url)),
+                )
 
     return {"page_texts": texts, "needs_js": needs_js}
