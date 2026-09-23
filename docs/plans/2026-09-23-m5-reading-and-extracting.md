@@ -137,6 +137,29 @@ which case asking a model to choose is a call that cannot be wrong.
 read them all. One branch; it saves a call and a round trip on the small
 sites that are most of this population, and it makes the node's test trivial.
 
+## Where this stands (2026-09-23)
+
+| task | state |
+|---|---|
+| 0 — #16 prune patterns, early stopping | done (`8cbafd6`) / retired (`bf856e9`) |
+| 1 — CompanyProfile and the profile store | done (`ddf347f`) |
+| 2 — pick_pages | done (`d24f15b`) |
+| 3 — read_pages and the needs-JS detector | done (`f5dd723`) |
+| 3b — browser.py and the Compose service | **held**, open point 3 |
+| 4 — the pages table | done (`798ed6a`) |
+| 5 — extract | done (`46975a0`) |
+| 6 — check_profile and checks | done (`f066c6e`) |
+| 7, 8 — wiring and `--until profile` | done (`18d7562`) |
+| 9 — adversarial fixtures | done (`79a61c0`) |
+| 9 — extraction eval | code done (`6e9eb84`), **waiting on hand labels** |
+| 10 — reconcile the documents | **held** with 3b |
+
+Found along the way and fixed here: nothing neutralised the prompt
+delimiters, so a page could close its own data block (`ddadb60`). Found and
+filed for M6: #22, the design and the spec disagree about whether `draft`
+reads the profile, which now matters because `description` can legitimately
+carry hostile text.
+
 ## Tasks
 
 Each task is one commit with its test. Tests are network-free except where
