@@ -59,7 +59,7 @@ background.
 
 | # | Conflict | Resolution |
 |---|---|---|
-| 1 | `draft`'s inputs: `design.md:139` says "typed fields only (company, contact, goal, about_me)"; `graph.spec.yaml:164` has `reads: [company, profile, contact, goal, about_me]` | Open point 1. M5 made this load-bearing rather than cosmetic — see #22. |
+| 1 | `draft`'s inputs: `design.md:139` says "typed fields only (company, contact, goal, about_me)"; `graph.spec.yaml:164` has `reads: [company, profile, contact, goal, about_me]` | **The spec**, settled in open point 1; `design.md:139` is corrected by Task 5. See #22. |
 | 2 | `design.md:138` and `graph.spec.yaml:163` say `recommend` holds on "only third_party", using `Contact.email_kind`. M5 marks `Person.email_offsite` instead, because `Contact` did not exist yet | Mechanical: `find_contact` maps `email_offsite` to `email_kind="third_party"`. Written down so nobody re-derives it. |
 | 3 | `design.md:79` draws `recommend` as unconditional, `graph.spec.yaml:199` routes `skip` straight to `__end__` | The spec. A skipped company needs no draft, and drafting one would spend a model call on a row the reviewer will not read. |
 
@@ -98,13 +98,31 @@ M6, but M6 is when it becomes cheap.
 Four, to be answered before code (`IMPLEMENTATION.md:13-16`).
 
 **1. Does the drafting prompt see the profile?**
-*Recommendation:* no — `design.md:139` wins, and `check_draft` is tested
-against `tests/fixtures/golden/poisoned_instructions.html` anyway. Two
-reasons. The draft needs the company, the person and the goal; the profile's
-prose adds flavour the reviewer can already see on the card. And keeping the
-attacker's text out of the prompt is cheaper than catching it in the output,
-because a check that must catch everything is a worse bet than a boundary
-that never lets it in. `graph.spec.yaml:164` gets corrected either way.
+
+**Decided: yes.** `graph.spec.yaml:164` wins and `design.md:139` gets
+corrected. The plan recommended the opposite and the recommendation was
+wrong on its main point.
+
+What it got wrong: the invitation's `To` address does not come from the
+drafting prompt at all. `find_contact` decides it from typed rules, so
+"the invitation goes to the attacker" was already closed by `check_profile`
+and `find_contact` before this question was asked. What actually remains is
+an attacker-chosen URL or phrasing in the *body* of a mail addressed to the
+company — and `design.md:140` already rejects a body containing a URL or an
+e-mail address.
+
+What it underweighted: personalisation is measurably worth something in this
+domain. A named mail answers at 8–15% against 2–6% for `info@`
+(`LEARNINGS.md` §5), and a sentence that shows we know what the company
+makes is the point of the tool rather than decoration.
+
+**The condition that comes with it.** `check_draft` is now the guard that
+matters rather than a tidiness rule, so Task 6 tests it against a draft
+generated from `tests/fixtures/golden/poisoned_instructions.html`, not only
+against a well-behaved one. The residual risk is stated rather than
+dismissed: non-URL steering survives every deterministic rule, and the
+control is a reviewer the audit itself describes as skimming ten cards
+(`audit-2026-09-19.md:177`).
 
 **2. What does `find_contact` do with a name and no address?**
 This is the majority case. The research is explicit that `info@` with a name
