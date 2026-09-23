@@ -108,18 +108,25 @@ exact-match threshold on prose mostly measures noise, which is the argument
 
 **3. Does M5 build the needs-JS detector, the Playwright service, or neither?**
 
-**Decided: both.** The detector and `tools/browser.py` with its Compose
-service land in this milestone rather than waiting for the counter.
+**Detector: built (`f5dd723`). Service: reopened, awaiting Koray's call.**
 
-This overrides a written decision, so it is recorded rather than quietly
-applied. `design.md:355` lists "whether the Playwright service is ever
-needed" as an open question and says the needs-JS counter decides it; the
-probe measured zero hits in 15 sites (`research/website-reading.md:115`), and
-the cost is a 1 GB image and a second Compose service. Building it now
-answers that open question by decision instead of by data. Task 10 therefore
-updates `design.md` §16 and the research note's recommendation, so the
-documents do not contradict the code. The counter is still built and still
-reported: it is what tells us afterwards whether the service earns its place.
+First decided as "both", against the plan's recommendation, on the evidence
+then available: the probe had measured zero hits across 15 sites
+(`research/website-reading.md:115`), which is a small sample to retire a
+capability on. Task 3 then produced a larger one. Run over the 419 real
+pages M4 left in the cache, the detector fires 3 times — `khatabook.com`,
+`atlassian.com` and `swisswebcams.ch`, all candidate pages seen while
+*finding* a site, none of them a page `read_pages` would ever be given. Of
+the fourteen golden sites whose pages it would actually read, none trips it.
+
+Koray parked the decision on seeing that, so `tools/browser.py` and the
+Compose service are not written and `design.md:355` is left standing. The
+detector and its count are in either way — that is what the decision will
+be made on. Task 3b and Task 10 below are held, not cancelled.
+
+For the record, the same 419 pages say the detector's shape is right: thin
+text alone would fire 43 times and a framework mount point alone 98, while
+the research note's conjunction of the two fires 3.
 
 **4. Which pages does `pick_pages` get to see on a small site?**
 `find_site` lists pages from the sitemap or from links, capped at 200
@@ -183,7 +190,9 @@ removed.
 thin-but-static one does not; truncation is at a word boundary; a page that
 fails to fetch is skipped without failing the node.
 
-**Task 3b — `tools/browser.py` and the Compose service (open point 3).**
+**Task 3b — `tools/browser.py` and the Compose service (open point 3). HELD.**
+Not written: the decision that called for it was parked once Task 3 measured
+the detector against 419 real pages. What follows is what it would be.
 `render(url) -> str | None` against a Playwright service, called only when
 Task 3's detector fires, with the static text kept on failure
 (`design.md:154`, `graph.spec.yaml:217`). Service in `compose.yaml` from
@@ -240,7 +249,9 @@ look-alike cases are `check_profile`'s job and must pass with no endpoint.
 The graded half is opt-in, n=2, printing the spread like the two evals
 already there.
 
-**Task 10 — reconcile the documents with open point 3.**
+**Task 10 — reconcile the documents with open point 3. HELD with 3b.**
+Only needed if the service is built; `design.md` §16 stands as written until
+then.
 `design.md` §16 no longer has "whether the Playwright service is ever needed"
 as an open question, and its §5 `browser` row and the research note's
 recommendation (`research:19-21`) say the service is built rather than
