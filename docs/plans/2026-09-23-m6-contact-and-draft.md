@@ -125,30 +125,44 @@ control is a reviewer the audit itself describes as skimming ten cards
 (`audit-2026-09-19.md:177`).
 
 **2. What does `find_contact` do with a name and no address?**
-This is the majority case. The research is explicit that `info@` with a name
-is worth having and that a named greeting to a general inbox gets forwarded,
-so the two must travel together. *Recommendation:* construct
-`info@<site domain>` **only when** the site names a person and no personal
-address was found, record it as `email_kind="constructed"`, and let the
-greeting use the name. A constructed address that does not exist bounces,
-which is visible and harmless; the alternative is holding four companies in
-ten for want of an address the research says is worth 2–6%.
+
+**Decided: construct `info@<site domain>` and greet by name.** Only when the
+site names a person and no personal address was found; recorded as
+`email_kind="constructed"`.
+
+This is the majority case, not an edge: 4 of 10 on-profile companies publish
+no reachable address, and M5's live run found six names and no addresses on
+one site. The two halves travel together because the research says they must
+— `info@` is worth having when it is all there is, and a general inbox with
+an unnamed greeting gets forwarded rather than answered (`LEARNINGS.md` §5).
+A constructed address that does not exist bounces, which is visible and
+harmless; holding four companies in ten is not.
 
 **3. When SHAB and the site name different people, and when does SHAB run at all?**
-The research says the site wins, and that SHAB names a past state.
-*Recommendation:* call SHAB only when the site named nobody — it is a
-network call per company and its answer is discarded when the site has one.
-When SHAB is used, record `source="shab"` and the notice date, so the card
-can say how old the claim is. SHAB never overrides a name from the site,
-including the case M5 cannot catch: an injected name on the site still wins,
-and the reviewer is still the control.
+
+**Decided: only when the site named nobody.** A network call whose answer
+would be discarded is not worth making, and the research settles the
+precedence — SHAB describes a past state, the site describes today
+(`LEARNINGS.md` §5, `data-sources.md:187`).
+
+When SHAB is used, `source="shab"` and the notice date are recorded, so the
+card can say how old the claim is rather than presenting it as current. The
+consequence worth naming: the case M5 cannot catch — an injected name on a
+page — still wins over SHAB, because SHAB is never consulted when the site
+names someone. The reviewer remains the control for that one.
 
 **4. Is the LinkedIn lead in M6?**
-*Recommendation:* no. It costs a search query per company, produces
-something explicitly unverified, and the review page that would show it as a
-lead is M7. Defer it to M7 with an issue, and let M6's `find_contact` stop
-at the constructed address. This keeps M6's already-large surface smaller and
-loses nothing measurable.
+
+**Decided: yes.** The plan recommended deferring it to M7 on the grounds
+that nothing displays it until then; Koray kept it, so the chain the design
+describes is complete in one milestone rather than two.
+
+What it costs: one more search query per company that reached the end of the
+chain without an address, through the same semaphore and one-second gap as
+every other query. What it must never become: LinkedIn is not touched, only
+a web search restricted to `linkedin.com`, and a name alone gives false
+matches — a namesake in another canton (`LEARNINGS.md` §5). It is stored as
+`linkedin_lead`, never as a contact, and never as something to write to.
 
 ## Tasks
 
@@ -169,6 +183,15 @@ site named someone (open point 3); a name with no address becomes a
 constructed `info@` marked as such (open point 2); an `email_offsite` person
 becomes `email_kind="third_party"`; nothing at all is a finding, not an
 error.
+
+**Task 2b — the LinkedIn lead (open point 4).**
+A web search restricted to `linkedin.com`, only for a company that reached
+the end of the chain with no address at all. Stored as `linkedin_lead` on
+the contact row, never as an address.
+*Test:* the query really is restricted to the one site; a company that
+already has an address never triggers it; the result never becomes
+`Contact.email`, whatever it looks like; no request ever goes to
+linkedin.com itself.
 
 **Task 3 — `nodes/recommend.py`.**
 Pure rules, no I/O: no site / distributor / foreign group → skip; no contact
@@ -229,7 +252,6 @@ URLs. Plus the adversarial case, 3 of 3 trials (`audit:186`).
 
 ## Deliberately not in M6
 
-- **The LinkedIn lead** — open point 4, deferred to M7 with an issue.
 - **The review page** — M7 owns everything a human looks at.
 - **Actually sending** — never automated, in any milestone.
 - **The ledger and suppression list** — the tables exist; M7 writes them,
