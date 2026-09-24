@@ -1,0 +1,114 @@
+/* From docs/design/ux/review-onepager.html (tokens: ux spec section 8). */
+:root{
+  --bg:#f4f6fa; --surface:#ffffff; --card:#f8fafc; --ink:#0b1220; --text:#1e293b; --muted:#64748b; --faint:#94a3b8;
+  --line:#e2e8f0; --navy:#1e40af; --blue:#2563eb; --blue-hover:#1d4ed8; --on-blue:#ffffff; --tint:#eef2ff; --tint-ink:#1e40af;
+  --good:#d1fae5; --good-ink:#047857; --warn:#fef3c7; --warn-ink:#92400e; --focus:#2563eb;
+}
+@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
+  --bg:#070c16; --surface:#0f1726; --card:#141d2f; --ink:#f1f5f9; --text:#cbd5e1; --muted:#94a3b8; --faint:#64748b;
+  --line:#243049; --navy:#a5b8ff; --blue:#3b82f6; --blue-hover:#60a5fa; --on-blue:#ffffff; --tint:#1a2547; --tint-ink:#a5b8ff;
+  --good:#0e3b2a; --good-ink:#6ee7b7; --warn:#3a2a0e; --warn-ink:#fcd34d; --focus:#93c5fd;
+}}
+:root[data-theme="dark"]{
+  --bg:#070c16; --surface:#0f1726; --card:#141d2f; --ink:#f1f5f9; --text:#cbd5e1; --muted:#94a3b8; --faint:#64748b;
+  --line:#243049; --navy:#a5b8ff; --blue:#3b82f6; --blue-hover:#60a5fa; --on-blue:#ffffff; --tint:#1a2547; --tint-ink:#a5b8ff;
+  --good:#0e3b2a; --good-ink:#6ee7b7; --warn:#3a2a0e; --warn-ink:#fcd34d; --focus:#93c5fd;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--text);font-family:Lato,"Helvetica Neue",Arial,sans-serif;font-size:15px;line-height:1.5;overflow:hidden;-webkit-font-smoothing:antialiased}
+a{color:var(--blue);text-decoration:none} a:hover{text-decoration:underline}
+:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+p,h1,h2,blockquote{margin:0}
+
+/* Frame: top bar · stage · action bar. Exactly one viewport, nothing scrolls. */
+.app{height:100%;display:grid;grid-template-rows:auto minmax(0,1fr) auto}
+
+.bar{display:flex;align-items:center;gap:24px;padding:12px 28px;border-bottom:1px solid var(--line);background:var(--surface);font-size:13.5px;color:var(--muted)}
+.bar .goal{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bar .goal strong{color:var(--ink)}
+.progress{display:flex;gap:4px;align-items:center}
+.progress i{width:18px;height:5px;border-radius:3px;background:var(--line)}
+.progress i.sent{background:var(--good-ink)} .progress i.skipped{background:var(--faint)} .progress i.now{background:var(--blue)}
+.pos{color:var(--ink);font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap}
+.count{white-space:nowrap} .count strong{color:var(--ink)}
+
+/* Stage: one company per page; the arrows are links to the next page. */
+.stage{position:relative;overflow:hidden}
+.slide{height:100%;display:grid;grid-template-columns:minmax(0,5fr) minmax(0,6fr);gap:28px;padding:28px 88px;animation:arrive .25s ease-out}
+@keyframes arrive{from{opacity:0;transform:translateX(12px)}to{opacity:1;transform:none}}
+@media (prefers-reduced-motion: reduce){.slide{animation:none}}
+
+.nav{position:absolute;top:50%;transform:translateY(-50%);width:48px;height:48px;border-radius:50%;border:1px solid var(--line);background:var(--surface);color:var(--ink);font-size:22px;line-height:1;display:grid;place-items:center;z-index:2;text-decoration:none}
+.nav:hover{border-color:var(--blue);color:var(--blue);text-decoration:none}
+.nav.off{opacity:.3;pointer-events:none}
+.nav.prev{left:22px} .nav.next{right:22px}
+
+/* Left pane: decision and facts. */
+.facts{display:flex;flex-direction:column;gap:22px;min-height:0}
+.verdict{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap}
+.chip{font-size:13px;font-weight:900;letter-spacing:.14em;text-transform:uppercase;padding:5px 12px;border-radius:6px}
+.chip.send{background:var(--good);color:var(--good-ink)} .chip.hold{background:var(--warn);color:var(--warn-ink)} .chip.skip{background:var(--card);color:var(--muted);border:1px solid var(--line)}
+.verdict .why{font-size:15px;color:var(--text)}
+.name{font-size:30px;line-height:1.15;font-weight:900;color:var(--ink);letter-spacing:-.015em;text-wrap:balance}
+.what{margin-top:8px;font-size:16px;color:var(--text);max-width:52ch}
+.meta{margin-top:8px;font-size:13.5px;color:var(--muted)}
+.label{font-size:11.5px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:var(--muted);margin-bottom:8px}
+.person{font-size:17px;color:var(--ink)} .person strong{font-weight:700}
+.person .src{font-size:13px;color:var(--muted);margin-left:6px}
+.addrs{display:flex;flex-direction:column;gap:6px;margin-top:10px}
+.addr{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:10px;align-items:center;padding:9px 12px;border:1px solid var(--line);border-radius:8px;background:var(--surface);cursor:pointer;font-size:14.5px}
+.addr:has(input:checked){border-color:var(--blue);box-shadow:0 0 0 1px var(--blue) inset}
+.addr input{margin:0;accent-color:var(--blue)}
+.addr .mail{color:var(--ink);font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.kind{font-size:11.5px;font-weight:700;padding:2px 8px;border-radius:5px;white-space:nowrap}
+.kind.seen{background:var(--good);color:var(--good-ink)} .kind.constructed{background:var(--tint);color:var(--tint-ink)}
+.kind.generic,.kind.unverified{color:var(--muted);border:1px solid var(--line)}
+.kind.third_party{background:var(--warn);color:var(--warn-ink)}
+.hint{font-size:13px;color:var(--muted);margin-top:6px}
+.proof{margin-top:auto;padding:12px 14px;border-left:3px solid var(--blue);background:var(--surface);border-radius:0 8px 8px 0;font-size:13.5px}
+.proof q{color:var(--text)} .proof span{display:block;margin-top:3px;color:var(--muted);font-size:12.5px}
+.empty{padding:12px 14px;border:1px dashed var(--line);border-radius:8px;color:var(--muted);font-size:14px}
+
+/* Right pane: the draft as a letter. */
+.letter{display:flex;flex-direction:column;min-height:0;background:var(--surface);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.letter header{padding:14px 22px;border-bottom:1px solid var(--line);display:grid;grid-template-columns:auto 1fr;gap:4px 14px;font-size:13.5px}
+.letter header dt{color:var(--muted)} .letter header dd{margin:0;color:var(--ink);font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.letter .body{flex:1;min-height:0;padding:18px 22px;font-size:14.5px;line-height:1.6;color:var(--text);white-space:pre-line;overflow:hidden}
+.letter footer{padding:10px 22px;border-top:1px solid var(--line);font-size:12.5px;color:var(--muted);display:flex;justify-content:space-between;gap:12px}
+.letter.none{display:grid;place-items:center;text-align:center;color:var(--muted);padding:32px}
+
+/* Action bar: the decision, always in the same place. */
+.actions{display:flex;align-items:center;gap:10px;padding:14px 28px;border-top:1px solid var(--line);background:var(--surface)}
+.actions .lbl{font-size:13px;color:var(--muted);margin-right:2px}
+.btn{font:inherit;font-size:14px;border-radius:8px;border:1px solid var(--line);background:var(--surface);color:var(--ink);padding:8px 13px;cursor:pointer;line-height:1.2}
+.btn:hover{border-color:var(--muted)}
+.btn.primary{background:var(--blue);border-color:var(--blue);color:var(--on-blue);font-weight:700;font-size:15px;padding:10px 26px}
+.btn.primary:hover{background:var(--blue-hover);border-color:var(--blue-hover)}
+.btn.primary:disabled{opacity:.4;cursor:not-allowed}
+.btn.quiet{border-color:transparent;color:var(--muted)} .btn.quiet:hover{color:var(--ink);border-color:var(--line)}
+.kbd{font-size:11px;opacity:.7;margin-left:6px}
+.spacer{flex:1}
+.toast{position:absolute;left:50%;bottom:16px;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:9px 16px;border-radius:8px;font-size:14px;opacity:0;pointer-events:none;transition:opacity .2s;z-index:3}
+.toast.show{opacity:1}
+.sample{font-size:12px;color:var(--faint);white-space:nowrap}
+
+/* Narrow screens: one column, the page may scroll — a phone cannot hold both panes. */
+@media (max-width:900px){
+  body{overflow:auto}
+  .app{height:auto;min-height:100%}
+  .slide{grid-template-columns:1fr;padding:20px 16px 24px}
+  .nav{display:none}
+  .letter .body{overflow:visible}
+  .actions{flex-wrap:wrap;padding:12px 16px}
+  .bar{flex-wrap:wrap;padding:10px 16px;gap:8px 16px}
+  .bar .goal{flex-basis:100%}
+}
+
+/* Additions for the served page. */
+.chip.error{background:var(--warn);color:var(--warn-ink)}
+.banner{flex:1;font-size:14px;color:var(--ink)} .banner form{display:inline}
+.blocked{font-size:13px;color:var(--warn-ink);max-width:48ch;text-align:right}
+.queries{margin:6px 0 0;padding-left:18px;font-size:13.5px;color:var(--muted)}
+.also{font-size:13px;color:var(--muted);margin-top:6px}
+form.app{margin:0}

@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ card.name }} · Review {{ n + 1 }} / {{ cards | length }}</title>
+<link rel="stylesheet" href="/static/review.css">
+</head>
+<body>
+{% set c = card.contact %}
+<form class="app" method="post" action="/decide/{{ run_id }}/{{ card.uid }}?n={{ n }}">
+  <header class="bar">
+    <div class="goal"><strong>{{ goal }}</strong></div>
+    <div class="progress" aria-hidden="true">
+      {% for other in cards %}<i class="{% if loop.index0 == n %}now{% elif other.decision == 'sent' %}sent{% elif other.decision %}skipped{% endif %}"></i>{% endfor %}
+    </div>
+    <div class="pos">{{ n + 1 }} / {{ cards | length }}</div>
+    <div class="count">Sent this month: <strong>{{ sent_this_month }}</strong></div>
+  </header>
+
+  <main class="stage" aria-live="polite">
+    <a class="nav prev{% if n == 0 %} off{% endif %}" id="prev" href="/review/{{ run_id }}/{{ n - 1 }}" aria-label="Previous company">‹</a>
+    <a class="nav next{% if n + 1 == cards | length %} off{% endif %}" id="next" href="/review/{{ run_id }}/{{ n + 1 }}" aria-label="Next company">›</a>
+
+    <section class="slide" aria-label="{{ card.name }}">
+      <div class="facts">
+        <div class="verdict">
+          <span class="chip {{ card.recommendation or 'error' }}">{{ card.recommendation or 'error' }}</span>
+          <span class="why">{{ card.reason }}</span>
+        </div>
+
+        <div>
+          <h1 class="name">{{ card.name }}</h1>
+          <p class="what">{{ card.what }}</p>
+          <p class="meta">
+            {% if card.site_url %}<a href="{{ card.site_url }}" target="_blank" rel="noopener noreferrer">{{ card.site_url }}</a>{% else %}No site{% endif %}
+            · {{ card.legal_form }} · {{ card.seat }} · {{ card.uid_dotted }}
+          </p>
+        </div>
+
+        <div>
+          <p class="label">Write to</p>
+          {% if c and c.name %}
+          <p class="person"><strong>{{ c.name }}</strong>{% if c.role %}, {{ c.role }}{% endif %}
+            <span class="src">{% if c.source == 'shab' %}SHAB, {{ c.source_date }} — may be out of date{% else %}named on the site{% endif %}</span></p>
+          {% elif c %}
+          <p class="person">Nobody named</p>
+          {% endif %}
+          {% if c and c.addresses %}
+          <div class="addrs" role="radiogroup" aria-label="Address">
+            {% for a in c.addresses %}
+            <label class="addr"><input type="radio" name="to" value="{{ a.email }}"{% if loop.first %} checked{% endif %}{% if card.send_block %} disabled{% endif %}><span class="mail">{{ a.email }}</span><span class="kind {{ a.kind }}">{{ a.kind | replace('_', ' ') }}</span></label>
+            {% endfor %}
+          </div>
+          {% set kind = c.addresses[0].kind %}
+          <p class="hint">
+            {% if kind == 'seen' %}Their own address on the company's site.
+            {% elif kind == 'generic' %}The inbox the site publishes.{% if c.name %} The greeting names {{ c.name }}, so it gets passed on.{% endif %}
+            {% elif kind == 'constructed' %}Not seen anywhere: info@ on the site's domain, guessed. A bounce is visible and harmless.
+            {% elif kind == 'third_party' %}On another domain than the verified site — the way a hostile page plants a contact.
+            {% endif %}
+          </p>
+          {% endif %}
+          {% if c and c.linkedin_lead %}
+          <p class="hint"><span class="kind unverified">unverified lead</span> {{ c.linkedin_lead }} — check it yourself; nothing is sent from here.</p>
+          {% endif %}
+          {% if c and c.alternatives %}
+          <p class="also">Also named: {{ c.alternatives | join(' · ') }}</p>
+          {% endif %}
+          {% if not c %}<p class="empty">Nobody named and no address published.</p>{% endif %}
+        </div>
+
+        {% if card.site_url and card.evidence %}
+        <p class="proof"><q>{{ card.evidence }}</q><span>{{ card.evidence_label }}{% if card.evidence_url %} · {{ card.evidence_url }}{% endif %}</span></p>
+        {% elif card.queries %}
+        <div class="empty">Tried:
+          <ul class="queries">{% for q in card.queries %}<li>{{ q }}</li>{% endfor %}</ul>
+        </div>
+        {% endif %}
+      </div>
+
+      {% if card.draft %}
+      <article class="letter">
+        <header><dl style="display:contents">
+          <dt>To</dt><dd>{% if c and c.name %}{{ c.name }} &lt;{{ c.email }}&gt;{% else %}{{ c.email }}{% endif %}</dd>
+          <dt>Subject</dt><dd>{{ card.draft.subject }}</dd>
+        </dl></header>
+        <div class="body">{{ card.draft.body }}</div>
+        <footer>
+          <span>Opens in your mail client · {{ card.link_length }} of 2,000 link characters</span>
+          <span>draft@{{ card.draft.prompt_version }} · {{ card.draft.model }}</span>
+        </footer>
+      </article>
+      {% else %}
+      <article class="letter none">
+        <div><p style="font-size:16px;color:var(--ink);font-weight:700">No draft</p>
+        <p style="margin-top:6px">{{ card.send_block }}</p></div>
+      </article>
+      {% endif %}
+    </section>
+
+    <div class="toast{% if done %} show{% endif %}" id="toast" role="status">{{ done }}</div>
+  </main>
+
+  <footer class="actions">
+    {% if card.decision %}
+    <span class="banner">Recorded: {{ card.decision }}.
+      {% if card.decision == 'skipped' %}<button class="btn quiet" name="action" value="undo">Undo</button>{% endif %}
+    </span>
+    {% else %}
+    <span class="lbl">Skip:</span>
+    {% for reason in skip_reasons %}<button class="btn" name="action" value="skip:{{ reason }}">{{ reason }}</button>
+    {% endfor %}
+    <button class="btn quiet" id="never" name="action" value="never">Never again</button>
+    <span class="spacer"></span>
+    {% if card.send_block and card.draft %}<span class="blocked">{{ card.send_block }}</span>{% endif %}
+    {% endif %}
+    <button class="btn primary" id="send" name="action" value="send"{% if card.send_block %} disabled{% endif %}>Send<span class="kbd">S</span></button>
+  </footer>
+</form>
+<script src="/static/review.js"></script>
+</body>
+</html>

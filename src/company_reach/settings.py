@@ -18,6 +18,9 @@ class Settings(BaseSettings):
 
     data_dir: Path = Path("data")
     profile_path: Path = Path("profile.toml")
+    # The ethics gate (M7 open point 1): Send stays locked until a human who
+    # knows approval was granted sets this. Only a person can know it.
+    sending_approved: bool = False
     lindas_url: str = "https://lindas.admin.ch/query"
     shab_url: str = "https://www.shab.ch/api/v1"
 
