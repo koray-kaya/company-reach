@@ -31,3 +31,8 @@ class FetchError(CompanyReachError):
 
 class DoctorError(CompanyReachError):
     """A pre-flight check failed; the run must not start."""
+
+
+class ShabError(CompanyReachError):
+    """The SHAB API could not be asked, or answered in a way that shows its
+    filter was ignored. A company with no notices is `[]`, not this."""

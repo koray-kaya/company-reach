@@ -10,6 +10,12 @@ from pydantic import BaseModel, Field, field_validator
 _UID_DIGITS = re.compile(r"\D")
 
 
+def dotted_uid(uid: str) -> str:
+    """`CHE000000003` -> `CHE-000.000.003`, the form SHAB's filter needs."""
+    d = uid[3:]
+    return f"CHE-{d[:3]}.{d[3:6]}.{d[6:]}"
+
+
 class CompanyRecord(BaseModel):
     uid: str  # normalised: CHE + 9 digits, no dots
     name: str
@@ -31,8 +37,7 @@ class CompanyRecord(BaseModel):
 
     @property
     def uid_dotted(self) -> str:
-        d = self.uid[3:]
-        return f"CHE-{d[:3]}.{d[3:6]}.{d[6:]}"
+        return dotted_uid(self.uid)
 
 
 class SelectionCriteria(BaseModel):
@@ -149,8 +154,25 @@ class CompanyProfile(BaseModel):
     foreign_group: bool = False
 
 
+class ShabPerson(BaseModel):
+    """A person as one SHAB notice names them.
+
+    Not a `Person`: the register says who held a role on a date, never who
+    holds it now, so the date and the notice travel with the name. `departed`
+    marks an entry the notice itself strikes out ("Ausgeschiedene",
+    "radiée") — the register naming someone is not always the register
+    naming a current role-holder.
+    """
+
+    name: str
+    role: str | None = None
+    departed: bool = False
+    published: str  # ISO date of the notice
+    source_url: str
+
+
 Recommendation = Literal["send", "hold", "skip"]
-ErrorKind = Literal["search", "fetch", "llm", "other"]
+ErrorKind = Literal["search", "fetch", "llm", "shab", "other"]
 
 
 class CompanyResult(BaseModel):

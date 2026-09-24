@@ -18,6 +18,7 @@ class Settings(BaseSettings):
 
     data_dir: Path = Path("data")
     lindas_url: str = "https://lindas.admin.ch/query"
+    shab_url: str = "https://www.shab.ch/api/v1"
 
     llm_base_url: str = "https://api.openai.com/v1"
     llm_api_key: SecretStr

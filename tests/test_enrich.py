@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from company_reach.errors import FetchError, LlmError, SearchError
+from company_reach.errors import FetchError, LlmError, SearchError, ShabError
 from company_reach.nodes.enrich_company import enrich_company
 from company_reach.settings import Settings
 from company_reach.tools.db import connect, init_db
@@ -77,6 +77,7 @@ async def test_an_unexpected_exception_does_not_escape(db_settings: Settings):
         (LlmError("no answer"), "llm"),
         (SearchError("no results"), "search"),
         (FetchError("404"), "fetch"),
+        (ShabError("503"), "shab"),
     ],
 )
 async def test_typed_errors_keep_their_kind(
