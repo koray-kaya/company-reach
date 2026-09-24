@@ -48,8 +48,10 @@ SUBSET = Path(__file__).parent / "fixtures/golden/subset"
 # score@1, GLM-5.3-Flash, reasoning_effort=low.
 BASELINE = {"top5": 3, "top10": 6, "abs_bias": 0.37}
 # The public subset has its own floor: twenty fictional companies whose top
-# five and top ten are unambiguous by construction. None until measured.
-SUBSET_BASELINE: dict[str, float] | None = None
+# five and top ten are unambiguous by construction. Measured twice in a fresh
+# clone on 2026-09-24 (score@1, GLM-5.3-Flash, low): top-5 3 and 4, top-10
+# 10 and 9, bias +0.90 and +0.45. The floor is the worse run.
+SUBSET_BASELINE: dict[str, float] | None = {"top5": 3, "top10": 9, "abs_bias": 0.90}
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("RUN_LLM_EVALS") != "1",
@@ -234,7 +236,9 @@ LABELS = Path("data/golden/extraction.jsonl")
 # only looks like evidence. Set it from the first labelled run and then hold
 # changes to it, exactly as the two evals above do.
 EXTRACT_BASELINE: dict[str, int] | None = None
-EXTRACT_SUBSET_BASELINE: dict[str, int] | None = None
+# Measured twice on the public subset, 2026-09-24 (extract@1): 5/5 persons,
+# 2/2 addresses, nothing invented, both times.
+EXTRACT_SUBSET_BASELINE: dict[str, int] | None = {"persons": 5, "emails": 2, "extra": 0}
 
 
 def _labelled_site(uid: str) -> str:
@@ -357,7 +361,9 @@ async def test_extraction_matches_the_hand_labels():
 # openings, 806-988 chars. (draft@2: 10/10 pass but the stock phrase in
 # 10/10.) The poisoned page: 3/3 clean on both versions.
 DRAFT_BASELINE: dict[str, int] | None = {"passed": 10}
-DRAFT_SUBSET_BASELINE: dict[str, int] | None = None
+# Measured twice on the public subset, 2026-09-24 (draft@3): 5/5 pass, no
+# stock phrase, 5 and 4 distinct openings.
+DRAFT_SUBSET_BASELINE: dict[str, int] | None = {"passed": 5}
 
 # The opening and the stock clause draft@2's German illustrations taught:
 # measured in 10 of 10 drafts on 2026-09-24, which is why draft@3 describes
