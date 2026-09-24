@@ -18,45 +18,77 @@ drafts an invitation; I read each one and decide whether to send it.
 
 ## Status
 
-Work in progress. The design is done; I am building it step by step, in
-eight milestones. Each milestone is written with an AI coding assistant and
-explained to me before I review and merge it, so I learn how it works.
+All eight milestones are built: the pool and its scoring, the batch loop,
+finding each company's site, reading it, choosing the contact and drafting
+the invitation, the review page, and the privacy and publishing work. It has
+not sent a real invitation yet — that waits for the survey to go live and for
+the thesis's ethics approval, and the review page stays locked until both.
 
-Milestones 1 and 2 of 8 are done: listing a town's companies, applying the
-rule-based exclusions, and scoring the survivors against a goal with a
-language model.
+Each milestone was written with an AI coding assistant and explained to me
+before I reviewed and merged it, so I learn how it works.
 
 ## Run it
 
-Needs [uv](https://docs.astral.sh/uv/); it installs Python 3.13 itself. From
-milestone 2 on it also needs a model: any OpenAI-compatible endpoint, set in
-`.env`. No Docker yet.
+Needs [uv](https://docs.astral.sh/uv/) (it installs Python 3.13 itself),
+Docker for the search engine, and a language model: any OpenAI-compatible
+endpoint.
 
 ```bash
 git clone https://github.com/koray-kaya/company-reach.git
 cd company-reach
 uv sync
-cp .env.example .env              # base url, key and model id
-cp profile.toml.example profile.toml   # your goal, in one sentence
+cp .env.example .env                  # model endpoint, key, model id
+cp profile.toml.example profile.toml  # your goal, about you, the survey link
 
-uv run company-reach doctor       # settings, prompts, database, endpoint
-uv run company-reach pool --municipality 3203
-uv run company-reach screen --run-id <the run it printed>
-uv run company-reach criteria     # what your goal means, before paying for it
-uv run company-reach score --limit 200
+docker compose up -d searxng          # the search engine, on 127.0.0.1:8080
+uv run company-reach doctor           # settings, prompts, database, endpoint
 ```
 
-`3203` is the federal id of a municipality (that one is St. Gallen). `pool`
-writes the companies into `data/company_reach.db`, `screen` marks the ones
-the rules exclude, `score` ranks the rest against your goal. Every command is
-safe to run again: nothing already done is repeated.
+When running with `uv run`, set `SEARXNG_URL=http://127.0.0.1:8080` in
+`.env`; the container name only resolves inside Docker.
 
-Scoring is deliberately incremental — `--limit` scores that many and stops,
-so you can start reading results long before the whole town is scored.
+Then, for one town:
 
-Tests run offline in a few seconds: `uv run pytest`. The prompt evaluation
-calls the real model and is opt-in: `RUN_LLM_EVALS=1 uv run pytest
-tests/test_prompts.py -s`.
+```bash
+uv run company-reach pool --municipality 3203   # the register's companies
+uv run company-reach screen --run-id <run>      # the rule-based exclusions
+uv run company-reach criteria                   # what your goal means, first
+uv run company-reach score --limit 200          # rank them against the goal
+uv run company-reach run                        # enrich a batch of ten
+uv run company-reach review <run>               # decide, one company at a time
+```
+
+`3203` is the federal id of a municipality (that one is St. Gallen). Every
+command is safe to run again: nothing already done is repeated, and scoring
+is incremental. `run` finds each company's site, reads it, chooses who to
+write to and drafts an invitation; a company whose search or site failed is
+recorded as an error, not as "no website", and `company-reach retry <run>`
+does it again. To look at one company on its own:
+`uv run company-reach enrich --uid CHE123456789 --until draft`.
+
+`review` opens the page on `http://127.0.0.1:8000/`. It shows one company
+per screen with the recommendation, the evidence, every address found and
+the draft. **Send** records the decision and opens the draft in your own
+mail program — nothing is sent by the tool. Send stays locked until
+`SENDING_APPROVED=true` is set in `.env` and the profile's `survey_url` is
+real. The page also runs in Docker: `docker compose up -d app`.
+
+## Personal data
+
+The tool handles real people's names and addresses. [PRIVACY.md](PRIVACY.md)
+says what it collects, where it keeps it and where it sends it — above all,
+the model endpoint you choose receives the page text it reads. Two commands
+delete: `company-reach forget <uid|email>` on request, and
+`company-reach purge --older-than 365` for data nobody has touched for a
+year.
+
+## Tests
+
+`uv run pytest` runs offline in about twenty seconds. The evaluations call
+the real model and are opt-in: `RUN_LLM_EVALS=1 uv run pytest
+tests/test_prompts.py -s`. They use my hand-labelled set in `data/golden/`
+when it is there and a fictional subset committed in `tests/fixtures/`
+otherwise, so they run from a fresh clone.
 
 ## Notes
 
