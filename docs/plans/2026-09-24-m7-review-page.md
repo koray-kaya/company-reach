@@ -126,6 +126,10 @@ counts `sent` rows in the calendar month only.
 **Task 2 — `import-v0`.**
 Reads `data/v0/outreach.md` (decisions) and `data/v0/seen.json` (drawn), and
 writes `ledger` rows with `note='v0'` and `seen` rows. Idempotent.
+v0 sent no mail (Koray, 2026-09-24): its log holds skip, hold and "pending",
+a recommended send nobody acted on. The audit's "22 contacted companies"
+means 22 reviewed. So all 22 go into `seen`, the skips become `skipped`, and
+a hold or pending one gets no ledger row.
 *Test:* against a fictional fixture in the same shape; run twice, same rows.
 *Real:* run on `data/v0/`, then confirm every v0 contacted uid is in the
 ledger and none of them can be drawn.

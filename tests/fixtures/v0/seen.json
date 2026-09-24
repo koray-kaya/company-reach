@@ -1,0 +1,11 @@
+{
+  "batches": [
+    {"batch": 1, "seed": 1, "pool": "fictional.json", "size": 1, "note": "test"},
+    {"batch": 2, "seed": 2, "pool": "fictional.json", "size": 2, "note": "test"}
+  ],
+  "companies": {
+    "CHE000000046": {"name": "Muster Metallbau AG", "batch": 1, "outcome": "skip"},
+    "CHE123456788": {"name": "Beispiel Holzbau GmbH", "batch": 2, "outcome": "drawn"},
+    "CHE111111118": {"name": "Exempel Druck AG", "batch": 2, "outcome": "drawn"}
+  }
+}

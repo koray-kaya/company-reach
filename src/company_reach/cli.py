@@ -3,6 +3,7 @@
 
 import asyncio
 import uuid
+from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -15,6 +16,7 @@ from company_reach.graph import (
     retry_errors,
     run_graph,
 )
+from company_reach.import_v0 import import_v0
 from company_reach.manifest import finish_manifest, manifest_path, start_manifest
 from company_reach.nodes.load_pool import load_pool
 from company_reach.nodes.score_pool import score_pool
@@ -24,6 +26,8 @@ from company_reach.profile import goal_hash, load_profile
 from company_reach.settings import get_settings
 from company_reach.tools.db import connect, init_db, record_run
 from company_reach.tools.doctor import run_checks
+
+V0_DIR = Path("data/v0")
 
 app = typer.Typer(help="Find Swiss companies, find the person, draft the mail.")
 
@@ -196,6 +200,24 @@ def run(
         typer.echo(f"retry the errors with: company-reach retry {rid}")
     if dry:
         typer.echo("--dry: every company was skipped by the M3 stub child.")
+
+
+@app.command("import-v0")
+def import_v0_command(
+    v0_dir: Annotated[
+        Path, typer.Option(help="The v0 prototype's data: seen.json and outreach.md.")
+    ] = V0_DIR,
+) -> None:
+    """Bring the v0 prototype's companies into seen and its skips into the
+    ledger, so none of them is drawn again. Safe to run twice."""
+    s = get_settings()
+    init_db(s.db_path)
+    with connect(s.db_path) as conn:
+        seen, skipped = import_v0(conn, v0_dir)
+    typer.echo(
+        f"{seen} companies marked as seen · {skipped} "
+        f"{'skip' if skipped == 1 else 'skips'} recorded"
+    )
 
 
 @app.command()

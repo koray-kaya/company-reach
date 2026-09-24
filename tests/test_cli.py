@@ -318,3 +318,13 @@ def test_retry_with_nothing_to_retry_says_so(settings, monkeypatch):
     r = runner.invoke(cli.app, ["retry", "r1"])
     assert r.exit_code == 0, r.output
     assert "nothing to retry" in r.output
+
+
+def test_import_v0_reports_what_it_added(settings, monkeypatch):
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    fixture = str(Path(__file__).parent / "fixtures/v0")
+    r = runner.invoke(cli.app, ["import-v0", "--v0-dir", fixture])
+    assert r.exit_code == 0, r.output
+    assert "3 companies marked as seen · 1 skip recorded" in r.output
+    r = runner.invoke(cli.app, ["import-v0", "--v0-dir", fixture])
+    assert "0 companies marked as seen · 0 skips recorded" in r.output
