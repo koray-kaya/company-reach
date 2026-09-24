@@ -39,7 +39,8 @@ Decided (2026-09-19), details in the design doc:
   where a maintained client exists costs transferable knowledge and buys
   nothing. Keep *our own* code plain — the simplicity rule applies to what we
   write, not to whether we depend on the standard tool.
-- Prompts live in `prompts/`, versioned, easy to read and edit.
+- Prompts live in `src/company_reach/prompts/`, versioned, easy to read and
+  edit; inside the package so an installed copy finds them.
 - All files in English, with one exception: `docs/milestones/` is written in
   Turkish and kept out of git. Those pages explain a finished milestone to the
   repository's owner, have no other reader, and quote the hand-labelled golden

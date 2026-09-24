@@ -62,3 +62,12 @@ def test_a_prompt_variable_may_be_called_name():
 def test_a_prompt_variable_may_be_called_prompt_name():
     with pytest.raises(PromptError):
         render("pick_site", prompt_name="x")
+
+
+def test_the_prompts_ship_inside_the_package():
+    # found planning M8: they sat three folders above llm.py, which works
+    # from a checkout and fails for anyone who installs the package
+    from importlib.resources import files
+
+    shipped = {p.name for p in files("company_reach").joinpath("prompts").iterdir()}
+    assert {"extract.md", "draft.md", "score.md", "pick_site.md"} <= shipped

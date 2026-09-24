@@ -97,9 +97,8 @@ company-reach/
 │   │   ├── app.py             # FastAPI routes
 │   │   ├── templates/review.html
 │   │   └── static/review.css
+│   ├── prompts/               # criteria · score · pick_site · pick_pages · extract · draft
 │   └── schema.sql
-├── prompts/
-│   ├── criteria.md · score.md · pick_site.md · pick_pages.md · extract.md · draft.md
 ├── tests/
 │   ├── conftest.py            # tmp data dir, settings override, fixture loaders
 │   ├── fixtures/              # fictional LINDAS/SHAB/HTML responses
