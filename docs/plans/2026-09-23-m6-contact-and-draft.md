@@ -180,18 +180,32 @@ link, tagged with the company, so a response can be tied back without the
 survey and this tool sharing a database.
 
 ```
-<survey_url>?c=CHE123456789
+<survey_url>/?c=CHE123456789&l=de
 ```
 
-The tag is the normalised UID this repo already keys on (`CHE` + 9 digits,
-no dots); the form records it and does not validate it. The "no URL" rule
+Settled with Koray on 2026-09-24, replacing the shape first written on #6:
+
+- `c` is the company's UID. The survey accepts it dotted, compact or with
+  spaces; this tool always sends the compact form it keys on. The survey
+  opens its follow-up questions only for a UID whose check digit is valid,
+  so `tools/invitation.py` refuses to build a link for any other.
+- `l` is `de` or `en`; the survey opens in German without it. Drafts are
+  German, so invitations send `de`.
+- `SMOKE` is reserved for the survey's own smoke test and never appears in
+  an invitation; it cannot pass the UID check.
+- `survey_url` lives in `profile.toml` and nowhere else. Until the survey is
+  deployed it holds a placeholder.
+
+The data-protection sentence is appended by code for the same reason as the
+link, in the wording Koray approved on 2026-09-24; its source clause names
+the site or SHAB. The "no URL" rule
 exists so page text cannot talk the model into planting a link, and the
 link is added in a way that keeps that guarantee:
 
 1. `profile.toml` gets `survey_url`; `doctor` checks it is present and
    `https://`.
 2. The model writes the draft without any link, and never sees `survey_url`.
-   Code appends `f"{survey_url}?c={uid}"` after generation.
+   Code appends `survey_link(survey_url, uid)` after generation.
 3. `check_draft` rejects any URL in the model's text; in the final body the
    only URL is the appended one, byte for byte.
 4. The `mailto:` length check runs on the final body, link included.
@@ -246,7 +260,7 @@ The model writes no link; `draft.py` appends the survey link after
 generation (see "The survey link" below).
 *Test:* the rendered prompt carries the profile inside its data delimiters
 and no raw page text; the rendered prompt never contains `survey_url`; the
-stored body ends with `f"{survey_url}?c={uid}"`; the draft is stored with its
+stored body carries `survey_link(survey_url, uid)`; the draft is stored with its
 provenance.
 
 **Task 6 — `nodes/check_draft.py`.**
