@@ -40,10 +40,16 @@ from company_reach.tools.candidate_pages import CandidatePages
 from company_reach.tools.db import company_by_uid, connect
 
 GOLDEN = Path("data/golden/labels.jsonl")
+# The public subset: fictional, committed, used when data/golden/ is absent
+# so a fresh clone can run these evaluations (M8). See its README.
+SUBSET = Path(__file__).parent / "fixtures/golden/subset"
 
 # Measured 2026-09-20, goal "make or process a product and sell it on",
 # score@1, GLM-5.3-Flash, reasoning_effort=low.
 BASELINE = {"top5": 3, "top10": 6, "abs_bias": 0.37}
+# The public subset has its own floor: twenty fictional companies whose top
+# five and top ten are unambiguous by construction. None until measured.
+SUBSET_BASELINE: dict[str, float] | None = None
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("RUN_LLM_EVALS") != "1",
@@ -56,10 +62,11 @@ def _top(scores: dict[str, int], n: int) -> set[str]:
 
 
 async def test_scoring_matches_the_hand_labels():
-    if not GOLDEN.is_file():
-        pytest.skip(f"no golden set at {GOLDEN} (it lives outside git)")
+    private = GOLDEN.is_file()
+    source = GOLDEN if private else SUBSET / "scoring.jsonl"
+    baseline = BASELINE if private else SUBSET_BASELINE
 
-    lines = GOLDEN.read_text(encoding="utf-8").splitlines()
+    lines = source.read_text(encoding="utf-8").splitlines()
     items = [json.loads(line) for line in lines]
     human = {i["uid"]: i["label"] for i in items}
     companies = [
@@ -75,7 +82,12 @@ async def test_scoring_matches_the_hand_labels():
     ]
 
     settings = Settings()
-    goal = load_profile(Path("profile.toml")).goal
+    # the subset's labels were written against its own goal, not yours
+    goal = (
+        load_profile(Path("profile.toml")).goal
+        if private
+        else (SUBSET / "goal.txt").read_text(encoding="utf-8").strip()
+    )
     criteria, _ = await write_criteria(goal, settings=settings)
     answer, prov = await llm.ask(
         "score",
@@ -94,20 +106,24 @@ async def test_scoring_matches_the_hand_labels():
     bias = statistics.mean(model[u] - human[u] for u in shared)
     exact = sum(1 for u in shared if human[u] == model[u])
 
+    which = "private golden set" if private else "public subset"
+    floor = baseline or {"top5": "-", "top10": "-", "abs_bias": float("nan")}
     print(
-        f"\ngolden set: {len(shared)} companies, prompt score@{prov.prompt_version}, "
+        f"\n{which}: {len(shared)} companies, prompt score@{prov.prompt_version}, "
         f"{prov.seconds:.0f}s\n"
-        f"  top-5 overlap  {top5}/5   (baseline {BASELINE['top5']})\n"
-        f"  top-10 overlap {top10}/10  (baseline {BASELINE['top10']})\n"
-        f"  bias           {bias:+.2f}  (baseline {BASELINE['abs_bias']:+.2f})\n"
+        f"  top-5 overlap  {top5}/5   (baseline {floor['top5']})\n"
+        f"  top-10 overlap {top10}/10  (baseline {floor['top10']})\n"
+        f"  bias           {bias:+.2f}  (baseline {floor['abs_bias']:+.2f})\n"
         f"  exact          {exact}/{len(shared)}  (reported, not asserted)\n"
         f"  missing {len(missing)}, dropped {dropped}"
     )
 
     assert not missing, "the model failed to answer for some companies"
-    assert top5 >= BASELINE["top5"], f"top-5 overlap fell to {top5}"
-    assert top10 >= BASELINE["top10"], f"top-10 overlap fell to {top10}"
-    assert abs(bias) <= BASELINE["abs_bias"] + 0.5, f"bias drifted to {bias:+.2f}"
+    if baseline is None:
+        pytest.skip("no baseline for this set yet; the numbers above are the first")
+    assert top5 >= baseline["top5"], f"top-5 overlap fell to {top5}"
+    assert top10 >= baseline["top10"], f"top-10 overlap fell to {top10}"
+    assert abs(bias) <= baseline["abs_bias"] + 0.5, f"bias drifted to {bias:+.2f}"
 
 
 # --- site choice --------------------------------------------------------------
@@ -218,6 +234,7 @@ LABELS = Path("data/golden/extraction.jsonl")
 # only looks like evidence. Set it from the first labelled run and then hold
 # changes to it, exactly as the two evals above do.
 EXTRACT_BASELINE: dict[str, int] | None = None
+EXTRACT_SUBSET_BASELINE: dict[str, int] | None = None
 
 
 def _labelled_site(uid: str) -> str:
@@ -242,18 +259,38 @@ async def _profile_for(row: dict, settings: Settings):
     from company_reach.nodes.read_pages import read_pages
     from company_reach.tools.checks import checked
     from company_reach.tools.fetcher import Fetcher
+    from company_reach.tools.textify import textify
 
-    with connect(settings.db_path) as conn:
-        record = company_by_uid(conn, row["uid"])
-    fetcher = Fetcher(settings, delay_s=0.0)
-    urls = json.loads((SITES / row["uid"] / "read.json").read_text())
-    read = await read_pages({"pages_to_read": urls}, settings=settings, fetcher=fetcher)
-    raw = (
-        await extract(
-            {"company": record, "page_texts": read["page_texts"]}, settings=settings
+    if "pages" in row:
+        # the public subset carries its pages; the same textify production uses
+        record = _subset_record(row)
+        texts = {url: textify(html) for url, html in row["pages"].items()}
+        site = row["site"]
+    else:
+        with connect(settings.db_path) as conn:
+            record = company_by_uid(conn, row["uid"])
+        fetcher = Fetcher(settings, delay_s=0.0)
+        urls = json.loads((SITES / row["uid"] / "read.json").read_text())
+        read = await read_pages(
+            {"pages_to_read": urls}, settings=settings, fetcher=fetcher
         )
-    )["raw_profile"]
-    return checked(raw, texts=read["page_texts"], site_url=_labelled_site(row["uid"]))
+        texts, site = read["page_texts"], _labelled_site(row["uid"])
+    raw = (await extract({"company": record, "page_texts": texts}, settings=settings))[
+        "raw_profile"
+    ]
+    return checked(raw, texts=texts, site_url=site)
+
+
+def _subset_record(row: dict) -> CompanyRecord:
+    return CompanyRecord(
+        uid=row["uid"],
+        name=row["name"],
+        legal_form="0106",
+        municipality="3203",
+        city=row.get("city"),
+        purpose=row.get("purpose", ""),
+        purpose_head=row.get("purpose", ""),
+    )
 
 
 async def test_extraction_matches_the_hand_labels():
@@ -267,10 +304,10 @@ async def test_extraction_matches_the_hand_labels():
     whose pages name nobody. The easy way for an extractor to look good is to
     find a person everywhere.
     """
-    if not LABELS.is_file():
-        pytest.skip(f"no extraction labels at {LABELS} (they live outside git)")
-
-    rows = [json.loads(line) for line in LABELS.read_text().splitlines()]
+    private = LABELS.is_file()
+    source = LABELS if private else SUBSET / "extraction.jsonl"
+    baseline = EXTRACT_BASELINE if private else EXTRACT_SUBSET_BASELINE
+    rows = [json.loads(line) for line in source.read_text().splitlines()]
     settings = Settings()
     profiles = await asyncio.gather(*[_profile_for(r, settings) for r in rows])
 
@@ -286,18 +323,19 @@ async def test_extraction_matches_the_hand_labels():
 
     want_n = sum(len(r["persons"]) for r in rows)
     want_m = sum(len(r["emails"]) for r in rows)
+    which = "private golden set" if private else "public subset"
     print(
-        f"\nextraction on {len(rows)} golden companies, prompt extract\n"
+        f"\nextraction on the {which}, {len(rows)} companies, prompt extract\n"
         f"  persons found  {names_right}/{want_n}\n"
         f"  e-mails found  {mails_right}/{want_m}\n"
         f"  not on the labels  {extra}  (invented, or a label that is missing)"
     )
 
-    if EXTRACT_BASELINE is None:
+    if baseline is None:
         pytest.skip("baseline not set yet; the numbers above are the first run")
-    assert names_right >= EXTRACT_BASELINE["persons"]
-    assert mails_right >= EXTRACT_BASELINE["emails"]
-    assert extra <= EXTRACT_BASELINE["extra"]
+    assert names_right >= baseline["persons"]
+    assert mails_right >= baseline["emails"]
+    assert extra <= baseline["extra"]
 
 
 # --- drafts (M6) -------------------------------------------------------------
@@ -319,6 +357,7 @@ async def test_extraction_matches_the_hand_labels():
 # openings, 806-988 chars. (draft@2: 10/10 pass but the stock phrase in
 # 10/10.) The poisoned page: 3/3 clean on both versions.
 DRAFT_BASELINE: dict[str, int] | None = {"passed": 10}
+DRAFT_SUBSET_BASELINE: dict[str, int] | None = None
 
 # The opening and the stock clause draft@2's German illustrations taught:
 # measured in 10 of 10 drafts on 2026-09-24, which is why draft@3 describes
@@ -327,6 +366,27 @@ _ILLUSTRATION = (
     "kennen Sie genau die Fragen",
     "Ich schreibe an der Universität meine Masterarbeit",
 )
+
+
+def _subset_draft_inputs(settings: Settings) -> list[dict]:
+    from company_reach.models import CompanyProfile, Contact
+
+    about = load_profile(settings.profile_path).about_me
+    inputs = []
+    for line in (SUBSET / "drafts.jsonl").read_text().splitlines():
+        row = json.loads(line)
+        inputs.append(
+            {
+                "run_id": "eval-drafts",
+                "uid": row["uid"],
+                "company": _subset_record(row),
+                "profile": CompanyProfile(description=row["description"]),
+                "contact": Contact(**row["contact"]),
+                "contact_id": None,
+                "about_me": about,
+            }
+        )
+    return inputs
 
 
 def _draft_inputs(settings: Settings) -> list[dict]:
@@ -372,10 +432,10 @@ async def test_drafts_pass_the_checklist():
     from company_reach.nodes.check_draft import problems
     from company_reach.nodes.draft import draft
 
-    if not (SITES / "expected.jsonl").is_file():
-        pytest.skip(f"no golden site set at {SITES} (it lives outside git)")
     settings = Settings()
-    inputs = _draft_inputs(settings)
+    private = (SITES / "expected.jsonl").is_file()
+    inputs = _draft_inputs(settings) if private else _subset_draft_inputs(settings)
+    baseline = DRAFT_BASELINE if private else DRAFT_SUBSET_BASELINE
     if not inputs:
         pytest.skip("no stored profile+contact for any golden company yet")
 
@@ -395,8 +455,9 @@ async def test_drafts_pass_the_checklist():
         lengths.append(len(d.body))
         openings.append(" ".join(d.model_text.split()[:6]))
 
+    which = "private golden set" if private else "public subset"
     print(
-        f"\ndrafts for {len(inputs)} golden companies, prompt draft\n"
+        f"\ndrafts for the {which}, {len(inputs)} companies, prompt draft\n"
         f"  pass the checklist        {passed}/{len(inputs)}\n"
         f"  stock phrase repeated     {copied}/{len(inputs)}\n"
         f"  distinct openings         {len(set(openings))}/{len(inputs)}\n"
@@ -405,9 +466,9 @@ async def test_drafts_pass_the_checklist():
     for rule, n in sorted(failures.items(), key=lambda kv: -kv[1]):
         print(f"  failed: {rule}  x{n}")
 
-    if DRAFT_BASELINE is None:
+    if baseline is None:
         pytest.skip("baseline not set yet; the numbers above are the first run")
-    assert passed >= DRAFT_BASELINE["passed"]
+    assert passed >= baseline["passed"]
 
 
 async def test_a_poisoned_page_never_reaches_a_mail():
