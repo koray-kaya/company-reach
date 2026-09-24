@@ -19,17 +19,23 @@ from company_reach.models import (
     CompanyProfile,
     CompanyRecord,
     CompanyResult,
+    Contact,
+    Draft,
     RawProfile,
     SelectionCriteria,
 )
+from company_reach.nodes.check_draft import check_draft
 from company_reach.nodes.check_profile import check_profile
+from company_reach.nodes.draft import draft
 from company_reach.nodes.enrich_company import enrich_company
 from company_reach.nodes.extract import extract
+from company_reach.nodes.find_contact import find_contact
 from company_reach.nodes.find_site import SiteChoice, find_site
 from company_reach.nodes.load_company import load_company
 from company_reach.nodes.pick_pages import pick_pages
 from company_reach.nodes.probe_search import probe_search
 from company_reach.nodes.read_pages import read_pages
+from company_reach.nodes.recommend import recommend
 from company_reach.profile import goal_hash
 from company_reach.settings import Settings
 from company_reach.tools import llm
@@ -170,14 +176,24 @@ class ChildState(TypedDict, total=False):
     needs_js: list[str]
     raw_profile: RawProfile | None
     profile: CompanyProfile | None
+    contact: Contact | None
+    contact_id: int | None
     recommendation: str | None
     reason: str | None
+    draft: Draft | None
+    draft_feedback: str
 
 
 def has_site(state: ChildState) -> str:
     """The one branch the model decides. No site is a finding and the child
     is done; a site means there are pages to read."""
     return "pick_pages" if state.get("site") is not None else END
+
+
+def is_send(state: ChildState) -> str:
+    """Only a company worth writing to costs a drafting call; a skip or a
+    hold ends here with its reason (`graph.spec.yaml:199`)."""
+    return "draft" if state.get("recommendation") == "send" else END
 
 
 def _stub_recommend(state: ChildState) -> dict:
@@ -195,13 +211,14 @@ def build_stub_child():
     return builder.compile()
 
 
-Until = Literal["site", "profile"]
+Until = Literal["site", "profile", "contact", "draft"]
 
 
 def build_child(
-    *, settings: Settings, fetcher=None, until: Until = "profile"
+    *, settings: Settings, fetcher=None, until: Until = "draft"
 ) -> CompiledStateGraph:
-    """The real child: load the register record, then find the website.
+    """The real child: register record, website, pages, profile, contact,
+    recommendation, and for a company worth writing to, a checked draft.
 
     One `Fetcher` is threaded through rather than built per node, because the
     per-host delay and the robots cache live on the instance — a fetcher each
@@ -233,8 +250,23 @@ def build_child(
     builder.add_edge("pick_pages", "read_pages")
     builder.add_edge("read_pages", "extract")
     builder.add_edge("extract", "check_profile")
-    # M6 puts find_contact here.
-    builder.add_edge("check_profile", END)
+    if until == "profile":
+        builder.add_edge("check_profile", END)
+        return builder.compile()
+
+    builder.add_node("find_contact", partial(find_contact, settings=settings))
+    builder.add_node("recommend", recommend)
+    builder.add_edge("check_profile", "find_contact")
+    builder.add_edge("find_contact", "recommend")
+    if until == "contact":
+        builder.add_edge("recommend", END)
+        return builder.compile()
+
+    builder.add_node("draft", partial(draft, settings=settings))
+    builder.add_node("check_draft", partial(check_draft, settings=settings))
+    builder.add_conditional_edges("recommend", is_send, ["draft", END])
+    builder.add_edge("draft", "check_draft")
+    builder.add_edge("check_draft", END)
     return builder.compile()
 
 

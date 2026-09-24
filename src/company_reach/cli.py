@@ -199,7 +199,8 @@ def run(
 def enrich(
     uid: Annotated[str, typer.Option(help="The company to enrich.")],
     until: Annotated[
-        str, typer.Option(help="How far to go: 'site' or 'profile'.")
+        str,
+        typer.Option(help="How far to go: 'site', 'profile', 'contact' or 'draft'."),
     ] = "site",
     run_id: str | None = None,
 ) -> None:
@@ -208,8 +209,10 @@ def enrich(
     The milestone's demo, and the way to look at a single disagreement
     between the register and a website without drawing a batch.
     """
-    if until not in ("site", "profile"):
-        raise typer.BadParameter("--until takes 'site' or 'profile'.")
+    if until not in ("site", "profile", "contact", "draft"):
+        raise typer.BadParameter(
+            "--until takes 'site', 'profile', 'contact' or 'draft'."
+        )
 
     s = get_settings()
     rid = _run_id(run_id)
@@ -217,7 +220,14 @@ def enrich(
 
     try:
         out = asyncio.run(
-            child.ainvoke({"run_id": rid, "uid": uid, "goal": "", "about_me": ""})
+            child.ainvoke(
+                {
+                    "run_id": rid,
+                    "uid": uid,
+                    "goal": "",
+                    "about_me": load_profile(s.profile_path).about_me,
+                }
+            )
         )
     except CompanyReachError as error:
         typer.echo(str(error), err=True)
@@ -265,6 +275,32 @@ def enrich(
     ]
     if flags:
         typer.echo(f"flags   {', '.join(flags)}")
+
+    if "recommendation" not in out:
+        return
+    _echo_contact(out.get("contact"))
+    typer.echo(f"\n{out['recommendation']}: {out['reason']}")
+    finished = out.get("draft")
+    if finished is not None:
+        fits = "fits" if finished.mailto_fits else "TOO LONG for mailto"
+        typer.echo(
+            f"\nSubject: {finished.subject}   ({len(finished.body)} chars, {fits})"
+        )
+        typer.echo(finished.body)
+
+
+def _echo_contact(contact) -> None:
+    typer.echo("")
+    if contact is None:
+        typer.echo("contact none — nobody named and no address published")
+        return
+    role = f", {contact.role}" if contact.role else ""
+    dated = f" ({contact.source_date})" if contact.source_date else ""
+    typer.echo(f"contact {contact.name or 'nobody named'}{role}")
+    typer.echo(f"        {contact.email or 'no address'} [{contact.email_kind}]")
+    typer.echo(f"        from {contact.source}{dated}: {contact.source_url}")
+    for other in contact.alternatives:
+        typer.echo(f"also    {other}")
 
 
 if __name__ == "__main__":
