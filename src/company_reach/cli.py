@@ -358,8 +358,14 @@ def _echo_contact(contact) -> None:
     role = f", {contact.role}" if contact.role else ""
     dated = f" ({contact.source_date})" if contact.source_date else ""
     typer.echo(f"contact {contact.name or 'nobody named'}{role}")
-    typer.echo(f"        {contact.email or 'no address'} [{contact.email_kind}]")
     typer.echo(f"        from {contact.source}{dated}: {contact.source_url}")
+    for i, row in enumerate(contact.addresses):
+        mark = "→" if i == 0 else " "
+        typer.echo(f"      {mark} {row.email} [{row.kind}]")
+    if not contact.addresses:
+        typer.echo("        no address")
+    if contact.linkedin_lead:
+        typer.echo(f"        lead {contact.linkedin_lead} (unverified)")
     for other in contact.alternatives:
         typer.echo(f"also    {other}")
 

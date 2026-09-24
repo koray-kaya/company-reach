@@ -47,6 +47,7 @@ def _open(path: Path) -> sqlite3.Connection:
 _ADDED_COLUMNS = {
     ("contacts", "source_date"): "TEXT",
     ("contacts", "alternatives"): "TEXT",
+    ("contacts", "addresses"): "TEXT",
 }
 
 
@@ -418,8 +419,9 @@ def record_contact(
     conn.execute("delete from contacts where run_id = ? and uid = ?", (run_id, uid))
     cur = conn.execute(
         """INSERT INTO contacts (run_id, uid, name, role, email, email_kind,
-             source, source_url, source_date, linkedin_lead, alternatives)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+             source, source_url, source_date, linkedin_lead, alternatives,
+             addresses)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             run_id,
             uid,
@@ -432,6 +434,7 @@ def record_contact(
             contact.source_date,
             contact.linkedin_lead,
             json.dumps(contact.alternatives, ensure_ascii=False),
+            json.dumps([a.model_dump() for a in contact.addresses]),
         ),
     )
     return cur.lastrowid

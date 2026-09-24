@@ -24,7 +24,7 @@ CREATE TABLE IF NOT EXISTS profiles (
 CREATE TABLE IF NOT EXISTS contacts (
   id INTEGER PRIMARY KEY, run_id TEXT, uid TEXT, name TEXT, role TEXT, email TEXT,
   email_kind TEXT, source TEXT, source_url TEXT, source_date TEXT, linkedin_lead TEXT,
-  alternatives TEXT);
+  alternatives TEXT, addresses TEXT);
 CREATE TABLE IF NOT EXISTS drafts (
   id INTEGER PRIMARY KEY, run_id TEXT, uid TEXT, contact_id INTEGER, subject TEXT, body TEXT,
   mailto_fits INTEGER, prompt_version TEXT, model TEXT, created_at TEXT);

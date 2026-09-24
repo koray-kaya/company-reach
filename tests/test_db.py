@@ -183,4 +183,4 @@ def test_an_older_database_gains_the_columns_added_since(tmp_path: Path):
     conn = sqlite3.connect(path)
     columns = {row[1] for row in conn.execute("pragma table_info(contacts)")}
     conn.close()
-    assert {"source_date", "alternatives"} <= columns
+    assert {"source_date", "alternatives", "addresses"} <= columns

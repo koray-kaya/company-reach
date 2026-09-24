@@ -40,7 +40,13 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 from urllib.parse import urlsplit
 
-from company_reach.models import CompanyProfile, Contact, Person, ShabPerson
+from company_reach.models import (
+    CompanyProfile,
+    Contact,
+    ContactAddress,
+    Person,
+    ShabPerson,
+)
 from company_reach.nodes.find_site import SiteChoice, strip_legal_form
 from company_reach.settings import Settings
 from company_reach.tools import search as search_tool
@@ -200,6 +206,31 @@ def _without_site_names(
     return None
 
 
+_MAX_OFFERED = 8
+
+
+def offered(
+    contact: Contact, addresses: list[tuple[str, str]], domain: str | None
+) -> list[ContactAddress]:
+    """What the review card offers: the chosen address, then every other
+    address the pages carry, each with its kind — a general inbox, someone's
+    own on the site's domain, or third party on any other."""
+    rows: list[ContactAddress] = []
+    if contact.email and contact.email_kind:
+        rows.append(ContactAddress(email=contact.email, kind=contact.email_kind))
+    for email, _ in addresses:
+        if any(r.email == email for r in rows):
+            continue
+        if email_domain(email) != domain:
+            kind = "third_party"
+        elif email.split("@", 1)[0] in _GENERIC:
+            kind = "generic"
+        else:
+            kind = "seen"
+        rows.append(ContactAddress(email=email, kind=kind))
+    return rows[:_MAX_OFFERED]
+
+
 def _is_lead(result: Result, *, company: str, name: str | None) -> bool:
     parts = urlsplit(result.url)
     host = (parts.hostname or "").lower()
@@ -272,6 +303,7 @@ async def find_contact(
 
     if contact is None:  # a finding: nobody named, no inbox, no lead
         return {"contact": None, "contact_id": None}
+    contact.addresses = offered(contact, addresses, domain)
 
     with connect(settings.db_path) as conn:
         contact_id = record_contact(conn, state["run_id"], state["uid"], contact)
