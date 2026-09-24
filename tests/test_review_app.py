@@ -247,3 +247,8 @@ def test_an_unknown_action_is_refused(client, review):
     r = client.post(f"/decide/{RUN}/{SKIP}?n=2", data={"action": "maybe"}, headers=SAME)
     assert r.status_code == 400
     assert ledger_rows(review) == 0
+
+
+def test_the_front_page_lists_the_runs_to_review(client):
+    html = client.get("/").text
+    assert f'href="/review/{RUN}"' in html

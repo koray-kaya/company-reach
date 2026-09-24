@@ -57,6 +57,18 @@ def create_app(settings: Settings) -> FastAPI:
             raise HTTPException(404, f"run {run_id!r} has no results to review")
         return cards
 
+    @app.get("/", response_class=HTMLResponse)
+    def runs(request: Request) -> HTMLResponse:
+        """Every run with results, newest first, with how many are left."""
+        with connect(settings.db_path) as conn:
+            rows = conn.execute(
+                """select r.run_id, count(*) as companies,
+                          sum(r.recommendation = 'send') as to_send,
+                          max(r.finished_at) as finished
+                     from results r group by r.run_id order by finished desc"""
+            ).fetchall()
+        return templates.TemplateResponse(request, "runs.html", {"runs": rows})
+
     @app.get("/review/{run_id}")
     def open_run(run_id: str) -> RedirectResponse:
         return RedirectResponse(
