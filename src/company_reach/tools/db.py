@@ -17,6 +17,7 @@ from company_reach.models import (
     CompanyProfile,
     CompanyRecord,
     CompanyResult,
+    Contact,
     Score,
     SelectionCriteria,
 )
@@ -39,12 +40,22 @@ def _open(path: Path) -> sqlite3.Connection:
     return conn
 
 
+# Columns added to a table after it first shipped. `CREATE TABLE IF NOT
+# EXISTS` leaves an existing table as it was, so a database created before
+# the column existed gets it here.
+_ADDED_COLUMNS = {("contacts", "source_date"): "TEXT"}
+
+
 def init_db(path: Path) -> None:
     schema = files("company_reach").joinpath("schema.sql").read_text()
     conn = _open(path)
     try:
         with conn:
             conn.executescript(schema)
+            for (table, column), kind in _ADDED_COLUMNS.items():
+                have = {r["name"] for r in conn.execute(f"pragma table_info({table})")}
+                if column not in have:
+                    conn.execute(f"alter table {table} add column {column} {kind}")
     finally:
         conn.close()
 
@@ -369,3 +380,29 @@ def record_page(
              text=excluded.text, raw_path=excluded.raw_path""",
         (url, now(), status, text, raw_path),
     )
+
+
+def record_contact(
+    conn: sqlite3.Connection, run_id: str, uid: str, contact: Contact
+) -> int:
+    """One contact per (run, company); a retry replaces it rather than adding
+    a second. Returns the row id, which the draft refers to."""
+    conn.execute("delete from contacts where run_id = ? and uid = ?", (run_id, uid))
+    cur = conn.execute(
+        """INSERT INTO contacts (run_id, uid, name, role, email, email_kind,
+             source, source_url, source_date, linkedin_lead)
+           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+        (
+            run_id,
+            uid,
+            contact.name,
+            contact.role,
+            contact.email,
+            contact.email_kind,
+            contact.source,
+            contact.source_url,
+            contact.source_date,
+            contact.linkedin_lead,
+        ),
+    )
+    return cur.lastrowid

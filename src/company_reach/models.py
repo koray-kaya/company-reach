@@ -171,6 +171,33 @@ class ShabPerson(BaseModel):
     source_url: str
 
 
+EmailKind = Literal["seen", "constructed", "generic", "third_party"]
+
+
+class Contact(BaseModel):
+    """Who the invitation goes to, and how much the address can be trusted.
+
+    `email_kind` is the part the reviewer and `recommend` read:
+    `seen` — the person's own address, on the site's domain;
+    `generic` — an address like info@ that the site publishes;
+    `constructed` — info@<site domain>, never seen, only guessed;
+    `third_party` — an address on another domain, which is how a hostile
+    page plants a contact, and why such a contact is held.
+
+    `name` is None when nobody is named anywhere and only an inbox is known;
+    `email` is None when a name is known and no address is.
+    """
+
+    name: str | None = None
+    role: str | None = None
+    email: str | None = None
+    email_kind: EmailKind | None = None
+    source: Literal["site", "shab"]
+    source_url: str | None = None
+    source_date: str | None = None  # SHAB's notice date; the site is today
+    linkedin_lead: str | None = None
+
+
 Recommendation = Literal["send", "hold", "skip"]
 ErrorKind = Literal["search", "fetch", "llm", "shab", "other"]
 

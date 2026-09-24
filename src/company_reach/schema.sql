@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS profiles (
   run_id TEXT NOT NULL, uid TEXT NOT NULL, profile TEXT NOT NULL, PRIMARY KEY (run_id, uid));
 CREATE TABLE IF NOT EXISTS contacts (
   id INTEGER PRIMARY KEY, run_id TEXT, uid TEXT, name TEXT, role TEXT, email TEXT,
-  email_kind TEXT, source TEXT, source_url TEXT, linkedin_lead TEXT);
+  email_kind TEXT, source TEXT, source_url TEXT, source_date TEXT, linkedin_lead TEXT);
 CREATE TABLE IF NOT EXISTS drafts (
   id INTEGER PRIMARY KEY, run_id TEXT, uid TEXT, contact_id INTEGER, subject TEXT, body TEXT,
   mailto_fits INTEGER, prompt_version TEXT, model TEXT, created_at TEXT);

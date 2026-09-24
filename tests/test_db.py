@@ -1,3 +1,4 @@
+import sqlite3
 from pathlib import Path
 
 from company_reach.models import CompanyProfile, CompanyRecord, Person
@@ -161,3 +162,25 @@ def test_reading_a_page_again_updates_its_row(tmp_path: Path):
     with connect(db) as conn:
         rows = conn.execute("select text from pages").fetchall()
     assert [r["text"] for r in rows] == ["new"]
+
+
+def test_an_older_database_gains_the_columns_added_since(tmp_path: Path):
+    # contacts shipped in M1 without source_date; a database created then
+    # must still take a SHAB contact's notice date
+    path = tmp_path / "old.db"
+    conn = sqlite3.connect(path)
+    conn.execute(
+        """CREATE TABLE contacts (
+             id INTEGER PRIMARY KEY, run_id TEXT, uid TEXT, name TEXT, role TEXT,
+             email TEXT, email_kind TEXT, source TEXT, source_url TEXT,
+             linkedin_lead TEXT)"""
+    )
+    conn.close()
+
+    init_db(path)
+    init_db(path)  # and a second start does not try to add it again
+
+    conn = sqlite3.connect(path)
+    columns = {row[1] for row in conn.execute("pragma table_info(contacts)")}
+    conn.close()
+    assert "source_date" in columns
