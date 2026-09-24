@@ -146,8 +146,8 @@ choice in the template below serves that.
 5. **Say what does not need to be understood yet.** Naming what to skip is
    cognitive-load management, and it is what keeps the reader from drowning.
 6. **End with questions, not a summary.** Recall builds memory; re-reading
-   does not. These questions feed the cards in
-   `alignor-thesis/learning/cards/`.
+   does not. These questions feed the author's spaced-repetition cards,
+   kept outside this repository.
 
 Conventions of the language (a leading underscore means internal, `*` makes
 parameters keyword-only, and so on) are named inline, in one sentence, the
