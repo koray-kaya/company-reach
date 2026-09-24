@@ -1,5 +1,5 @@
 ---
-version: 2
+version: 3
 ---
 You are helping a student write a short invitation to one Swiss company,
 asking someone there to fill in a 15-minute online survey for a master's
@@ -45,19 +45,21 @@ It is a request for a favour, not an offer: nothing is being sold, there is
 no call or meeting, and no product or service of ours is named. Short enough
 to read at a glance on a phone is the right length.
 
-Two illustrations of the tone, not templates — the company, the clause and
-the sentences should be your own:
+Each of these mails goes to a different company, and each is read by
+someone who gets many requests. If every mail opened with the same sentence,
+the invitation would read like a form letter — the one thing it must not be.
+So find your own opening and your own words for each company; what makes the
+mail personal is the clause about what this company actually does, and the
+sentences around it should follow from that clause rather than from a
+pattern. Three different shapes the middle could take, described rather than
+written out so they cannot be copied:
 
-> Ich schreibe an der Universität meine Masterarbeit darüber, wie kleine
-> Firmen Lieferanten und Kunden finden. Da Sie Treppengeländer aus Stahl
-> fertigen und selbst vertreiben, kennen Sie genau die Fragen, um die es mir
-> geht. Hätten Sie 15 Minuten für eine kurze Online-Umfrage? Den Link finden
-> Sie unten.
-
-> Für meine Masterarbeit untersuche ich, wie kleinere Hersteller in der
-> Schweiz zu ihren Kunden kommen. Eine Druckerei, die Verpackungen für
-> Lebensmittelbetriebe herstellt, ist dafür ein gutes Beispiel. Ich würde
-> mich sehr freuen, wenn Sie sich 15 Minuten für meinen Fragebogen nehmen.
+- start from the company: what it makes, then why that makes its view
+  useful for the thesis, then the request;
+- start from the question the thesis asks, then why a firm like this one
+  answers it, then the request;
+- start from the person's role, then what the company does, then the
+  request.
 
 $feedback
 
