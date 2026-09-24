@@ -43,6 +43,7 @@ async def test_all_checks_pass(settings):
         "settings",
         "prompts",
         "database",
+        "profile",
         "endpoint",
         "token budget",
     ]
@@ -53,7 +54,7 @@ async def test_all_checks_pass(settings):
 async def test_a_failing_check_does_not_stop_the_others(settings):
     respx.post(URL).mock(return_value=httpx.Response(401, json={"error": "nope"}))
     checks = await run_checks(settings)
-    assert len(checks) == 5  # every check still ran
+    assert len(checks) == 6  # every check still ran
     by_name = {c.name: c for c in checks}
     assert by_name["settings"].ok
     assert by_name["database"].ok
@@ -95,3 +96,23 @@ def test_cli_exits_one_when_something_is_wrong(settings, monkeypatch):
     result = runner.invoke(cli.app, ["doctor"])
     assert result.exit_code == 1
     assert "FAIL" in result.output
+
+
+@respx.mock
+async def test_a_profile_without_a_survey_url_fails(settings):
+    # every invitation carries the link; a run that drafts without one
+    # would stop at the first company
+    respx.post(URL).mock(side_effect=[probe_ok(), probe_truncated()])
+    settings.profile_path.write_text('goal = "Firms that make things."\n')
+    profile = next(c for c in await run_checks(settings) if c.name == "profile")
+    assert not profile.ok
+    assert "survey_url" in profile.detail
+
+
+@respx.mock
+async def test_a_missing_profile_fails_without_stopping_the_others(settings):
+    respx.post(URL).mock(side_effect=[probe_ok(), probe_truncated()])
+    settings.profile_path.unlink()
+    checks = await run_checks(settings)
+    assert len(checks) == 6
+    assert not next(c for c in checks if c.name == "profile").ok

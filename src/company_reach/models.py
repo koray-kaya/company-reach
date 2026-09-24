@@ -10,6 +10,12 @@ from pydantic import BaseModel, Field, field_validator
 _UID_DIGITS = re.compile(r"\D")
 
 
+def dotted_uid(uid: str) -> str:
+    """`CHE000000003` -> `CHE-000.000.003`, the form SHAB's filter needs."""
+    d = uid[3:]
+    return f"CHE-{d[:3]}.{d[3:6]}.{d[6:]}"
+
+
 class CompanyRecord(BaseModel):
     uid: str  # normalised: CHE + 9 digits, no dots
     name: str
@@ -31,8 +37,7 @@ class CompanyRecord(BaseModel):
 
     @property
     def uid_dotted(self) -> str:
-        d = self.uid[3:]
-        return f"CHE-{d[:3]}.{d[3:6]}.{d[6:]}"
+        return dotted_uid(self.uid)
 
 
 class SelectionCriteria(BaseModel):
@@ -149,8 +154,82 @@ class CompanyProfile(BaseModel):
     foreign_group: bool = False
 
 
+class ShabPerson(BaseModel):
+    """A person as one SHAB notice names them.
+
+    Not a `Person`: the register says who held a role on a date, never who
+    holds it now, so the date and the notice travel with the name. `departed`
+    marks an entry the notice itself strikes out ("Ausgeschiedene",
+    "radiée") — the register naming someone is not always the register
+    naming a current role-holder.
+    """
+
+    name: str
+    role: str | None = None
+    departed: bool = False
+    published: str  # ISO date of the notice
+    source_url: str
+
+
+EmailKind = Literal["seen", "constructed", "generic", "third_party"]
+
+
+class Contact(BaseModel):
+    """Who the invitation goes to, and how much the address can be trusted.
+
+    `email_kind` is the part the reviewer and `recommend` read:
+    `seen` — the person's own address, on the site's domain;
+    `generic` — an address like info@ that the site publishes;
+    `constructed` — info@<site domain>, never seen, only guessed;
+    `third_party` — an address on another domain, which is how a hostile
+    page plants a contact, and why such a contact is held.
+
+    `name` is None when nobody is named anywhere and only an inbox is known;
+    `email` is None when a name is known and no address is.
+    """
+
+    name: str | None = None
+    role: str | None = None
+    email: str | None = None
+    email_kind: EmailKind | None = None
+    source: Literal["site", "shab"]
+    source_url: str | None = None
+    source_date: str | None = None  # SHAB's notice date; the site is today
+    linkedin_lead: str | None = None
+    # Everyone else the same source named, best first, as "Name, role[,
+    # address]": one person gets the invitation, the reviewer sees them all.
+    alternatives: list[str] = Field(default_factory=list)
+
+
+class DraftAnswer(BaseModel):
+    """What `draft.md` returns: the part of the invitation the model writes.
+    The greeting, the survey link, the data-protection sentence and the
+    closing are added by code, so none of them is a field here."""
+
+    subject: str = Field(description="the subject line, German, short")
+    body: str = Field(
+        description="the middle of the mail, German, plain text: no greeting, "
+        "no closing, no link, no e-mail address"
+    )
+
+
+class Draft(BaseModel):
+    """The invitation as a reviewer will see it.
+
+    `model_text` is kept beside the assembled `body` because `check_draft`
+    judges the two differently: the model's text may carry no URL at all,
+    while the body carries exactly one — the survey link code appended.
+    """
+
+    subject: str
+    body: str
+    model_text: str
+    link: str  # the survey link code appended; the body's only allowed URL
+    mailto_fits: bool
+
+
 Recommendation = Literal["send", "hold", "skip"]
-ErrorKind = Literal["search", "fetch", "llm", "other"]
+ErrorKind = Literal["search", "fetch", "llm", "shab", "other"]
 
 
 class CompanyResult(BaseModel):

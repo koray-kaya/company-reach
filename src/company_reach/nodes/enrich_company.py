@@ -19,7 +19,7 @@ is true only as long as this function never raises.
 
 from typing import Any
 
-from company_reach.errors import FetchError, LlmError, SearchError
+from company_reach.errors import FetchError, LlmError, SearchError, ShabError
 from company_reach.models import CompanyResult, ErrorKind
 from company_reach.settings import Settings
 from company_reach.tools.db import connect, record_result, result_for
@@ -28,6 +28,7 @@ _ERROR_KINDS: list[tuple[type[Exception], ErrorKind]] = [
     (SearchError, "search"),
     (FetchError, "fetch"),
     (LlmError, "llm"),
+    (ShabError, "shab"),
 ]
 
 _MAX_ERROR_TEXT = 500

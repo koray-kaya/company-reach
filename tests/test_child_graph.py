@@ -17,9 +17,20 @@ from company_reach.nodes.enrich_company import enrich_company
 from company_reach.settings import Settings
 from company_reach.tools.db import connect, init_db, upsert_companies
 from company_reach.tools.fetcher import Fetcher
+from company_reach.tools.llm import Provenance
 from company_reach.tools.search import Result
 
 UID = "CHE000000046"
+PROVENANCE = Provenance(
+    model="test-model",
+    prompt="draft",
+    prompt_version="2",
+    reasoning_effort="low",
+    prompt_tokens=1,
+    completion_tokens=1,
+    finish_reason="stop",
+    seconds=0.1,
+)
 SITE = "https://muster-metallbau.ch"
 IMPRESSUM = (
     "<html><body><div id='footer'><h2>Impressum</h2><p>Muster Metallbau AG<br>"
@@ -79,6 +90,12 @@ def seeded(settings: Settings, monkeypatch) -> Settings:
                 ],
                 addresses=["Beispielstrasse 1, 8000 Musterstadt"],
             )
+        elif prompt_name == "draft":
+            answer = dict(
+                subject="Umfrage zu meiner Masterarbeit",
+                body="Da Sie Metallteile fertigen, wäre Ihre Sicht wertvoll.",
+            )
+            return output_model(**answer), PROVENANCE
         else:  # pragma: no cover - a prompt nobody taught this stub about
             raise AssertionError(f"no stubbed answer for {prompt_name!r}")
         return output_model(**answer), None
@@ -196,3 +213,74 @@ async def test_a_company_without_a_site_still_stops_at_find_site(
     )
     assert out.get("profile") is None
     assert out.get("page_texts") in (None, {})
+
+
+# --- M6: contact, recommendation, draft --------------------------------------
+
+
+@respx.mock
+async def test_a_company_walks_the_whole_child_to_a_checked_draft(
+    seeded: Settings,
+):
+    serve()
+    out = await child(seeded).ainvoke(
+        {"run_id": "r1", "uid": UID, "goal": "g", "about_me": "a"}
+    )
+    assert (out["contact"].name, out["contact"].email_kind) == ("Anna Muster", "seen")
+    assert out["recommendation"] == "send"
+    assert out["draft"].body.startswith("Guten Tag Anna Muster")
+    assert f"?c={UID}&l=de" in out["draft"].body
+
+
+@respx.mock
+async def test_a_skipped_company_is_never_drafted(seeded: Settings, monkeypatch):
+    asked: list[str] = []
+    stub = node.llm.ask
+
+    async def reseller(prompt_name, output_model, *, settings, **variables):
+        asked.append(prompt_name)
+        answer, prov = await stub(
+            prompt_name, output_model, settings=settings, **variables
+        )
+        if prompt_name == "extract":
+            answer = answer.model_copy(update={"distributor_only": True})
+        return answer, prov
+
+    monkeypatch.setattr(node.llm, "ask", reseller)
+    serve()
+    out = await child(seeded).ainvoke(
+        {"run_id": "r1", "uid": UID, "goal": "g", "about_me": "a"}
+    )
+    assert out["recommendation"] == "skip"
+    assert out.get("draft") is None
+    assert "draft" not in asked  # no model call spent on a row nobody reads
+
+
+@respx.mock
+async def test_a_failure_while_drafting_is_an_error_row(seeded: Settings, monkeypatch):
+    stub = node.llm.ask
+
+    async def draft_fails(prompt_name, output_model, *, settings, **variables):
+        if prompt_name == "draft":
+            raise LlmError("endpoint down while drafting")
+        return await stub(prompt_name, output_model, settings=settings, **variables)
+
+    monkeypatch.setattr(node.llm, "ask", draft_fails)
+    serve()
+    out = await enrich_company(
+        {"run_id": "r1", "uid": UID, "goal": "g", "about_me": "a"},
+        child=child(seeded),
+        settings=seeded,
+    )
+    [result] = out["results"]
+    assert (result.error_kind, result.recommendation) == ("llm", None)
+
+
+@respx.mock
+async def test_until_contact_stops_before_the_model_drafts(seeded: Settings):
+    serve()
+    out = await build_child(
+        settings=seeded, fetcher=Fetcher(seeded, delay_s=0.0), until="contact"
+    ).ainvoke({"run_id": "r1", "uid": UID, "goal": "g", "about_me": "a"})
+    assert out["recommendation"] == "send"
+    assert out.get("draft") is None

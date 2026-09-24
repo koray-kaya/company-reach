@@ -17,6 +17,8 @@ from company_reach.models import (
     CompanyProfile,
     CompanyRecord,
     CompanyResult,
+    Contact,
+    Draft,
     Score,
     SelectionCriteria,
 )
@@ -39,12 +41,25 @@ def _open(path: Path) -> sqlite3.Connection:
     return conn
 
 
+# Columns added to a table after it first shipped. `CREATE TABLE IF NOT
+# EXISTS` leaves an existing table as it was, so a database created before
+# the column existed gets it here.
+_ADDED_COLUMNS = {
+    ("contacts", "source_date"): "TEXT",
+    ("contacts", "alternatives"): "TEXT",
+}
+
+
 def init_db(path: Path) -> None:
     schema = files("company_reach").joinpath("schema.sql").read_text()
     conn = _open(path)
     try:
         with conn:
             conn.executescript(schema)
+            for (table, column), kind in _ADDED_COLUMNS.items():
+                have = {r["name"] for r in conn.execute(f"pragma table_info({table})")}
+                if column not in have:
+                    conn.execute(f"alter table {table} add column {column} {kind}")
     finally:
         conn.close()
 
@@ -231,12 +246,16 @@ def draw_batch(
               and s.score >= ?
               -- not already drawn in THIS run, or the loop would redraw it
               and c.uid not in (select uid from seen where run_id = ?)
-              -- never drawn at all, or drawn by an earlier run that failed on
-              -- it: an errored company was never contacted and has no draft,
-              -- so there is nothing to protect it from
+              -- never drawn at all, or drawn only by earlier runs that failed
+              -- on it: an errored company was never contacted and has no
+              -- draft, so there is nothing to protect it from. "Only" is the
+              -- point — a company another run finished after an error keeps
+              -- that old error row, and may already have been written to.
               and (c.uid not in (select uid from seen)
-                   or c.uid in (select uid from results
-                                 where error_kind is not null and run_id <> ?))
+                   or (c.uid in (select uid from results
+                                  where error_kind is not null and run_id <> ?)
+                       and c.uid not in (select uid from results
+                                          where error_kind is null)))
             order by s.score desc
             limit ?""",
         (goal_hash, prompt_version, model, min_score, run_id, run_id, limit),
@@ -369,3 +388,77 @@ def record_page(
              text=excluded.text, raw_path=excluded.raw_path""",
         (url, now(), status, text, raw_path),
     )
+
+
+def record_contact(
+    conn: sqlite3.Connection, run_id: str, uid: str, contact: Contact
+) -> int:
+    """One contact per (run, company); a retry replaces it rather than adding
+    a second. Returns the row id, which the draft refers to."""
+    conn.execute("delete from contacts where run_id = ? and uid = ?", (run_id, uid))
+    cur = conn.execute(
+        """INSERT INTO contacts (run_id, uid, name, role, email, email_kind,
+             source, source_url, source_date, linkedin_lead, alternatives)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            run_id,
+            uid,
+            contact.name,
+            contact.role,
+            contact.email,
+            contact.email_kind,
+            contact.source,
+            contact.source_url,
+            contact.source_date,
+            contact.linkedin_lead,
+            json.dumps(contact.alternatives, ensure_ascii=False),
+        ),
+    )
+    return cur.lastrowid
+
+
+def record_draft(
+    conn: sqlite3.Connection,
+    run_id: str,
+    uid: str,
+    draft: Draft,
+    *,
+    contact_id: int | None,
+    provenance: "Provenance",
+) -> None:
+    """One draft per (run, company); a regeneration or a retry replaces it."""
+    conn.execute("delete from drafts where run_id = ? and uid = ?", (run_id, uid))
+    conn.execute(
+        """INSERT INTO drafts (run_id, uid, contact_id, subject, body,
+             mailto_fits, prompt_version, model, created_at)
+           VALUES (?,?,?,?,?,?,?,?,?)""",
+        (
+            run_id,
+            uid,
+            contact_id,
+            draft.subject,
+            draft.body,
+            int(draft.mailto_fits),
+            provenance.prompt_version,
+            provenance.model,
+            now(),
+        ),
+    )
+
+
+def delete_draft(conn: sqlite3.Connection, run_id: str, uid: str) -> None:
+    """A draft that failed its checks twice is not kept: nothing that
+    failed them should be one click from being sent."""
+    conn.execute("delete from drafts where run_id = ? and uid = ?", (run_id, uid))
+
+
+def errored_uids(conn: sqlite3.Connection, run_id: str) -> list[str]:
+    """The companies of a run whose result is an error: what `retry` redoes."""
+    return [
+        r["uid"]
+        for r in conn.execute(
+            "select uid from results where run_id = ? and error_kind is not null "
+            "order by uid",
+            (run_id,),
+        )
+    ]

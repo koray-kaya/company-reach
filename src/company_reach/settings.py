@@ -17,7 +17,9 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     data_dir: Path = Path("data")
+    profile_path: Path = Path("profile.toml")
     lindas_url: str = "https://lindas.admin.ch/query"
+    shab_url: str = "https://www.shab.ch/api/v1"
 
     llm_base_url: str = "https://api.openai.com/v1"
     llm_api_key: SecretStr

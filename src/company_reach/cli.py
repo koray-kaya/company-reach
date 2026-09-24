@@ -3,7 +3,6 @@
 
 import asyncio
 import uuid
-from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -13,6 +12,7 @@ from company_reach.graph import (
     build_child,
     build_stub_child,
     initial_state,
+    retry_errors,
     run_graph,
 )
 from company_reach.manifest import finish_manifest, manifest_path, start_manifest
@@ -27,14 +27,14 @@ from company_reach.tools.doctor import run_checks
 
 app = typer.Typer(help="Find Swiss companies, find the person, draft the mail.")
 
-PROFILE_PATH = Path("profile.toml")
-
 
 def _resolve_goal(explicit: str | None) -> str:
     """--goal wins; otherwise profile.toml. Trying a goal on the command line
     without editing the file is the common case while wording is still being
     worked out."""
-    return explicit.strip() if explicit else load_profile(PROFILE_PATH).goal
+    if explicit:
+        return explicit.strip()
+    return load_profile(get_settings().profile_path).goal
 
 
 def _run_id(explicit: str | None) -> str:
@@ -165,7 +165,7 @@ def run(
     state = initial_state(
         run_id=rid,
         goal=text,
-        about_me=load_profile(PROFILE_PATH).about_me if goal is None else "",
+        about_me=load_profile(s.profile_path).about_me if goal is None else "",
         municipality="",
         settings=s,
         seed=seed,
@@ -192,15 +192,54 @@ def run(
         + ("  · pool exhausted" if out["pool_exhausted"] else "")
     )
     typer.echo(f"manifest: {manifest_path(rid, settings=s)}")
+    if counts["errors"] and not dry:
+        typer.echo(f"retry the errors with: company-reach retry {rid}")
     if dry:
         typer.echo("--dry: every company was skipped by the M3 stub child.")
+
+
+@app.command()
+def retry(
+    run_id: Annotated[str, typer.Argument(help="The run whose errors to redo.")],
+) -> None:
+    """Re-enrich the companies of a run whose result is an error.
+
+    An error means the tool could not look — search, a site, the model or
+    SHAB failed — not that it looked and found nothing. Those companies were
+    drawn, never contacted, and are redone here without drawing anything new.
+    """
+    s = get_settings()
+    try:
+        results = asyncio.run(
+            retry_errors(run_id, settings=s, child=build_child(settings=s))
+        )
+    except CompanyReachError as error:
+        typer.echo(str(error), err=True)
+        raise typer.Exit(1) from error
+
+    if not results:
+        typer.echo(f"nothing to retry in run {run_id}")
+        return
+    failing = [r for r in results if r.error_kind]
+    typer.echo(
+        f"{len(results)} retried · {len(results) - len(failing)} recovered · "
+        f"{len(failing)} still failing"
+    )
+    for r in results:
+        outcome = (
+            f"{r.error_kind} error: {r.error_text}"
+            if r.error_kind
+            else (f"{r.recommendation}: {r.reason}")
+        )
+        typer.echo(f"  {r.uid}  {outcome}")
 
 
 @app.command()
 def enrich(
     uid: Annotated[str, typer.Option(help="The company to enrich.")],
     until: Annotated[
-        str, typer.Option(help="How far to go: 'site' or 'profile'.")
+        str,
+        typer.Option(help="How far to go: 'site', 'profile', 'contact' or 'draft'."),
     ] = "site",
     run_id: str | None = None,
 ) -> None:
@@ -209,8 +248,10 @@ def enrich(
     The milestone's demo, and the way to look at a single disagreement
     between the register and a website without drawing a batch.
     """
-    if until not in ("site", "profile"):
-        raise typer.BadParameter("--until takes 'site' or 'profile'.")
+    if until not in ("site", "profile", "contact", "draft"):
+        raise typer.BadParameter(
+            "--until takes 'site', 'profile', 'contact' or 'draft'."
+        )
 
     s = get_settings()
     rid = _run_id(run_id)
@@ -218,7 +259,14 @@ def enrich(
 
     try:
         out = asyncio.run(
-            child.ainvoke({"run_id": rid, "uid": uid, "goal": "", "about_me": ""})
+            child.ainvoke(
+                {
+                    "run_id": rid,
+                    "uid": uid,
+                    "goal": "",
+                    "about_me": load_profile(s.profile_path).about_me,
+                }
+            )
         )
     except CompanyReachError as error:
         typer.echo(str(error), err=True)
@@ -266,6 +314,32 @@ def enrich(
     ]
     if flags:
         typer.echo(f"flags   {', '.join(flags)}")
+
+    if "recommendation" not in out:
+        return
+    _echo_contact(out.get("contact"))
+    typer.echo(f"\n{out['recommendation']}: {out['reason']}")
+    finished = out.get("draft")
+    if finished is not None:
+        fits = "fits" if finished.mailto_fits else "TOO LONG for mailto"
+        typer.echo(
+            f"\nSubject: {finished.subject}   ({len(finished.body)} chars, {fits})"
+        )
+        typer.echo(finished.body)
+
+
+def _echo_contact(contact) -> None:
+    typer.echo("")
+    if contact is None:
+        typer.echo("contact none — nobody named and no address published")
+        return
+    role = f", {contact.role}" if contact.role else ""
+    dated = f" ({contact.source_date})" if contact.source_date else ""
+    typer.echo(f"contact {contact.name or 'nobody named'}{role}")
+    typer.echo(f"        {contact.email or 'no address'} [{contact.email_kind}]")
+    typer.echo(f"        from {contact.source}{dated}: {contact.source_url}")
+    for other in contact.alternatives:
+        typer.echo(f"also    {other}")
 
 
 if __name__ == "__main__":

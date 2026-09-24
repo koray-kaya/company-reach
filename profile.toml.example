@@ -17,7 +17,15 @@
 #            removed a +1.6-point generosity bias.
 #
 # about_me — who is writing. Used in M6 to draft the invitation.
+#
+# survey_url — the form every invitation links to, https:// only. The tool
+#            links to <survey_url>/?c=<UID>&l=de, so a response can be tied
+#            to the company without the survey sharing this database. The
+#            model never sees or writes this link; code adds it after
+#            drafting. This is the only place the address is set.
 
 goal = "Swiss companies that make or process a product and sell it on — firms that have to find suppliers to buy from and customers to sell to. Not local trades whose customers come to them: repair workshops, on-site installers, building crafts, architecture and planning offices. Not pure services."
 
 about_me = "A master's student at a Swiss university, writing a thesis on how small firms find customers, suppliers and competitors. I am asking for 15 minutes to fill in a short online form — no phone call, no meeting, nothing to sell."
+
+survey_url = "https://survey.example/form"

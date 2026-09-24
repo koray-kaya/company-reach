@@ -55,3 +55,79 @@ def test_scripts_and_styles_are_not_text():
     assert "Muster Metallbau AG" in text
     assert "bodyCacheable" not in text
     assert "186px" not in text
+
+
+# --- addresses the text would otherwise lose ---------------------------------
+# Found in the M6 live run: a site whose Impressum carries its address only as
+# a mailto: link behind the word "E-Mail", and one whose contact page has it
+# only in Cloudflare's encoded form. The text had neither, so a published
+# inbox was recorded as a guess.
+
+# Cloudflare XORs every byte with the first one: "5a" is the key, the rest
+# is "info@muster-metallbau.ch".
+CF_HEX = "5a33343c351a372f292e3f2877373f2e3b3636383b2f743932"
+
+
+def page(body: str) -> str:
+    return f"<html><body><div id='footer'><h2>Impressum</h2>{body}</div></body></html>"
+
+
+def test_an_address_only_in_a_mailto_link_is_kept():
+    html = page(
+        "<p>Muster Metallbau AG, Beispielstrasse 1, 8000 Musterstadt</p>"
+        "<p><a href='mailto:info@muster-metallbau.ch?subject=Anfrage'>E-Mail</a></p>"
+    )
+    assert "info@muster-metallbau.ch" in textify(html)
+
+
+def test_a_name_linked_to_its_address_keeps_both():
+    # the way a personal address hides: the visible text is the name
+    html = page(
+        "<p><a href='mailto:anna.muster@muster-metallbau.ch'>Anna Muster</a></p>"
+    )
+    text = textify(html)
+    assert "Anna Muster" in text
+    assert "anna.muster@muster-metallbau.ch" in text
+
+
+def test_a_visible_address_is_not_written_twice():
+    html = page(
+        "<p><a href='mailto:info@muster-metallbau.ch'>info@muster-metallbau.ch</a></p>"
+    )
+    assert textify(html).count("info@muster-metallbau.ch") == 1
+
+
+def test_an_encoded_cloudflare_address_is_decoded():
+    html = page(
+        "<p>Kontakt: <a href='/cdn-cgi/l/email-protection' class='__cf_email__' "
+        f"data-cfemail='{CF_HEX}'>[email&#160;protected]</a></p>"
+    )
+    text = textify(html)
+    assert "info@muster-metallbau.ch" in text
+    assert "protected" not in text
+
+
+def test_a_cloudflare_link_to_an_encoded_address_is_decoded():
+    html = page(
+        f"<p><a href='/cdn-cgi/l/email-protection#{CF_HEX}'>Schreiben Sie uns</a></p>"
+    )
+    assert "info@muster-metallbau.ch" in textify(html)
+
+
+def test_broken_cloudflare_data_is_left_alone():
+    html = page("<p><span data-cfemail='zz'>[email protected]</span> Beispiel</p>")
+    assert "Beispiel" in textify(html)
+
+
+def test_an_address_in_a_block_the_extractor_drops_is_kept():
+    # found live: the article is long enough that the fallback never runs,
+    # and the contact block sits in <address> inside a header, which the
+    # extractor treats as furniture
+    html = (
+        "<html><body><header><address><a href='mailto:info@muster-metallbau.ch'>"
+        "info@muster-metallbau.ch</a></address></header>"
+        + ARTICLE.removeprefix("<html><body>")
+    )
+    text = textify(html)
+    assert "Metallteile" in text
+    assert "info@muster-metallbau.ch" in text

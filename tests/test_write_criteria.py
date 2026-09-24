@@ -54,11 +54,9 @@ def test_cli_prints_the_three_lists(settings, monkeypatch, tmp_path):
 
 
 @respx.mock
-def test_cli_falls_back_to_profile_toml(settings, monkeypatch, tmp_path):
+def test_cli_falls_back_to_profile_toml(settings, monkeypatch):
     monkeypatch.setattr(cli, "get_settings", lambda: settings)
-    profile = tmp_path / "profile.toml"
-    profile.write_text('goal = "from the profile file"\nabout_me = "x"\n')
-    monkeypatch.setattr(cli, "PROFILE_PATH", profile)
+    settings.profile_path.write_text('goal = "from the profile file"\nabout_me = "x"\n')
     route = respx.post(URL).mock(return_value=answer(CRITERIA))
     result = runner.invoke(cli.app, ["criteria"])
     assert result.exit_code == 0, result.output
