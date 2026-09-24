@@ -36,9 +36,9 @@ be mailed twice, and a deletion request must have a command that honours it.
 
 | # | Conflict | Resolution |
 |---|---|---|
-| 1 | `ux` §3: an Undo of Skip is "a second ledger row [that] reverses it; both stay". `schema.sql`: `ledger (uid TEXT PRIMARY KEY, …)` holds one row per company | Open point 4. |
-| 2 | `ux` §2 left pane: "every address as a selectable row". M6's `Contact` carries one address | Open point 3. |
-| 3 | `ux` §5: on a hold "actions identical — the user may overrule". M6 drafts only a `send`; a hold has no draft to send | Open point 2. |
+| 1 | `ux` §3: an Undo of Skip is "a second ledger row [that] reverses it; both stay". `schema.sql`: `ledger (uid TEXT PRIMARY KEY, …)` holds one row per company | `ux`: the ledger becomes a log (open point 4). |
+| 2 | `ux` §2 left pane: "every address as a selectable row". M6's `Contact` carries one address | `ux`: the contact records every address considered (open point 3). |
+| 3 | `ux` §5: on a hold "actions identical — the user may overrule". M6 drafts only a `send`; a hold has no draft to send | M6: no draft, no Send; the card says why (open point 2). `ux` §5 is corrected in Task 4. |
 | 4 | Issue #7 names the route `/review/{run}/{n}`; `ux` §9 renders every slide in one page, the current one chosen by URL | Both: `/review/{run}/{n}` is that URL. Mechanical. |
 
 ## What M6 left on M7's doorstep
@@ -55,7 +55,7 @@ Open point 1.
 
 **Personal data lives in more places than the audit listed.** Besides
 `contacts`, `drafts`, `profiles`, `pages` and the page cache, M6's
-`results.reason` names the person ("Urs Muster at the general inbox…"), and
+`results.reason` names the person ("Anna Muster at the general inbox…"), and
 `contacts.alternatives` names everyone else. `forget` has to reach all of
 them. Model responses are not written to disk, so `data/runs/*/llm` does not
 exist to purge.
@@ -65,9 +65,13 @@ reviewer will most want to overrule; it depends on open point 2.
 
 ## Open points
 
-Four, to be answered before code (`IMPLEMENTATION.md:13-16`), one at a time.
+Four, answered before code (`IMPLEMENTATION.md:13-16`), one at a time. All
+four were settled with Koray on 2026-09-24 as recommended.
 
 **1. What stops a Send before the tool is allowed to send?**
+
+**Decided (2026-09-24, with Koray): both conditions lock Send**, as
+recommended below.
 
 Two conditions are real today: the survey link is a placeholder, and ethics
 approval is pending. *Recommendation:* the page refuses Send — button
@@ -80,12 +84,17 @@ available, so a batch can be reviewed while the gate is closed.
 
 **2. Can a held company be sent?**
 
+**Decided (2026-09-24, with Koray): no draft, no Send**, as recommended.
+
 M6 drafts only a `send`. *Recommendation:* no draft, no Send. A hold states
 why a human must look first, and the reviewer's overrule path is to fix the
 cause (for example #25) and re-run the company, not to send a mail the checks
 never saw. The card says so in place of the letter.
 
 **3. Which addresses does the card offer?**
+
+**Decided (2026-09-24, with Koray): every address considered**, as
+recommended.
 
 M6 keeps one address on the contact. *Recommendation:* `find_contact` also
 records every address it considered — the chosen one, the published inbox,
@@ -95,6 +104,8 @@ drafted person's: writing to the general inbox with the person's name is the
 pattern the research recommends. A lead is shown, never selectable.
 
 **4. The ledger: one row per company, or a log?**
+
+**Decided (2026-09-24, with Koray): a log**, as recommended.
 
 *Recommendation:* a log. One row per decision (`id`, `uid`, `status`,
 `address`, `draft_id`, `run_id`, `note`, `decided_at`); a company's state is
