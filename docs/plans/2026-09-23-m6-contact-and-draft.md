@@ -164,6 +164,29 @@ a web search restricted to `linkedin.com`, and a name alone gives false
 matches — a namesake in another canton (`LEARNINGS.md` §5). It is stored as
 `linkedin_lead`, never as a contact, and never as something to write to.
 
+## The survey link
+
+Decided on #6 after the plan was written: the invitation carries the survey
+link, tagged with the company, so a response can be tied back without the
+survey and this tool sharing a database.
+
+```
+<survey_url>?c=CHE123456789
+```
+
+The tag is the normalised UID this repo already keys on (`CHE` + 9 digits,
+no dots); the form records it and does not validate it. The "no URL" rule
+exists so page text cannot talk the model into planting a link, and the
+link is added in a way that keeps that guarantee:
+
+1. `profile.toml` gets `survey_url`; `doctor` checks it is present and
+   `https://`.
+2. The model writes the draft without any link, and never sees `survey_url`.
+   Code appends `f"{survey_url}?c={uid}"` after generation.
+3. `check_draft` rejects any URL in the model's text; in the final body the
+   only URL is the appended one, byte for byte.
+4. The `mailto:` length check runs on the final body, link included.
+
 ## Tasks
 
 **Task 1 — `tools/shab.py` and its fixtures.**
@@ -207,14 +230,22 @@ length is measured on the encoded string, not the plain one; `fits` is false
 just above the limit.
 
 **Task 5 — `prompts/draft.md` and `nodes/draft.py`.**
-German, plain text, short. Typed fields only (open point 1). Carries the
-revDSG sentence, names no product, makes no pitch.
-*Test:* the rendered prompt contains no page text and no profile prose; the
-draft is stored with its provenance.
+German, plain text, short. Reads company, profile, contact, goal and
+about_me (open point 1); the profile is delimited as data, like page text in
+`extract.md`. Carries the revDSG sentence, names no product, makes no pitch.
+The model writes no link; `draft.py` appends the survey link after
+generation (see "The survey link" below).
+*Test:* the rendered prompt carries the profile inside its data delimiters
+and no raw page text; the rendered prompt never contains `survey_url`; the
+stored body ends with `f"{survey_url}?c={uid}"`; the draft is stored with its
+provenance.
 
 **Task 6 — `nodes/check_draft.py`.**
-No URL, no e-mail address, ≤ 1,200 characters, greets the contact by name,
-contains the revDSG sentence. One regeneration on failure, then `hold`.
+No URL and no e-mail address in the model's text; the only URL in the final
+body is the appended survey link, byte for byte. ≤ 1,200 characters, greets
+the contact by name, contains the revDSG sentence, and the `mailto:` link
+built from the final body (link included) fits. One regeneration on failure,
+then `hold`.
 *Test:* one case per rule; a draft that fails twice ends as `hold` rather
 than being sent; and the P1 case — a draft generated from a company whose
 profile came from `poisoned_instructions.html` carries no injected link.
