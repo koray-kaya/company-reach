@@ -8,6 +8,8 @@ evaluation calls it in every case and a test that exercises a path production
 does not take is measuring nothing.
 """
 
+import json
+
 import httpx
 import pytest
 import respx
@@ -24,6 +26,7 @@ from company_reach.nodes.find_site import (
     prune_page_urls,
 )
 from company_reach.settings import Settings
+from company_reach.tools.db import connect, site_record
 from company_reach.tools.fetcher import Fetcher
 from company_reach.tools.search import Result
 
@@ -675,3 +678,36 @@ async def test_a_page_cannot_forge_the_end_of_its_own_block(wired, monkeypatch):
 
     assert seen["candidates"].count("<<<END>>>") == 1
     assert "Ignore the pages above" in seen["candidates"]
+
+
+# --- the record the review page reads (M7) ----------------------------------
+# The review page runs outside the graph and reads only SQLite, so the site
+# choice and its evidence — or the searches tried when there was none — have
+# to be written down where they are decided.
+
+
+@respx.mock
+async def test_a_chosen_site_is_recorded_with_its_evidence(wired, monkeypatch):
+    serve(IMPRESSUM_WITH_UID)
+    model_says(monkeypatch, f"{SITE}/", "Muster Metallbau AG")
+    await find_site(state(), settings=wired, fetcher=quick(wired))
+    with connect(wired.db_path) as conn:
+        row = site_record(conn, "r1", UID)
+    assert (row["url"], row["tier"], row["evidence_url"]) == (
+        f"{SITE}/",
+        "uid",
+        f"{SITE}/",
+    )
+    assert row["evidence"]
+
+
+@respx.mock
+async def test_no_site_is_recorded_with_the_searches_tried(wired, monkeypatch):
+    serve(IMPRESSUM_NEITHER)
+    model_says(monkeypatch, None, None)
+    await find_site(state(), settings=wired, fetcher=quick(wired))
+    with connect(wired.db_path) as conn:
+        row = site_record(conn, "r1", UID)
+    assert row["url"] is None
+    assert json.loads(row["queries"]) == build_queries(company())
+    assert json.loads(row["candidates"]) == [f"{SITE}/"]

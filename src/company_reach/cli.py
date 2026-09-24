@@ -3,9 +3,11 @@
 
 import asyncio
 import uuid
+from pathlib import Path
 from typing import Annotated
 
 import typer
+import uvicorn
 
 from company_reach.errors import CompanyReachError
 from company_reach.graph import (
@@ -15,6 +17,7 @@ from company_reach.graph import (
     retry_errors,
     run_graph,
 )
+from company_reach.import_v0 import import_v0
 from company_reach.manifest import finish_manifest, manifest_path, start_manifest
 from company_reach.nodes.load_pool import load_pool
 from company_reach.nodes.score_pool import score_pool
@@ -24,6 +27,8 @@ from company_reach.profile import goal_hash, load_profile
 from company_reach.settings import get_settings
 from company_reach.tools.db import connect, init_db, record_run
 from company_reach.tools.doctor import run_checks
+
+V0_DIR = Path("data/v0")
 
 app = typer.Typer(help="Find Swiss companies, find the person, draft the mail.")
 
@@ -198,6 +203,67 @@ def run(
         typer.echo("--dry: every company was skipped by the M3 stub child.")
 
 
+@app.command("import-v0")
+def import_v0_command(
+    v0_dir: Annotated[
+        Path, typer.Option(help="The v0 prototype's data: seen.json and outreach.md.")
+    ] = V0_DIR,
+) -> None:
+    """Bring the v0 prototype's companies into seen and its skips into the
+    ledger, so none of them is drawn again. Safe to run twice."""
+    s = get_settings()
+    init_db(s.db_path)
+    with connect(s.db_path) as conn:
+        seen, skipped = import_v0(conn, v0_dir)
+    typer.echo(
+        f"{seen} companies marked as seen · {skipped} "
+        f"{'skip' if skipped == 1 else 'skips'} recorded"
+    )
+
+
+@app.command()
+def review(
+    run_id: Annotated[
+        str | None, typer.Argument(help="The run to open; omit to pick one by URL.")
+    ] = None,
+    host: Annotated[
+        str, typer.Option(help="127.0.0.1 outside Docker; the container uses 0.0.0.0.")
+    ] = "127.0.0.1",
+    port: int = 8000,
+) -> None:
+    """Serve the review page: one company per screen, Send / Skip / Never.
+
+    The tool never sends. Send records the decision and opens your own mail
+    client with the draft; the mail leaves when you press send there.
+    """
+    from company_reach.review.app import create_app
+
+    s = get_settings()
+    path = f"/review/{run_id}" if run_id else "/review/<run_id>"
+    typer.echo(f"review page: http://127.0.0.1:{port}{path}")
+    if not s.sending_approved:
+        typer.echo("Send is locked: SENDING_APPROVED is not set (ethics approval).")
+    uvicorn.run(create_app(s), host=host, port=port)
+
+
+@app.command()
+def forget(
+    key: Annotated[str, typer.Argument(help="A company's UID or a person's address.")],
+) -> None:
+    """Honour a deletion request: remove the person from the database and the
+    page cache, and never contact the company or address again."""
+    from company_reach.forget import forget as forget_key
+
+    report = forget_key(get_settings(), key)
+    typer.echo(
+        f"{len(report.companies)} companies · {report.rows_deleted} rows and "
+        f"{report.cache_files_deleted} cache files deleted"
+    )
+    typer.echo(f"suppressed: {', '.join(report.suppressed)}")
+    for path in report.still_named:
+        typer.echo(f"still named in {path} — a hand-kept file; edit it by hand")
+
+
 @app.command()
 def retry(
     run_id: Annotated[str, typer.Argument(help="The run whose errors to redo.")],
@@ -336,8 +402,14 @@ def _echo_contact(contact) -> None:
     role = f", {contact.role}" if contact.role else ""
     dated = f" ({contact.source_date})" if contact.source_date else ""
     typer.echo(f"contact {contact.name or 'nobody named'}{role}")
-    typer.echo(f"        {contact.email or 'no address'} [{contact.email_kind}]")
     typer.echo(f"        from {contact.source}{dated}: {contact.source_url}")
+    for i, row in enumerate(contact.addresses):
+        mark = "→" if i == 0 else " "
+        typer.echo(f"      {mark} {row.email} [{row.kind}]")
+    if not contact.addresses:
+        typer.echo("        no address")
+    if contact.linkedin_lead:
+        typer.echo(f"        lead {contact.linkedin_lead} (unverified)")
     for other in contact.alternatives:
         typer.echo(f"also    {other}")
 

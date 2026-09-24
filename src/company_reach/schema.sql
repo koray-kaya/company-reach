@@ -24,15 +24,24 @@ CREATE TABLE IF NOT EXISTS profiles (
 CREATE TABLE IF NOT EXISTS contacts (
   id INTEGER PRIMARY KEY, run_id TEXT, uid TEXT, name TEXT, role TEXT, email TEXT,
   email_kind TEXT, source TEXT, source_url TEXT, source_date TEXT, linkedin_lead TEXT,
-  alternatives TEXT);
+  alternatives TEXT, addresses TEXT);
 CREATE TABLE IF NOT EXISTS drafts (
   id INTEGER PRIMARY KEY, run_id TEXT, uid TEXT, contact_id INTEGER, subject TEXT, body TEXT,
   mailto_fits INTEGER, prompt_version TEXT, model TEXT, created_at TEXT);
 CREATE TABLE IF NOT EXISTS results (
   run_id TEXT NOT NULL, uid TEXT NOT NULL, recommendation TEXT, reason TEXT,
   error_kind TEXT, error_text TEXT, finished_at TEXT NOT NULL, PRIMARY KEY (run_id, uid));
+-- One row per decision, never updated: a company's state is its latest row,
+-- and "contacted" is any 'sent' row ever (M7 open point 4).
 CREATE TABLE IF NOT EXISTS ledger (
-  uid TEXT PRIMARY KEY, status TEXT NOT NULL, address TEXT, draft_id INTEGER,
-  decided_at TEXT NOT NULL, note TEXT);
+  id INTEGER PRIMARY KEY, uid TEXT NOT NULL, status TEXT NOT NULL, address TEXT,
+  draft_id INTEGER, run_id TEXT, note TEXT, decided_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS ledger_uid ON ledger (uid);
 CREATE TABLE IF NOT EXISTS suppression (
   key TEXT PRIMARY KEY, reason TEXT, added_at TEXT NOT NULL);
+-- Where find_site landed and why, for the review page, which reads only
+-- SQLite: the site with its evidence, or no site and the searches tried.
+CREATE TABLE IF NOT EXISTS sites (
+  run_id TEXT NOT NULL, uid TEXT NOT NULL, url TEXT, tier TEXT, evidence TEXT,
+  evidence_url TEXT, note TEXT, queries TEXT, candidates TEXT,
+  PRIMARY KEY (run_id, uid));

@@ -47,6 +47,7 @@ from company_reach.settings import Settings
 from company_reach.tools import llm
 from company_reach.tools.blocklist import is_blocked
 from company_reach.tools.candidate_pages import CandidatePages, read_candidate
+from company_reach.tools.db import connect, record_site
 from company_reach.tools.fetcher import Fetcher, resolve_host
 from company_reach.tools.search import Result, search
 from company_reach.tools.textify import normalise
@@ -394,16 +395,43 @@ async def find_site(
     fetcher = fetcher or Fetcher(settings)
     pages = await read_candidates(candidates, fetcher=fetcher)
     if not pages:
-        return _no_site(record, candidates)
+        decided = _no_site(record, candidates)
+    else:
+        texts = {url: read.full_text() for url, read in pages.items()}
+        answer = await _ask_model(record, pages, settings=settings)
+        decided = _decide(record, texts, answer, candidates)
 
-    texts = {url: read.full_text() for url, read in pages.items()}
-    answer = await _ask_model(record, pages, settings=settings)
-    decided = _decide(record, texts, answer, candidates)
+    _record(state, record, decided["site"], candidates, settings=settings)
     if decided["site"] is not None:
         decided["page_urls"] = await list_pages(
             decided["site"].url, fetcher=fetcher, limit=settings.max_page_urls
         )
     return decided
+
+
+def _record(
+    state: dict[str, Any],
+    record: CompanyRecord,
+    site: SiteChoice | None,
+    candidates: list[str],
+    *,
+    settings: Settings,
+) -> None:
+    """Written where it is decided, for the review page (M7), which reads
+    only SQLite and would otherwise have no evidence to show."""
+    with connect(settings.db_path) as conn:
+        record_site(
+            conn,
+            state["run_id"],
+            record.uid,
+            url=site.url if site else None,
+            tier=site.tier if site else None,
+            evidence=site.evidence if site else None,
+            evidence_url=site.evidence_url if site else None,
+            note=(site.evidence_note or None) if site else None,
+            queries=build_queries(record),
+            candidates=candidates,
+        )
 
 
 async def list_pages(site: str, *, fetcher: Fetcher, limit: int) -> list[str]:

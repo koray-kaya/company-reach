@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+{% if not body_to_copy %}<meta http-equiv="refresh" content="0;url={{ href }}">{% endif %}
+<title>Recorded · {{ card.name }}</title>
+<link rel="stylesheet" href="/static/review.css">
+</head>
+<body style="overflow:auto">
+<main style="max-width:640px;margin:48px auto;padding:0 16px">
+  <p class="label">Recorded as sent</p>
+  <h1 class="name">{{ card.name }}</h1>
+  <p class="what">To {{ to }}. Your mail client opens the draft; nothing leaves until you press send there.</p>
+  <p style="margin-top:16px"><a href="{{ href }}">Open the draft in your mail client</a></p>
+  {% if body_to_copy %}
+  <p class="hint" style="margin-top:16px">The text is too long for a mailto: link, so only the address and subject open. Copy the text:</p>
+  <pre class="letter" style="padding:16px;white-space:pre-wrap">{{ body_to_copy }}</pre>
+  {% endif %}
+  <p style="margin-top:24px"><a href="{{ next_url }}">Next company →</a></p>
+</main>
+</body>
+</html>

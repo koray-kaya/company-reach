@@ -7,7 +7,9 @@ from company_reach.tools.db import (
     connect,
     draw_batch,
     init_db,
+    record_decision,
     record_seen,
+    suppress,
     upsert_companies,
     upsert_scores,
 )
@@ -175,3 +177,17 @@ def test_a_company_finished_after_an_error_is_never_drawn_again(db: Path):
         record_seen(conn, [uid(1)], run_id="r2", batch_no=1)
         finish(conn, uid(1), run_id="r2")
         assert uid(1) not in draw(conn, run_id="r3")
+
+
+def test_a_company_in_the_ledger_is_never_drawn(db: Path):
+    """Any decision at all — a v0 send, a skip — keeps a company out."""
+    with connect(db) as conn:
+        record_decision(conn, uid(1), "sent", note="v0")
+        record_decision(conn, uid(2), "skipped")
+        assert draw(conn, run_id="r9") == [uid(3)]
+
+
+def test_a_suppressed_company_is_never_drawn(db: Path):
+    with connect(db) as conn:
+        suppress(conn, uid(1), reason="never again")
+        assert uid(1) not in draw(conn, run_id="r9")

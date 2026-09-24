@@ -1,6 +1,8 @@
 # Review page — UX spec
 
-Date: 2026-09-19, revision 2. Approved by Koray. Prototype:
+Date: 2026-09-19, revision 2. Approved by Koray. Revised 2026-09-24 for
+what M7 settled (hold without Send, one page per company, the ledger as a
+log). Prototype:
 `review-onepager.html` (three fictional companies: send, hold, skip). Companion
 to section 9 of the design doc.
 
@@ -58,7 +60,7 @@ All three are buttons of one `<form method="post" action="/decide/{run}/{uid}">`
 | Action | Control | Server | Feedback |
 |---|---|---|---|
 | **Send** | primary button, key `S` | writes the ledger row (`sent`, address, time) **first**, then answers with the recorded state whose `<head>` meta-refreshes to the `mailto:` and shows the same link as a fallback | toast "Recorded as sent · Outlook opens the draft"; after 0.5 s the stage slides to the next undecided company |
-| **Skip** | four small buttons: Not a fit · No address · Foreign group · Distributor | ledger row `skipped` + reason | toast with the reason; slide on. Undo: the previous slide shows the recorded state with an Undo link (a second ledger row reverses it; both stay) |
+| **Skip** | four small buttons: Not a fit · No address · Foreign group · Distributor | ledger row `skipped` + reason | toast with the reason; slide on. Undo: the decided card shows the recorded state with an Undo button (an `undone` row after it in the ledger, which is a log; both stay) |
 | **Never again** | quiet button → browser `confirm()` with the consequence | suppression row (permanent) + ledger `never` | toast; slide on. No undo, said before the click |
 
 Send is disabled on a company without an address and on an already decided
@@ -82,7 +84,7 @@ rejected (Firefox ships with it off).
 
 | State | What changes |
 |---|---|
-| send / hold / skip recommendation | chip colour and word; reason sentence; actions identical — the user may overrule |
+| send / hold / skip recommendation | chip colour and word; reason sentence. Skip and Never again are always offered; Send only where a checked draft exists — a hold or a skip has none, so the card says why in place of the letter (M7 open point 2) |
 | No site found | chip `SKIP`, reason names the searches tried; company line shows the register head clause; Write to shows the SHAB lead with its date and the LinkedIn lead marked `unverified lead` ("check it yourself; nothing is sent from here"); Send disabled; right pane empty state |
 | Site found, no address | as above with the site link and evidence; SHAB name if any |
 | Constructed address | `constructed` tag; hint names the pattern and page; the generic address as the second row |
@@ -122,12 +124,14 @@ labels 11.5 px caps with 0.16 em tracking.
 
 ## 9. Implementation notes for the template
 
-- One Jinja2 template `review.html` renders the whole track: every company
-  of the run as a `<section class="slide">`, the current one chosen by URL.
-  With ten slides the page stays small; no client-side data fetching.
-- The ten-line script handles arrow keys, `S`, the toast and the slide
-  transform. Everything works without it (each slide is reachable by URL,
-  every action is a form POST).
+- One Jinja2 template `review.html` renders one company per URL,
+  `/review/{run}/{n}` (changed in M7 from a sliding track of every company
+  in one page: one page per company keeps the action form tied to the
+  company on screen and the page working without script). The edge arrows
+  are links; a short fade stands in for the slide.
+- The small script handles arrow keys, `S`, the Never-again confirm and the
+  toast. Everything works without it (each card is reachable by URL, every
+  action is a form POST, and Never again asks on a page of its own).
 - POST routes require `Sec-Fetch-Site: same-origin` or `none`; the server
   builds the `mailto:` with `urllib.parse.quote(text, safe="")` after
   normalising line breaks to `\r\n`.

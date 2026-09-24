@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Never again? · {{ card.name }}</title>
+<link rel="stylesheet" href="/static/review.css">
+</head>
+<body style="overflow:auto">
+<main style="max-width:640px;margin:48px auto;padding:0 16px">
+  <p class="label">Never contact this company again?</p>
+  <h1 class="name">{{ card.name }}</h1>
+  <p class="what">It goes on the never-again list for good. This cannot be undone.</p>
+  <form method="post" action="/decide/{{ run_id }}/{{ card.uid }}?n={{ n }}" style="margin-top:20px;display:flex;gap:10px">
+    <input type="hidden" name="confirm" value="yes">
+    <button class="btn primary" name="action" value="never">Never again</button>
+    <a class="btn" href="/review/{{ run_id }}/{{ n }}">Cancel</a>
+  </form>
+</main>
+</body>
+</html>

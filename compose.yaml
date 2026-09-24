@@ -8,11 +8,13 @@
 # `uv run` against the same instance a container would use. Without it,
 # SEARXNG_URL would have to differ between the two.
 #
-# The `app` service (the review page, M7) and `playwright` (an optional
-# fallback, only if the JavaScript counter ever says we need one) join this
-# file when they exist. Listing a service whose Dockerfile is not written
-# would make `docker compose up` fail on a file that is supposed to explain
-# how to start the project.
+# The review page (M7) is the `app` service:
+#
+#     docker compose up -d app
+#     open http://127.0.0.1:8000/
+#
+# `playwright` (an optional fallback, only if the JavaScript counter ever
+# says we need one) joins this file when its Dockerfile exists.
 
 services:
   searxng:
@@ -30,3 +32,17 @@ services:
     # The official template also runs valkey for the rate limiter. The
     # limiter is off (see searxng/settings.yml), so it would be a container
     # doing nothing.
+
+  app:
+    build: .
+    # Inside the container uvicorn binds 0.0.0.0 (see the Dockerfile); this
+    # publishes it on the host's loopback only (audit:226). The page reads
+    # and writes data/, reads the profile, and takes SENDING_APPROVED and the
+    # model settings from .env. None of them is in the image.
+    ports:
+      - "127.0.0.1:8000:8000"
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+      - ./profile.toml:/app/profile.toml:ro
+    restart: unless-stopped

@@ -183,4 +183,23 @@ def test_an_older_database_gains_the_columns_added_since(tmp_path: Path):
     conn = sqlite3.connect(path)
     columns = {row[1] for row in conn.execute("pragma table_info(contacts)")}
     conn.close()
-    assert {"source_date", "alternatives"} <= columns
+    assert {"source_date", "alternatives", "addresses"} <= columns
+
+
+def test_any_connection_brings_an_older_database_up_to_date(tmp_path: Path):
+    # found live: `enrich` opened a database created before `addresses`
+    # existed and failed on its first contact, because only some commands
+    # ran init_db. Now the first connection in a process does.
+    path = tmp_path / "old.db"
+    conn = sqlite3.connect(path)
+    conn.execute(
+        """CREATE TABLE contacts (
+             id INTEGER PRIMARY KEY, run_id TEXT, uid TEXT, name TEXT, role TEXT,
+             email TEXT, email_kind TEXT, source TEXT, source_url TEXT,
+             linkedin_lead TEXT)"""
+    )
+    conn.close()
+
+    with connect(path) as c:
+        columns = {row[1] for row in c.execute("pragma table_info(contacts)")}
+    assert "addresses" in columns

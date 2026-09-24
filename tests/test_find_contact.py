@@ -512,3 +512,61 @@ async def test_the_lead_is_recorded(db_settings):
     )
     [row] = contact_rows(db_settings)
     assert row["linkedin_lead"] == ANNA_IN.url
+
+
+# --- every address considered (M7 open point 3) ------------------------------
+# The review card offers each as a row, the chosen one pre-selected.
+
+
+def pairs(contact) -> list[tuple[str, str]]:
+    return [(a.email, a.kind) for a in contact.addresses]
+
+
+async def test_the_chosen_address_comes_first_and_the_others_follow(db_settings):
+    out = await run(
+        state(
+            [Person(name="Anna Muster", role="Inhaberin")],
+            {
+                SITE: "Anna Muster. info@muster-metallbau.ch · "
+                "verkauf@muster-metallbau.ch · beat.beispiel@muster-metallbau.ch · "
+                "Webdesign: studio@agentur.example"
+            },
+        ),
+        db_settings,
+    )
+    assert pairs(out["contact"]) == [
+        ("info@muster-metallbau.ch", "generic"),
+        ("verkauf@muster-metallbau.ch", "generic"),
+        ("beat.beispiel@muster-metallbau.ch", "seen"),
+        ("studio@agentur.example", "third_party"),
+    ]
+
+
+async def test_a_constructed_address_is_offered_as_constructed(db_settings):
+    out = await run(
+        state([Person(name="Anna Muster")], {SITE: "Anna Muster"}), db_settings
+    )
+    assert pairs(out["contact"]) == [("info@muster-metallbau.ch", "constructed")]
+
+
+async def test_the_lead_is_never_an_address(db_settings):
+    out = await run(
+        state([Person(name="Anna Muster")], {SITE: "Anna Muster"}),
+        db_settings,
+        search=Search([ANNA_IN]),
+    )
+    assert out["contact"].linkedin_lead == ANNA_IN.url
+    assert all("linkedin" not in a.email for a in out["contact"].addresses)
+
+
+async def test_the_addresses_are_recorded(db_settings):
+    await run(
+        state(
+            [Person(name="Anna Muster")], {SITE: "Anna Muster info@muster-metallbau.ch"}
+        ),
+        db_settings,
+    )
+    [row] = contact_rows(db_settings)
+    assert json.loads(row["addresses"]) == [
+        {"email": "info@muster-metallbau.ch", "kind": "generic"}
+    ]

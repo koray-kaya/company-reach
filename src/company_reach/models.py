@@ -174,6 +174,13 @@ class ShabPerson(BaseModel):
 EmailKind = Literal["seen", "constructed", "generic", "third_party"]
 
 
+class ContactAddress(BaseModel):
+    """One address the review card offers, with what kind it is."""
+
+    email: str
+    kind: EmailKind
+
+
 class Contact(BaseModel):
     """Who the invitation goes to, and how much the address can be trusted.
 
@@ -199,6 +206,9 @@ class Contact(BaseModel):
     # Everyone else the same source named, best first, as "Name, role[,
     # address]": one person gets the invitation, the reviewer sees them all.
     alternatives: list[str] = Field(default_factory=list)
+    # Every address considered, the chosen one first: the card offers each
+    # as a row (M7 open point 3). A LinkedIn lead is never one of them.
+    addresses: list[ContactAddress] = Field(default_factory=list)
 
 
 class DraftAnswer(BaseModel):
