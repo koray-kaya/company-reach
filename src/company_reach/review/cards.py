@@ -87,6 +87,10 @@ def _contact(conn: sqlite3.Connection, run_id: str, uid: str) -> Contact | None:
     ).fetchone()
     if row is None:
         return None
+    addresses = json.loads(row["addresses"] or "[]")
+    if not addresses and row["email"] and row["email_kind"]:
+        # a run from before M7 stored only the chosen address
+        addresses = [{"email": row["email"], "kind": row["email_kind"]}]
     return Contact(
         name=row["name"],
         role=row["role"],
@@ -97,7 +101,7 @@ def _contact(conn: sqlite3.Connection, run_id: str, uid: str) -> Contact | None:
         source_date=row["source_date"],
         linkedin_lead=row["linkedin_lead"],
         alternatives=json.loads(row["alternatives"] or "[]"),
-        addresses=json.loads(row["addresses"] or "[]"),
+        addresses=addresses,
     )
 
 

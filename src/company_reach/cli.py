@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
+import uvicorn
 
 from company_reach.errors import CompanyReachError
 from company_reach.graph import (
@@ -218,6 +219,31 @@ def import_v0_command(
         f"{seen} companies marked as seen · {skipped} "
         f"{'skip' if skipped == 1 else 'skips'} recorded"
     )
+
+
+@app.command()
+def review(
+    run_id: Annotated[
+        str | None, typer.Argument(help="The run to open; omit to pick one by URL.")
+    ] = None,
+    host: Annotated[
+        str, typer.Option(help="127.0.0.1 outside Docker; the container uses 0.0.0.0.")
+    ] = "127.0.0.1",
+    port: int = 8000,
+) -> None:
+    """Serve the review page: one company per screen, Send / Skip / Never.
+
+    The tool never sends. Send records the decision and opens your own mail
+    client with the draft; the mail leaves when you press send there.
+    """
+    from company_reach.review.app import create_app
+
+    s = get_settings()
+    path = f"/review/{run_id}" if run_id else "/review/<run_id>"
+    typer.echo(f"review page: http://127.0.0.1:{port}{path}")
+    if not s.sending_approved:
+        typer.echo("Send is locked: SENDING_APPROVED is not set (ethics approval).")
+    uvicorn.run(create_app(s), host=host, port=port)
 
 
 @app.command()

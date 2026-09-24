@@ -328,3 +328,13 @@ def test_import_v0_reports_what_it_added(settings, monkeypatch):
     assert "3 companies marked as seen · 1 skip recorded" in r.output
     r = runner.invoke(cli.app, ["import-v0", "--v0-dir", fixture])
     assert "0 companies marked as seen · 0 skips recorded" in r.output
+
+
+def test_review_serves_on_the_loopback_interface_by_default(settings, monkeypatch):
+    # outside Docker the page must not be reachable from the network
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    served: dict = {}
+    monkeypatch.setattr(cli.uvicorn, "run", lambda app, **kw: served.update(kw))
+    r = runner.invoke(cli.app, ["review"])
+    assert r.exit_code == 0, r.output
+    assert (served["host"], served["port"]) == ("127.0.0.1", 8000)

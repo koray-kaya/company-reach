@@ -107,3 +107,13 @@ def test_the_first_undecided_card_is_where_the_page_opens(db: Path):
     with connect(db) as conn:
         record_decision(conn, SEND, "skipped", note="Not a fit")
     assert first_undecided(cards(db)) == 1
+
+
+def test_a_contact_written_before_the_address_list_offers_its_one_address(db: Path):
+    # runs from before M7 stored the chosen address only
+    with connect(db) as conn:
+        conn.execute("update contacts set addresses = null where uid = ?", (SEND,))
+    card = by_uid(db)[SEND]
+    assert [(a.email, a.kind) for a in card.contact.addresses] == [
+        ("info@muster-metallbau.ch", "generic")
+    ]
