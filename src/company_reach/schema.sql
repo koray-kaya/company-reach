@@ -39,3 +39,9 @@ CREATE TABLE IF NOT EXISTS ledger (
 CREATE INDEX IF NOT EXISTS ledger_uid ON ledger (uid);
 CREATE TABLE IF NOT EXISTS suppression (
   key TEXT PRIMARY KEY, reason TEXT, added_at TEXT NOT NULL);
+-- Where find_site landed and why, for the review page, which reads only
+-- SQLite: the site with its evidence, or no site and the searches tried.
+CREATE TABLE IF NOT EXISTS sites (
+  run_id TEXT NOT NULL, uid TEXT NOT NULL, url TEXT, tier TEXT, evidence TEXT,
+  evidence_url TEXT, note TEXT, queries TEXT, candidates TEXT,
+  PRIMARY KEY (run_id, uid));

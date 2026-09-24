@@ -140,6 +140,14 @@ with the row.
 *Test:* the chosen address is first and marked; an off-domain one is
 `third_party`; the lead never appears as an address.
 
+**Task 3b — record the site choice (found while planning Task 4).**
+The review page reads only SQLite, and `find_site`'s choice — url, tier,
+evidence, note — or the searches tried when there was none lived only in
+graph state; the `searches` table was never written. `find_site` now writes
+a `sites` row where it decides.
+*Test:* a chosen site's row carries its tier and evidence; a company without
+one has its queries and candidates.
+
 **Task 4 — the page, read-only.**
 `review/app.py` (FastAPI), `templates/review.html` from the prototype,
 `static/review.css`; GET `/review/{run}` and `/review/{run}/{n}`; order send,

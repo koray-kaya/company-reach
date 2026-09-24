@@ -572,3 +572,45 @@ def is_suppressed(conn: sqlite3.Connection, key: str) -> bool:
         conn.execute("select 1 from suppression where key = ?", (_key(key),)).fetchone()
         is not None
     )
+
+
+def record_site(
+    conn: sqlite3.Connection,
+    run_id: str,
+    uid: str,
+    *,
+    url: str | None,
+    tier: str | None = None,
+    evidence: str | None = None,
+    evidence_url: str | None = None,
+    note: str | None = None,
+    queries: list[str],
+    candidates: list[str],
+) -> None:
+    """One row per (run, company): the site find_site chose and its
+    evidence, or `url` None with the searches it tried."""
+    conn.execute(
+        """INSERT INTO sites (run_id, uid, url, tier, evidence, evidence_url,
+             note, queries, candidates) VALUES (?,?,?,?,?,?,?,?,?)
+           ON CONFLICT(run_id, uid) DO UPDATE SET url=excluded.url,
+             tier=excluded.tier, evidence=excluded.evidence,
+             evidence_url=excluded.evidence_url, note=excluded.note,
+             queries=excluded.queries, candidates=excluded.candidates""",
+        (
+            run_id,
+            uid,
+            url,
+            tier,
+            evidence,
+            evidence_url,
+            note,
+            json.dumps(queries, ensure_ascii=False),
+            json.dumps(candidates),
+        ),
+    )
+
+
+def site_record(conn: sqlite3.Connection, run_id: str, uid: str) -> sqlite3.Row | None:
+    return conn.execute(
+        "select * from sites where run_id = ? and uid = ?", (run_id, uid)
+    ).fetchone()
