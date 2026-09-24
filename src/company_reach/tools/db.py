@@ -80,10 +80,20 @@ def init_db(path: Path) -> None:
                     conn.execute(f"alter table {table} add column {column} {kind}")
     finally:
         conn.close()
+    _current.add(path.resolve())
+
+
+# Databases whose schema this process has already brought up to date.
+_current: set[Path] = set()
 
 
 @contextmanager
 def connect(path: Path) -> Iterator[sqlite3.Connection]:
+    """One connection, in one transaction. The first connection to a path in
+    a process applies the schema, so no command can meet a database older
+    than the code — a column added later exists before anything writes it."""
+    if path.resolve() not in _current:
+        init_db(path)
     conn = _open(path)
     try:
         with conn:
