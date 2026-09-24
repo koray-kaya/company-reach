@@ -7,6 +7,7 @@ deliberate — a state that grows with the data would carry the whole canton
 through every superstep.
 """
 
+import asyncio
 import operator
 from functools import partial
 from typing import Annotated, Literal, TypedDict
@@ -36,10 +37,15 @@ from company_reach.nodes.pick_pages import pick_pages
 from company_reach.nodes.probe_search import probe_search
 from company_reach.nodes.read_pages import read_pages
 from company_reach.nodes.recommend import recommend
-from company_reach.profile import goal_hash
+from company_reach.profile import goal_hash, load_profile
 from company_reach.settings import Settings
 from company_reach.tools import llm
-from company_reach.tools.db import connect, count_sendable, record_seen
+from company_reach.tools.db import (
+    connect,
+    count_sendable,
+    errored_uids,
+    record_seen,
+)
 from company_reach.tools.db import draw_batch as db_draw_batch
 from company_reach.tools.fetcher import Fetcher
 
@@ -347,3 +353,38 @@ async def run_graph(
     forty supersteps, not a thousand."""
     graph = build_graph(settings=settings, child=child, dry=dry)
     return await graph.ainvoke(state, config={"recursion_limit": RECURSION_LIMIT})
+
+
+async def retry_errors(
+    run_id: str, *, settings: Settings, child, dry: bool = False
+) -> list[CompanyResult]:
+    """Re-enrich exactly the companies of `run_id` whose result is an error.
+
+    The audit's P1 (`audit-2026-09-19.md:207`): an infrastructure failure
+    must not consume a company. Nothing is drawn and `seen` is not touched —
+    these companies were drawn by this run and stay drawn by it. Each goes
+    through `enrich_company` again, which replaces its results row, so a
+    recovered company leaves no error behind.
+
+    Search is probed first, as a run does: retrying while search is down
+    would only record the same errors again.
+    """
+    with connect(settings.db_path) as conn:
+        uids = errored_uids(conn, run_id)
+    if not uids:
+        return []
+    if not dry:
+        await probe_search({}, settings=settings)
+
+    about_me = load_profile(settings.profile_path).about_me
+    outs = await asyncio.gather(
+        *(
+            enrich_company(
+                {"run_id": run_id, "uid": uid, "goal": "", "about_me": about_me},
+                child=child,
+                settings=settings,
+            )
+            for uid in uids
+        )
+    )
+    return [out["results"][0] for out in outs]

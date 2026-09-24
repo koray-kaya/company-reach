@@ -12,6 +12,7 @@ from company_reach.graph import (
     build_child,
     build_stub_child,
     initial_state,
+    retry_errors,
     run_graph,
 )
 from company_reach.manifest import finish_manifest, manifest_path, start_manifest
@@ -191,8 +192,46 @@ def run(
         + ("  · pool exhausted" if out["pool_exhausted"] else "")
     )
     typer.echo(f"manifest: {manifest_path(rid, settings=s)}")
+    if counts["errors"] and not dry:
+        typer.echo(f"retry the errors with: company-reach retry {rid}")
     if dry:
         typer.echo("--dry: every company was skipped by the M3 stub child.")
+
+
+@app.command()
+def retry(
+    run_id: Annotated[str, typer.Argument(help="The run whose errors to redo.")],
+) -> None:
+    """Re-enrich the companies of a run whose result is an error.
+
+    An error means the tool could not look — search, a site, the model or
+    SHAB failed — not that it looked and found nothing. Those companies were
+    drawn, never contacted, and are redone here without drawing anything new.
+    """
+    s = get_settings()
+    try:
+        results = asyncio.run(
+            retry_errors(run_id, settings=s, child=build_child(settings=s))
+        )
+    except CompanyReachError as error:
+        typer.echo(str(error), err=True)
+        raise typer.Exit(1) from error
+
+    if not results:
+        typer.echo(f"nothing to retry in run {run_id}")
+        return
+    failing = [r for r in results if r.error_kind]
+    typer.echo(
+        f"{len(results)} retried · {len(results) - len(failing)} recovered · "
+        f"{len(failing)} still failing"
+    )
+    for r in results:
+        outcome = (
+            f"{r.error_kind} error: {r.error_text}"
+            if r.error_kind
+            else (f"{r.recommendation}: {r.reason}")
+        )
+        typer.echo(f"  {r.uid}  {outcome}")
 
 
 @app.command()

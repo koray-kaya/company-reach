@@ -274,3 +274,47 @@ def test_run_no_longer_refuses_without_dry(settings, monkeypatch):
     r = runner.invoke(cli.app, ["run", "--goal", "make and sell", "--run-id", "r1"])
     # It stops on the empty pool, not on the flag.
     assert "only --dry" not in r.output
+
+
+class _Sends:
+    """A child that sends for everyone and remembers whom it saw."""
+
+    def __init__(self):
+        self.seen: list[str] = []
+
+    async def ainvoke(self, state, config=None):
+        self.seen.append(state["uid"])
+        return {"recommendation": "send", "reason": "because"}
+
+
+def test_retry_re_enriches_the_errors_of_a_run(settings, monkeypatch):
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    init_db(settings.db_path)
+    with connect(settings.db_path) as conn:
+        for uid, kind in (("CHE000000001", "search"), ("CHE000000002", None)):
+            conn.execute(
+                "insert into results (run_id, uid, recommendation, error_kind,"
+                " finished_at) values ('r1', ?, ?, ?, '2026-09-24T00:00:00+00:00')",
+                (uid, None if kind else "send", kind),
+            )
+    child = _Sends()
+    monkeypatch.setattr(cli, "build_child", lambda settings: child)
+
+    async def search_works(state, *, settings):
+        return {}
+
+    monkeypatch.setattr("company_reach.graph.probe_search", search_works)
+
+    r = runner.invoke(cli.app, ["retry", "r1"])
+    assert r.exit_code == 0, r.output
+    assert child.seen == ["CHE000000001"]
+    assert "1 retried · 1 recovered · 0 still failing" in r.output
+
+
+def test_retry_with_nothing_to_retry_says_so(settings, monkeypatch):
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    init_db(settings.db_path)
+    monkeypatch.setattr(cli, "build_child", lambda settings: _Sends())
+    r = runner.invoke(cli.app, ["retry", "r1"])
+    assert r.exit_code == 0, r.output
+    assert "nothing to retry" in r.output

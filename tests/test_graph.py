@@ -1,9 +1,11 @@
 import operator
 from typing import get_type_hints
 
+import pytest
 from langgraph.graph import END
 
-from company_reach.errors import LlmError
+from company_reach import graph as graph_module
+from company_reach.errors import LlmError, SearchError
 from company_reach.graph import (
     RECURSION_LIMIT,
     ReachState,
@@ -12,6 +14,7 @@ from company_reach.graph import (
     collect,
     initial_state,
     need_another_batch,
+    retry_errors,
     run_graph,
 )
 from company_reach.models import CompanyRecord, CompanyResult, Score
@@ -287,3 +290,76 @@ def test_the_dry_graph_leaves_the_search_probe_out(settings):
 def test_a_real_run_keeps_the_search_probe(settings):
     real = build_graph(settings=settings, child=build_stub_child(), dry=False)
     assert "probe_search" in real.get_graph().nodes
+
+
+# --- retry (the audit's P1, audit-2026-09-19.md:217) -------------------------
+
+
+def _seen(settings) -> list[tuple]:
+    with connect(settings.db_path) as conn:
+        return [tuple(r) for r in conn.execute("select * from seen order by uid")]
+
+
+async def test_search_failing_for_two_of_ten_is_recovered_by_retry(settings):
+    """The acceptance, as written: with search failing for 2 of 10 children,
+    those 2 get `error`, are not redrawn, and are re-enriched by `retry`;
+    `seen` is unchanged throughout."""
+    uids = [f"CHE00000001{n}" for n in range(10)]
+    _seed(settings, dict.fromkeys(uids, 9))
+    failing = set(uids[:2])
+
+    class SearchDown(ChildByUid):
+        async def ainvoke(self, state, config=None):
+            self.seen.append(state["uid"])
+            if state["uid"] in failing:
+                raise SearchError("every baseline engine unresponsive")
+            return {"recommendation": "send", "reason": "because"}
+
+    first = SearchDown({})
+    out = await run_graph(
+        _start(settings, batch_size=10), settings=settings, dry=True, child=first
+    )
+    errored = {r.uid for r in out["results"] if r.error_kind == "search"}
+    assert errored == failing
+    assert out["batches_drawn"] == 1  # a candidate ended the run; nothing redrawn
+    seen_before = _seen(settings)
+
+    second = ChildByUid(dict.fromkeys(uids, "send"))
+    results = await retry_errors("r1", settings=settings, child=second, dry=True)
+
+    assert sorted(second.seen) == sorted(failing)  # exactly those, nobody else
+    assert {r.uid for r in results} == failing
+    assert all(r.error_kind is None for r in results)
+    assert _seen(settings) == seen_before
+    with connect(settings.db_path) as conn:
+        left = conn.execute(
+            "select count(*) from results where run_id='r1' and error_kind is not null"
+        ).fetchone()[0]
+    assert left == 0
+
+
+async def test_retry_with_nothing_to_retry_calls_no_child(settings):
+    _seed(settings, {"CHE000000001": 9})
+    child = ChildByUid({})
+    assert await retry_errors("r1", settings=settings, child=child, dry=True) == []
+    assert child.seen == []
+
+
+async def test_retry_probes_search_before_touching_a_company(settings, monkeypatch):
+    """The same order as a run: if search is down, retrying would only turn
+    the same errors into the same errors, or worse, into findings."""
+    _seed(settings, {"CHE000000001": 9})
+    with connect(settings.db_path) as conn:
+        conn.execute(
+            "insert into results (run_id, uid, error_kind, error_text, finished_at)"
+            " values ('r1','CHE000000001','search','x','2026-09-24T00:00:00+00:00')"
+        )
+
+    async def down(state, *, settings):
+        raise SearchError("probe returned nothing")
+
+    monkeypatch.setattr(graph_module, "probe_search", down)
+    child = ChildByUid({"CHE000000001": "send"})
+    with pytest.raises(SearchError):
+        await retry_errors("r1", settings=settings, child=child)
+    assert child.seen == []
