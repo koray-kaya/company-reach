@@ -17,12 +17,12 @@ run retries.
 
 import asyncio
 from dataclasses import dataclass
-from functools import lru_cache
 
 import httpx
 
 from company_reach.errors import SearchError
 from company_reach.settings import Settings
+from company_reach.tools.gates import gate
 
 _SERPER_URL = "https://google.serper.dev/search"
 _TIMEOUT = httpx.Timeout(10.0, connect=5.0)
@@ -36,12 +36,10 @@ class Result:
     engine: str
 
 
-@lru_cache
 def _gate(concurrency: int) -> asyncio.Semaphore:
-    """One semaphore per concurrency value for the whole process, the same
-    shape as `llm.ask`'s. Caching on the value rather than holding a module
-    global means a test that changes the setting gets its own."""
-    return asyncio.Semaphore(concurrency)
+    """Search's cap for the running event loop (`tools/gates.py`), kept apart
+    from the model's."""
+    return gate("search", concurrency)
 
 
 def _unresponsive(payload: dict) -> set[str]:

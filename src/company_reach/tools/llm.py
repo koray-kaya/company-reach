@@ -23,6 +23,7 @@ from pydantic import BaseModel
 
 from company_reach.errors import LlmError, PromptError
 from company_reach.settings import Settings
+from company_reach.tools.gates import gate
 
 Effort = Literal["low", "high", "max"]
 
@@ -92,15 +93,12 @@ def _truncated(prompt_name: str, budget: int, effort: Effort) -> LlmError:
     )
 
 
-@lru_cache
 def _get_semaphore(concurrency: int) -> asyncio.Semaphore:
-    """One semaphore per concurrency value, for the whole process. The school
-    endpoint is a shared vLLM server: measured, ten concurrent requests made
-    four of them time out without raising throughput, so the cap is a
-    courtesy as well as a safeguard. Caching on the value rather than holding
-    a module global means a test that changes the setting simply gets its own
-    semaphore — no reset hook that exists only for tests."""
-    return asyncio.Semaphore(concurrency)
+    """The model's cap for the running event loop (`tools/gates.py`). The
+    school endpoint is a shared vLLM server: measured, ten concurrent
+    requests made four of them time out without raising throughput, so the
+    cap is a courtesy as well as a safeguard."""
+    return gate("llm", concurrency)
 
 
 def _client(
