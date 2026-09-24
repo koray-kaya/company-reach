@@ -246,12 +246,16 @@ def draw_batch(
               and s.score >= ?
               -- not already drawn in THIS run, or the loop would redraw it
               and c.uid not in (select uid from seen where run_id = ?)
-              -- never drawn at all, or drawn by an earlier run that failed on
-              -- it: an errored company was never contacted and has no draft,
-              -- so there is nothing to protect it from
+              -- never drawn at all, or drawn only by earlier runs that failed
+              -- on it: an errored company was never contacted and has no
+              -- draft, so there is nothing to protect it from. "Only" is the
+              -- point — a company another run finished after an error keeps
+              -- that old error row, and may already have been written to.
               and (c.uid not in (select uid from seen)
-                   or c.uid in (select uid from results
-                                 where error_kind is not null and run_id <> ?))
+                   or (c.uid in (select uid from results
+                                  where error_kind is not null and run_id <> ?)
+                       and c.uid not in (select uid from results
+                                          where error_kind is null)))
             order by s.score desc
             limit ?""",
         (goal_hash, prompt_version, model, min_score, run_id, run_id, limit),

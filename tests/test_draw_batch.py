@@ -163,3 +163,15 @@ def test_a_recovered_company_is_not_drawn_twice_by_the_same_run(db: Path):
         record_seen(conn, first, run_id="r2", batch_no=1)
 
         assert uid(1) not in draw(conn, run_id="r2", batch_no=2)
+
+
+def test_a_company_finished_after_an_error_is_never_drawn_again(db: Path):
+    """r1 fails on a company and r2 finishes it. r1's error row is still
+    there, so a rule that only asks "has it ever errored?" would put it back
+    in r3 — and a company finished in r2 may already have been written to."""
+    with connect(db) as conn:
+        record_seen(conn, [uid(1)], run_id="r1", batch_no=1)
+        fail(conn, uid(1), run_id="r1")
+        record_seen(conn, [uid(1)], run_id="r2", batch_no=1)
+        finish(conn, uid(1), run_id="r2")
+        assert uid(1) not in draw(conn, run_id="r3")
