@@ -196,6 +196,9 @@ class Contact(BaseModel):
     source_url: str | None = None
     source_date: str | None = None  # SHAB's notice date; the site is today
     linkedin_lead: str | None = None
+    # Everyone else the same source named, best first, as "Name, role[,
+    # address]": one person gets the invitation, the reviewer sees them all.
+    alternatives: list[str] = Field(default_factory=list)
 
 
 Recommendation = Literal["send", "hold", "skip"]

@@ -6,6 +6,7 @@ greeted by name at `info@` (open point 2), and SHAB is asked only when the
 site named nobody (open point 3).
 """
 
+import json
 import sqlite3
 
 import pytest
@@ -343,3 +344,57 @@ async def test_the_contact_is_recorded(db_settings):
         "site",
     )
     assert out["contact_id"] == row["id"]
+
+
+# --- everyone else who was named ---------------------------------------------
+# One person gets the invitation, but the reviewer sees everyone the sources
+# named, so a wrong choice can be corrected by hand rather than lost.
+
+
+async def test_the_other_people_on_the_site_are_kept_in_rank_order(db_settings):
+    out = await run(
+        state(
+            [
+                Person(name="Beat Beispiel", role="Mitglied des Verwaltungsrates"),
+                Person(name="Anna Muster", role="Inhaberin"),
+                Person(
+                    name="Carla Probst", role="Inhaberin", email="c@muster-metallbau.ch"
+                ),
+            ],
+            {SITE: "Beat Beispiel, Anna Muster, Carla Probst c@muster-metallbau.ch"},
+        ),
+        db_settings,
+    )
+    assert out["contact"].name == "Carla Probst"  # her own address wins
+    assert out["contact"].alternatives == [
+        "Anna Muster, Inhaberin",
+        "Beat Beispiel, Mitglied des Verwaltungsrates",
+    ]
+
+
+async def test_the_other_current_people_in_shab_are_kept(db_settings):
+    shab = Shab(
+        [
+            shab_person("Otto Alt", "Geschäftsführer", departed=True),
+            shab_person("Beat Beispiel", None),
+            shab_person("Anna Muster", "Geschäftsführerin"),
+        ]
+    )
+    out = await run(state([], {SITE: "Willkommen"}), db_settings, shab)
+    assert out["contact"].name == "Anna Muster"
+    assert out["contact"].alternatives == ["Beat Beispiel"]
+
+
+async def test_the_alternatives_are_recorded(db_settings):
+    await run(
+        state(
+            [
+                Person(name="Anna Muster", role="Inhaberin"),
+                Person(name="Beat Beispiel"),
+            ],
+            {SITE: "Anna Muster, Beat Beispiel"},
+        ),
+        db_settings,
+    )
+    [row] = contact_rows(db_settings)
+    assert json.loads(row["alternatives"]) == ["Beat Beispiel"]

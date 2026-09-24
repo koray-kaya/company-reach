@@ -43,7 +43,10 @@ def _open(path: Path) -> sqlite3.Connection:
 # Columns added to a table after it first shipped. `CREATE TABLE IF NOT
 # EXISTS` leaves an existing table as it was, so a database created before
 # the column existed gets it here.
-_ADDED_COLUMNS = {("contacts", "source_date"): "TEXT"}
+_ADDED_COLUMNS = {
+    ("contacts", "source_date"): "TEXT",
+    ("contacts", "alternatives"): "TEXT",
+}
 
 
 def init_db(path: Path) -> None:
@@ -390,8 +393,8 @@ def record_contact(
     conn.execute("delete from contacts where run_id = ? and uid = ?", (run_id, uid))
     cur = conn.execute(
         """INSERT INTO contacts (run_id, uid, name, role, email, email_kind,
-             source, source_url, source_date, linkedin_lead)
-           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+             source, source_url, source_date, linkedin_lead, alternatives)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
         (
             run_id,
             uid,
@@ -403,6 +406,7 @@ def record_contact(
             contact.source_url,
             contact.source_date,
             contact.linkedin_lead,
+            json.dumps(contact.alternatives, ensure_ascii=False),
         ),
     )
     return cur.lastrowid

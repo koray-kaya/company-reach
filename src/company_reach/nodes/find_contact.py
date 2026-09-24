@@ -16,8 +16,10 @@ Damen und Herren".
 4. Nobody named anywhere: the general inbox alone. Never a constructed one —
    an unnamed mail to a guessed inbox is the one that gets forwarded.
 
-Among several people the one who runs the company comes first, then the
-board's chair, then everyone else; a tie keeps the order of the page.
+Among several people, one with their own address on the site comes first;
+then the one who runs the company, then the board's chair, then everyone
+else; a tie keeps the order of the page. Everyone not chosen is kept on the
+contact as an alternative, so the reviewer can see who else was named.
 
 An address on another domain is never promoted to an invitation. It is kept
 as `third_party`, which `recommend` holds, because that is how a hostile page
@@ -73,6 +75,14 @@ def rank(role: str | None) -> int:
         if pattern.search(role):
             return i
     return len(_RANKS)
+
+
+def _own_address(person: Person) -> bool:
+    return bool(person.email) and not person.email_offsite
+
+
+def _describe(name: str, role: str | None, email: str | None = None) -> str:
+    return ", ".join(part for part in (name, role, email) if part)
 
 
 def page_addresses(texts: dict[str, str]) -> list[tuple[str, str]]:
@@ -140,7 +150,8 @@ def _without_site_names(
     current = [p for p in shab_persons if not p.departed]
     # SHAB answers newest notice first; sorted() is stable, so within a rank
     # the newest claim stays in front
-    chosen = sorted(current, key=lambda p: rank(p.role))[0] if current else None
+    ranked = sorted(current, key=lambda p: rank(p.role))
+    chosen = ranked[0] if ranked else None
     inbox = _inbox(addresses, domain)
 
     if chosen is not None:
@@ -158,6 +169,7 @@ def _without_site_names(
             source="shab",
             source_url=chosen.source_url,
             source_date=chosen.published,
+            alternatives=[_describe(p.name, p.role) for p in ranked[1:]],
         )
 
     # nobody named: an inbox is sent to only when the site publishes one;
@@ -189,10 +201,17 @@ async def find_contact(
     addresses = page_addresses(texts)
 
     if profile.persons:
-        chosen = sorted(profile.persons, key=lambda p: rank(p.role))[0]
-        contact = _from_site(
-            chosen, texts=texts, addresses=addresses, domain=domain, site_url=site.url
+        ranked = sorted(
+            profile.persons, key=lambda p: (not _own_address(p), rank(p.role))
         )
+        contact = _from_site(
+            ranked[0],
+            texts=texts,
+            addresses=addresses,
+            domain=domain,
+            site_url=site.url,
+        )
+        contact.alternatives = [_describe(p.name, p.role, p.email) for p in ranked[1:]]
     else:
         found = await shab(state["uid"], settings=settings)
         contact = _without_site_names(found, addresses=addresses, domain=domain)
