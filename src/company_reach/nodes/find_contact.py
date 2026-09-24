@@ -10,9 +10,11 @@ Damen und Herren".
    general inbox — the one it publishes, or info@ constructed and marked as
    such when it publishes none (M6 open point 2).
 3. Only when the site named nobody: the newest current person SHAB names,
-   with the site's general inbox if there is one. SHAB is not asked at all
-   otherwise (open point 3): it describes a past state, the site today.
-4. Nobody named anywhere: the general inbox alone.
+   at the site's general inbox or a constructed info@, as in 2. SHAB is not
+   asked at all otherwise (open point 3): it describes a past state, the
+   site today.
+4. Nobody named anywhere: the general inbox alone. Never a constructed one —
+   an unnamed mail to a guessed inbox is the one that gets forwarded.
 
 Among several people the one who runs the company comes first, then the
 board's chair, then everyone else; a tie keeps the order of the page.
@@ -140,16 +142,14 @@ def _without_site_names(
     # the newest claim stays in front
     chosen = sorted(current, key=lambda p: rank(p.role))[0] if current else None
     inbox = _inbox(addresses, domain)
-    offsite = next(((e, u) for e, u in addresses if email_domain(e) != domain), None)
-
-    if inbox:
-        email, kind, url = inbox[0], "generic", inbox[1]
-    elif offsite:
-        email, kind, url = offsite[0], "third_party", offsite[1]
-    else:
-        email = kind = url = None
 
     if chosen is not None:
+        # the same order as a name from the site: the published inbox, else
+        # info@ guessed and marked (widened to SHAB names on 2026-09-24)
+        if inbox:
+            email, kind = inbox[0], "generic"
+        else:
+            email, kind = f"info@{domain}", "constructed"
         return Contact(
             name=chosen.name,
             role=chosen.role,
@@ -159,8 +159,21 @@ def _without_site_names(
             source_url=chosen.source_url,
             source_date=chosen.published,
         )
-    if email is not None:
-        return Contact(email=email, email_kind=kind, source="site", source_url=url)
+
+    # nobody named: an inbox is sent to only when the site publishes one;
+    # an address on another domain is kept, marked, and held
+    if inbox:
+        return Contact(
+            email=inbox[0], email_kind="generic", source="site", source_url=inbox[1]
+        )
+    offsite = next(((e, u) for e, u in addresses if email_domain(e) != domain), None)
+    if offsite:
+        return Contact(
+            email=offsite[0],
+            email_kind="third_party",
+            source="site",
+            source_url=offsite[1],
+        )
     return None
 
 

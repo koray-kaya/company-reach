@@ -138,6 +138,15 @@ an unnamed greeting gets forwarded rather than answered (`LEARNINGS.md` §5).
 A constructed address that does not exist bounces, which is visible and
 harmless; holding four companies in ten is not.
 
+**Widened on 2026-09-24, with Koray:** a person named only by SHAB gets the
+constructed `info@` too. The live run over the golden set found 3 of 11
+companies whose site names nobody and publishes no address, while SHAB
+names a current role-holder; under the narrow rule all three were held. The
+cost is the same as above — at worst a bounce — plus SHAB's name may be out
+of date, which the card shows through the notice date. A company where
+nobody is named anywhere still gets no constructed address: an unnamed mail
+to a guessed inbox is the one the research says is forwarded, not read.
+
 **3. When SHAB and the site name different people, and when does SHAB run at all?**
 
 **Decided: only when the site named nobody.** A network call whose answer

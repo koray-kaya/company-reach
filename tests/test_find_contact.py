@@ -259,19 +259,40 @@ async def test_shab_names_the_person_when_the_site_does_not(db_settings):
     assert (contact.source_url, contact.source_date) == (NOTICE, "2024-03-20")
 
 
-async def test_a_shab_name_alone_gets_no_constructed_address(db_settings):
-    # open point 2 constructs only when the site itself named the person
+async def test_a_shab_name_alone_is_greeted_at_a_constructed_info(db_settings):
+    # widened on 2026-09-24: 3 of 11 live companies had a SHAB name and no
+    # address at all, and a guessed info@ costs at most a bounce
     out = await run(
         state([], {SITE: "Willkommen"}),
         db_settings,
         Shab([shab_person("Anna Muster", "Geschäftsführerin")]),
     )
     contact = out["contact"]
-    assert (contact.name, contact.email, contact.email_kind) == (
+    assert (contact.name, contact.email, contact.email_kind, contact.source) == (
         "Anna Muster",
-        None,
-        None,
+        "info@muster-metallbau.ch",
+        "constructed",
+        "shab",
     )
+
+
+async def test_a_shab_name_prefers_info_over_an_offsite_address(db_settings):
+    # the same order as a name from the site: a footer credit on another
+    # domain does not displace the company's own inbox
+    out = await run(
+        state([], {SITE: "Webdesign: studio@agentur.example"}),
+        db_settings,
+        Shab([shab_person("Anna Muster", "Geschäftsführerin")]),
+    )
+    assert out["contact"].email_kind == "constructed"
+
+
+async def test_nobody_named_is_never_given_a_constructed_address(db_settings):
+    # a guessed inbox with no name to greet is the "Damen und Herren" mail
+    # the research says gets forwarded rather than answered
+    out = await run(state([], {SITE: "Webdesign: studio@agentur.example"}), db_settings)
+    contact = out["contact"]
+    assert (contact.name, contact.email_kind) == (None, "third_party")
 
 
 async def test_only_departed_people_in_shab_is_nobody(db_settings):
