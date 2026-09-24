@@ -18,6 +18,7 @@ from company_reach.models import (
     CompanyRecord,
     CompanyResult,
     Contact,
+    Draft,
     Score,
     SelectionCriteria,
 )
@@ -410,3 +411,32 @@ def record_contact(
         ),
     )
     return cur.lastrowid
+
+
+def record_draft(
+    conn: sqlite3.Connection,
+    run_id: str,
+    uid: str,
+    draft: Draft,
+    *,
+    contact_id: int | None,
+    provenance: "Provenance",
+) -> None:
+    """One draft per (run, company); a regeneration or a retry replaces it."""
+    conn.execute("delete from drafts where run_id = ? and uid = ?", (run_id, uid))
+    conn.execute(
+        """INSERT INTO drafts (run_id, uid, contact_id, subject, body,
+             mailto_fits, prompt_version, model, created_at)
+           VALUES (?,?,?,?,?,?,?,?,?)""",
+        (
+            run_id,
+            uid,
+            contact_id,
+            draft.subject,
+            draft.body,
+            int(draft.mailto_fits),
+            provenance.prompt_version,
+            provenance.model,
+            now(),
+        ),
+    )

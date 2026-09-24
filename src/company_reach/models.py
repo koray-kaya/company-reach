@@ -201,6 +201,32 @@ class Contact(BaseModel):
     alternatives: list[str] = Field(default_factory=list)
 
 
+class DraftAnswer(BaseModel):
+    """What `draft.md` returns: the part of the invitation the model writes.
+    The greeting, the survey link, the data-protection sentence and the
+    closing are added by code, so none of them is a field here."""
+
+    subject: str = Field(description="the subject line, German, short")
+    body: str = Field(
+        description="the middle of the mail, German, plain text: no greeting, "
+        "no closing, no link, no e-mail address"
+    )
+
+
+class Draft(BaseModel):
+    """The invitation as a reviewer will see it.
+
+    `model_text` is kept beside the assembled `body` because `check_draft`
+    judges the two differently: the model's text may carry no URL at all,
+    while the body carries exactly one — the survey link code appended.
+    """
+
+    subject: str
+    body: str
+    model_text: str
+    mailto_fits: bool
+
+
 Recommendation = Literal["send", "hold", "skip"]
 ErrorKind = Literal["search", "fetch", "llm", "shab", "other"]
 

@@ -136,8 +136,8 @@ No secrets in state. No checkpointer, so nothing is persisted outside `data/`.
 | `check_profile` | deterministic: every person name and email must occur verbatim in the page texts (else dropped); email domain ≠ site domain → `third_party` | — | |
 | `find_contact` | typed rules: personal address on the site domain > SHAB name + generic address on the site domain > LinkedIn lead (web search restricted to linkedin.com, unverified); noise filters from the research (sentry/wixpress, `@2x`, Cloudflare decode) | SHAB, SearXNG, DB | |
 | `recommend` | rules: no site / distributor / foreign group → skip; no contact or only third_party → hold; else send; one reason | — | |
-| `draft` | German invitation from typed fields only (company, contact, goal, about_me); mailto length | LLM, DB | |
-| `check_draft` | deterministic: no URL, no e-mail address, ≤ 1,200 chars, greets the contact by name, contains the revDSG sentence; on failure one regeneration, then `hold` | — | |
+| `draft` | German invitation: the model writes subject and middle from company, contact role, about_me and the profile description (delimited as data; M6 open point 1, #22); code adds greeting, survey link, revDSG sentence and closing; mailto length on the final body | LLM, DB | |
+| `check_draft` | deterministic: no URL and no e-mail address in the model's text; the survey link is the body's only URL; ≤ 1,200 chars, greets the contact by name, contains the revDSG sentence; on failure one regeneration, then `hold` | — | |
 
 Async only where a node issues many requests itself. The graph runs with
 `ainvoke(config={"recursion_limit": 40})`; progress streams with
