@@ -78,6 +78,14 @@ async def draft(state: dict[str, Any], *, settings: Settings) -> dict:
     # cost no model call.
     link = survey_link(survey_url, record.uid)
 
+    feedback = state.get("draft_feedback") or ""
+    if feedback:
+        # the second and last attempt, after `check_draft` rejected the first
+        feedback = (
+            "## An earlier draft was rejected\n\n"
+            f"{feedback}\n\nWrite a new one that does not do this."
+        )
+
     answer, provenance = await llm.ask(
         "draft",
         DraftAnswer,
@@ -87,6 +95,7 @@ async def draft(state: dict[str, Any], *, settings: Settings) -> dict:
         seat=record.city or record.municipality,
         role=contact.role or "not known",
         profile=as_data(profile.description, label="PROFILE"),
+        feedback=feedback,
     )
 
     body = assemble(contact, answer.body, link=link)
@@ -94,6 +103,7 @@ async def draft(state: dict[str, Any], *, settings: Settings) -> dict:
         subject=answer.subject.strip(),
         body=body,
         model_text=answer.body.strip(),
+        link=link,
         mailto_fits=build(contact.email or "", answer.subject.strip(), body).fits,
     )
     with connect(settings.db_path) as conn:

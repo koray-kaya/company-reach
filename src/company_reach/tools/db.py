@@ -440,3 +440,9 @@ def record_draft(
             now(),
         ),
     )
+
+
+def delete_draft(conn: sqlite3.Connection, run_id: str, uid: str) -> None:
+    """A draft that failed its checks twice is not kept: nothing that
+    failed them should be one click from being sent."""
+    conn.execute("delete from drafts where run_id = ? and uid = ?", (run_id, uid))

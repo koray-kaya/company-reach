@@ -224,6 +224,7 @@ class Draft(BaseModel):
     subject: str
     body: str
     model_text: str
+    link: str  # the survey link code appended; the body's only allowed URL
     mailto_fits: bool
 
 

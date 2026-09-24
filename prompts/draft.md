@@ -1,5 +1,5 @@
 ---
-version: 1
+version: 2
 ---
 You are helping a student write a short invitation to one Swiss company,
 asking someone there to fill in a 15-minute online survey for a master's
@@ -58,6 +58,8 @@ the sentences should be your own:
 > Schweiz zu ihren Kunden kommen. Eine Druckerei, die Verpackungen für
 > Lebensmittelbetriebe herstellt, ist dafür ein gutes Beispiel. Ich würde
 > mich sehr freuen, wenn Sie sich 15 Minuten für meinen Fragebogen nehmen.
+
+$feedback
 
 ## What to return
 

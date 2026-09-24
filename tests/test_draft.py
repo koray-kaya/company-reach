@@ -169,3 +169,23 @@ async def test_without_a_survey_url_there_is_no_draft(db_settings, shown):
     db_settings.profile_path.write_text('goal = "Firms that make things."\n')
     with pytest.raises(CompanyReachError, match="survey_url"):
         await draft(state(), settings=db_settings)
+
+
+# --- a second attempt --------------------------------------------------------
+
+
+async def test_a_redraft_is_told_why_the_first_was_rejected(db_settings, shown):
+    rejected = state() | {"draft_feedback": "the text contained a link"}
+    await draft(rejected, settings=db_settings)
+    assert "the text contained a link" in shown["feedback"]
+
+
+async def test_a_first_draft_carries_no_feedback(db_settings, shown):
+    await draft(state(), settings=db_settings)
+    assert shown["feedback"] == ""
+
+
+async def test_the_link_travels_with_the_draft(db_settings, shown):
+    # check_draft compares the body's only URL against it, byte for byte
+    out = await draft(state(), settings=db_settings)
+    assert out["draft"].link == survey_link(SURVEY, UID)
