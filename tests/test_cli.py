@@ -338,3 +338,11 @@ def test_review_serves_on_the_loopback_interface_by_default(settings, monkeypatc
     r = runner.invoke(cli.app, ["review"])
     assert r.exit_code == 0, r.output
     assert (served["host"], served["port"]) == ("127.0.0.1", 8000)
+
+
+def test_forget_suppresses_and_names_what_is_left_to_do(settings, monkeypatch):
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    init_db(settings.db_path)
+    r = runner.invoke(cli.app, ["forget", "someone@nowhere.example"])
+    assert r.exit_code == 0, r.output
+    assert "suppressed: someone@nowhere.example" in r.output

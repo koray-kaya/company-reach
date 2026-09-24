@@ -247,6 +247,24 @@ def review(
 
 
 @app.command()
+def forget(
+    key: Annotated[str, typer.Argument(help="A company's UID or a person's address.")],
+) -> None:
+    """Honour a deletion request: remove the person from the database and the
+    page cache, and never contact the company or address again."""
+    from company_reach.forget import forget as forget_key
+
+    report = forget_key(get_settings(), key)
+    typer.echo(
+        f"{len(report.companies)} companies · {report.rows_deleted} rows and "
+        f"{report.cache_files_deleted} cache files deleted"
+    )
+    typer.echo(f"suppressed: {', '.join(report.suppressed)}")
+    for path in report.still_named:
+        typer.echo(f"still named in {path} — a hand-kept file; edit it by hand")
+
+
+@app.command()
 def retry(
     run_id: Annotated[str, typer.Argument(help="The run whose errors to redo.")],
 ) -> None:
