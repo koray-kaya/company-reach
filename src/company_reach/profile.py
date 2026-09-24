@@ -21,6 +21,10 @@ _WHITESPACE = re.compile(r"\s+")
 class Profile(BaseModel):
     goal: str
     about_me: str = ""
+    # Every invitation links here, tagged with the company's UID. Optional
+    # until drafting: scoring and site finding run without it, and `doctor`
+    # reports its absence before a run that would draft.
+    survey_url: str = ""
 
 
 def load_profile(path: Path) -> Profile:
@@ -36,7 +40,14 @@ def load_profile(path: Path) -> Profile:
     goal = str(data.get("goal", "")).strip()
     if not goal:
         raise ProfileError(f"{path} has no goal")
-    return Profile(goal=goal, about_me=str(data.get("about_me", "")).strip())
+    survey_url = str(data.get("survey_url", "")).strip()
+    if survey_url and not survey_url.startswith("https://"):
+        raise ProfileError(f"{path}: survey_url must start with https://")
+    return Profile(
+        goal=goal,
+        about_me=str(data.get("about_me", "")).strip(),
+        survey_url=survey_url,
+    )
 
 
 def goal_hash(goal: str) -> str:

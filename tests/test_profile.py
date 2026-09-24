@@ -40,3 +40,23 @@ def test_hash_is_short_and_stable():
     h = goal_hash("anything")
     assert len(h) == 12
     assert h == goal_hash("anything")
+
+
+def test_reads_the_survey_url(tmp_path):
+    path = tmp_path / "profile.toml"
+    path.write_text(TOML + 'survey_url = "https://survey.example/form"\n')
+    assert load_profile(path).survey_url == "https://survey.example/form"
+
+
+def test_the_survey_url_is_optional_until_drafting(tmp_path):
+    # scoring and site finding do not need it; doctor and draft do
+    path = tmp_path / "profile.toml"
+    path.write_text(TOML)
+    assert load_profile(path).survey_url == ""
+
+
+def test_a_survey_url_that_is_not_https_is_an_error(tmp_path):
+    path = tmp_path / "profile.toml"
+    path.write_text(TOML + 'survey_url = "http://survey.example/form"\n')
+    with pytest.raises(ProfileError, match="https"):
+        load_profile(path)

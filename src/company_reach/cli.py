@@ -3,7 +3,6 @@
 
 import asyncio
 import uuid
-from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -27,14 +26,14 @@ from company_reach.tools.doctor import run_checks
 
 app = typer.Typer(help="Find Swiss companies, find the person, draft the mail.")
 
-PROFILE_PATH = Path("profile.toml")
-
 
 def _resolve_goal(explicit: str | None) -> str:
     """--goal wins; otherwise profile.toml. Trying a goal on the command line
     without editing the file is the common case while wording is still being
     worked out."""
-    return explicit.strip() if explicit else load_profile(PROFILE_PATH).goal
+    if explicit:
+        return explicit.strip()
+    return load_profile(get_settings().profile_path).goal
 
 
 def _run_id(explicit: str | None) -> str:
@@ -165,7 +164,7 @@ def run(
     state = initial_state(
         run_id=rid,
         goal=text,
-        about_me=load_profile(PROFILE_PATH).about_me if goal is None else "",
+        about_me=load_profile(s.profile_path).about_me if goal is None else "",
         municipality="",
         settings=s,
         seed=seed,

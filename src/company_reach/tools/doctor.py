@@ -9,7 +9,8 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from company_reach.errors import LlmError
+from company_reach.errors import LlmError, ProfileError
+from company_reach.profile import load_profile
 from company_reach.settings import Settings
 from company_reach.tools import llm
 from company_reach.tools.db import connect, init_db
@@ -106,11 +107,28 @@ async def _budget_check(settings: Settings) -> Check:
     )
 
 
+def _profile_check(settings: Settings) -> Check:
+    """The survey link goes into every draft, so a run that drafts without
+    one would fail at its first company rather than here."""
+    try:
+        profile = load_profile(settings.profile_path)
+    except ProfileError as e:
+        return Check("profile", False, str(e))
+    if not profile.survey_url:
+        return Check(
+            "profile",
+            False,
+            f"{settings.profile_path} has no survey_url; every draft links to it",
+        )
+    return Check("profile", True, f"goal set, survey_url={profile.survey_url}")
+
+
 async def run_checks(settings: Settings) -> list[Check]:
     return [
         _settings_check(settings),
         _prompts_check(),
         _database_check(settings),
+        _profile_check(settings),
         await _endpoint_check(settings),
         await _budget_check(settings),
     ]
