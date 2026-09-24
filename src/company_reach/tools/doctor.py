@@ -123,12 +123,36 @@ def _profile_check(settings: Settings) -> Check:
     return Check("profile", True, f"goal set, survey_url={profile.survey_url}")
 
 
+RETENTION_DAYS = 365
+
+
+def _retention_check(settings: Settings) -> Check:
+    """Informational, never a failure: how many companies a purge would
+    clear (#27). Old data is a reason to run `purge`, not to refuse a run."""
+    from datetime import date, timedelta
+
+    from company_reach.forget import stale_uids
+
+    cutoff = (date.today() - timedelta(days=RETENTION_DAYS)).isoformat()
+    with connect(settings.db_path) as conn:
+        n = len(stale_uids(conn, cutoff=cutoff))
+    if n == 0:
+        return Check("retention", True, f"nothing older than {RETENTION_DAYS} days")
+    return Check(
+        "retention",
+        True,
+        f"{n} companies older than {RETENTION_DAYS} days hold personal data; "
+        f"run: company-reach purge --older-than {RETENTION_DAYS}",
+    )
+
+
 async def run_checks(settings: Settings) -> list[Check]:
     return [
         _settings_check(settings),
         _prompts_check(),
         _database_check(settings),
         _profile_check(settings),
+        _retention_check(settings),
         await _endpoint_check(settings),
         await _budget_check(settings),
     ]

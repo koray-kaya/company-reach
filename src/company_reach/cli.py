@@ -265,6 +265,23 @@ def forget(
 
 
 @app.command()
+def purge(
+    older_than: Annotated[
+        int, typer.Option(help="Days since a company was drawn or last decided.")
+    ] = 365,
+) -> None:
+    """Remove personal data nobody has touched for a while: pages, cache,
+    profiles, contacts, drafts. The ledger and the never-again list stay."""
+    from company_reach.forget import purge as purge_old
+
+    report = purge_old(get_settings(), older_than_days=older_than)
+    typer.echo(
+        f"{len(report.companies)} companies older than {older_than} days purged · "
+        f"{report.rows_deleted} rows and {report.cache_files_deleted} cache files"
+    )
+
+
+@app.command()
 def retry(
     run_id: Annotated[str, typer.Argument(help="The run whose errors to redo.")],
 ) -> None:

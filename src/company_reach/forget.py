@@ -16,12 +16,18 @@ schreibe Ihnen nicht wieder". So `forget <uid|email>`:
 
 Hand-kept research files (`data/v0`, `data/golden`) are not edited by code.
 Every file that still names the person is reported, so a human can.
+
+`purge` is the same deletion without a request: personal data of companies
+nobody has touched for a year (#27, decided with Koray). It suppresses
+nobody, and it leaves the ledger whole — a `sent` row keeps its address as
+the record of what was sent and the key to a later deletion request.
 """
 
 import json
 import re
 import sqlite3
 from dataclasses import dataclass, field
+from datetime import date, timedelta
 from pathlib import Path
 
 from company_reach.models import CompanyProfile
@@ -107,7 +113,14 @@ def _domains(conn: sqlite3.Connection, uids: list[str]) -> set[str]:
     return {d for d in domains if d}
 
 
-def _delete_rows(conn: sqlite3.Connection, uids: list[str], domains: set[str]) -> int:
+def _delete_rows(
+    conn: sqlite3.Connection,
+    uids: list[str],
+    domains: set[str],
+    *,
+    reason: str,
+    clear_ledger_addresses: bool,
+) -> int:
     marks = ",".join("?" * len(uids))
     deleted = 0
     for table in ("contacts", "drafts", "profiles", "sites"):
@@ -115,9 +128,10 @@ def _delete_rows(conn: sqlite3.Connection, uids: list[str], domains: set[str]) -
             f"delete from {table} where uid in ({marks})", uids
         ).rowcount
     conn.execute(
-        f"update results set reason = 'forgotten' where uid in ({marks})", uids
+        f"update results set reason = ? where uid in ({marks})", [reason, *uids]
     )
-    conn.execute(f"update ledger set address = null where uid in ({marks})", uids)
+    if clear_ledger_addresses:
+        conn.execute(f"update ledger set address = null where uid in ({marks})", uids)
     for row in conn.execute("select url from pages").fetchall():
         if registered_domain(row["url"]) in domains:
             deleted += conn.execute(
@@ -173,7 +187,9 @@ def forget(settings: Settings, key: str) -> Report:
             names.add(key.strip().lower())
         domains = _domains(conn, uids) if uids else set()
         if uids:
-            report.rows_deleted = _delete_rows(conn, uids, domains)
+            report.rows_deleted = _delete_rows(
+                conn, uids, domains, reason="forgotten", clear_ledger_addresses=True
+            )
         for uid in uids:
             suppress(conn, uid, reason="forgotten on request")
         report.suppressed = list(uids)
@@ -184,4 +200,41 @@ def forget(settings: Settings, key: str) -> Report:
     report.cache_files_deleted = _delete_cache(settings.data_dir / "cache", domains)
     _compact(settings.db_path)
     report.still_named = _still_named(settings.data_dir, names)
+    return report
+
+
+def stale_uids(conn: sqlite3.Connection, *, cutoff: str) -> list[str]:
+    """Companies drawn before `cutoff` with no decision since, that still
+    have personal data to purge."""
+    rows = conn.execute(
+        """select s.uid from seen s
+            where s.drawn_at < ?
+              and not exists (select 1 from ledger l
+                               where l.uid = s.uid and l.decided_at >= ?)
+              and (exists (select 1 from contacts c where c.uid = s.uid)
+                   or exists (select 1 from profiles p where p.uid = s.uid)
+                   or exists (select 1 from sites t where t.uid = s.uid))
+            order by s.uid""",
+        (cutoff, cutoff),
+    )
+    return [r["uid"] for r in rows]
+
+
+def purge(
+    settings: Settings, *, older_than_days: int, today: str | None = None
+) -> Report:
+    report = Report()
+    day = date.fromisoformat(today) if today else date.today()
+    cutoff = (day - timedelta(days=older_than_days)).isoformat()
+    with connect(settings.db_path) as conn:
+        uids = stale_uids(conn, cutoff=cutoff)
+        if not uids:
+            return report
+        domains = _domains(conn, uids)
+        report.rows_deleted = _delete_rows(
+            conn, uids, domains, reason="purged", clear_ledger_addresses=False
+        )
+    report.companies = uids
+    report.cache_files_deleted = _delete_cache(settings.data_dir / "cache", domains)
+    _compact(settings.db_path)
     return report

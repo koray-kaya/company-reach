@@ -44,6 +44,7 @@ async def test_all_checks_pass(settings):
         "prompts",
         "database",
         "profile",
+        "retention",
         "endpoint",
         "token budget",
     ]
@@ -54,7 +55,7 @@ async def test_all_checks_pass(settings):
 async def test_a_failing_check_does_not_stop_the_others(settings):
     respx.post(URL).mock(return_value=httpx.Response(401, json={"error": "nope"}))
     checks = await run_checks(settings)
-    assert len(checks) == 6  # every check still ran
+    assert len(checks) == 7  # every check still ran
     by_name = {c.name: c for c in checks}
     assert by_name["settings"].ok
     assert by_name["database"].ok
@@ -114,5 +115,14 @@ async def test_a_missing_profile_fails_without_stopping_the_others(settings):
     respx.post(URL).mock(side_effect=[probe_ok(), probe_truncated()])
     settings.profile_path.unlink()
     checks = await run_checks(settings)
-    assert len(checks) == 6
+    assert len(checks) == 7
     assert not next(c for c in checks if c.name == "profile").ok
+
+
+@respx.mock
+async def test_retention_reports_what_a_purge_would_remove(settings):
+    # informational: an old company is not a reason to refuse a run
+    respx.post(URL).mock(side_effect=[probe_ok(), probe_truncated()])
+    retention = next(c for c in await run_checks(settings) if c.name == "retention")
+    assert retention.ok
+    assert "365 days" in retention.detail
