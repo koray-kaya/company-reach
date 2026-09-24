@@ -31,8 +31,11 @@ CREATE TABLE IF NOT EXISTS drafts (
 CREATE TABLE IF NOT EXISTS results (
   run_id TEXT NOT NULL, uid TEXT NOT NULL, recommendation TEXT, reason TEXT,
   error_kind TEXT, error_text TEXT, finished_at TEXT NOT NULL, PRIMARY KEY (run_id, uid));
+-- One row per decision, never updated: a company's state is its latest row,
+-- and "contacted" is any 'sent' row ever (M7 open point 4).
 CREATE TABLE IF NOT EXISTS ledger (
-  uid TEXT PRIMARY KEY, status TEXT NOT NULL, address TEXT, draft_id INTEGER,
-  decided_at TEXT NOT NULL, note TEXT);
+  id INTEGER PRIMARY KEY, uid TEXT NOT NULL, status TEXT NOT NULL, address TEXT,
+  draft_id INTEGER, run_id TEXT, note TEXT, decided_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS ledger_uid ON ledger (uid);
 CREATE TABLE IF NOT EXISTS suppression (
   key TEXT PRIMARY KEY, reason TEXT, added_at TEXT NOT NULL);

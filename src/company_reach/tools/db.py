@@ -50,11 +50,28 @@ _ADDED_COLUMNS = {
 }
 
 
+def _replace_ledger_of_one_row_per_company(conn: sqlite3.Connection) -> None:
+    """M1 shipped `ledger` keyed by uid; M7 made it a log. Every database so
+    far holds the old table empty, so it is dropped and recreated — but a
+    ledger with decisions in it is the record of who was contacted, and is
+    never dropped by code."""
+    columns = {r["name"] for r in conn.execute("pragma table_info(ledger)")}
+    if not columns or "id" in columns:
+        return
+    if conn.execute("select count(*) from ledger").fetchone()[0]:
+        raise RuntimeError(
+            "the ledger has the old one-row-per-company shape and holds "
+            "decisions; migrate it by hand rather than lose who was contacted"
+        )
+    conn.execute("drop table ledger")
+
+
 def init_db(path: Path) -> None:
     schema = files("company_reach").joinpath("schema.sql").read_text()
     conn = _open(path)
     try:
         with conn:
+            _replace_ledger_of_one_row_per_company(conn)
             conn.executescript(schema)
             for (table, column), kind in _ADDED_COLUMNS.items():
                 have = {r["name"] for r in conn.execute(f"pragma table_info({table})")}
@@ -251,6 +268,9 @@ def draw_batch(
               -- draft, so there is nothing to protect it from. "Only" is the
               -- point — a company another run finished after an error keeps
               -- that old error row, and may already have been written to.
+              -- a reviewer decided about it, or it may never be contacted
+              and c.uid not in (select uid from ledger)
+              and c.uid not in (select key from suppression)
               and (c.uid not in (select uid from seen)
                    or (c.uid in (select uid from results
                                   where error_kind is not null and run_id <> ?)
@@ -462,3 +482,80 @@ def errored_uids(conn: sqlite3.Connection, run_id: str) -> list[str]:
             (run_id,),
         )
     ]
+
+
+# --- the ledger and suppression (M7) ----------------------------------------
+
+DECISIONS = ("sent", "skipped", "never", "undone")
+
+
+def record_decision(
+    conn: sqlite3.Connection,
+    uid: str,
+    status: str,
+    *,
+    address: str | None = None,
+    draft_id: int | None = None,
+    run_id: str | None = None,
+    note: str | None = None,
+    decided_at: str | None = None,
+) -> int:
+    """Append one decision. Nothing in the ledger is ever updated or
+    deleted by the page: undoing a skip is an `undone` row after it."""
+    if status not in DECISIONS:
+        raise ValueError(f"status must be one of {DECISIONS}, not {status!r}")
+    cur = conn.execute(
+        """INSERT INTO ledger (uid, status, address, draft_id, run_id, note,
+             decided_at) VALUES (?,?,?,?,?,?,?)""",
+        (uid, status, address, draft_id, run_id, note, decided_at or now()),
+    )
+    return cur.lastrowid
+
+
+def decision_for(conn: sqlite3.Connection, uid: str) -> sqlite3.Row | None:
+    """The company's current decision, or None while it is undecided —
+    never decided, or its last decision undone."""
+    row = conn.execute(
+        "select * from ledger where uid = ? order by id desc limit 1", (uid,)
+    ).fetchone()
+    return None if row is None or row["status"] == "undone" else row
+
+
+def was_contacted(conn: sqlite3.Connection, uid: str) -> bool:
+    """Any `sent` row, ever. "Contacted once, ever" rests on this."""
+    return (
+        conn.execute(
+            "select 1 from ledger where uid = ? and status = 'sent' limit 1", (uid,)
+        ).fetchone()
+        is not None
+    )
+
+
+def sent_this_month(conn: sqlite3.Connection, *, today: str | None = None) -> int:
+    """How many were sent this calendar month. A number the page shows, not
+    a limit: there is no cap by design."""
+    month = (today or now())[:7]
+    return conn.execute(
+        "select count(*) from ledger"
+        " where status = 'sent' and substr(decided_at, 1, 7) = ?",
+        (month,),
+    ).fetchone()[0]
+
+
+def _key(key: str) -> str:
+    return key.strip().lower() if "@" in key else key.strip()
+
+
+def suppress(conn: sqlite3.Connection, key: str, *, reason: str) -> None:
+    """A uid or an e-mail address that is never contacted again. Permanent."""
+    conn.execute(
+        "INSERT OR IGNORE INTO suppression (key, reason, added_at) VALUES (?,?,?)",
+        (_key(key), reason, now()),
+    )
+
+
+def is_suppressed(conn: sqlite3.Connection, key: str) -> bool:
+    return (
+        conn.execute("select 1 from suppression where key = ?", (_key(key),)).fetchone()
+        is not None
+    )
