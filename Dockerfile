@@ -19,7 +19,6 @@ COPY pyproject.toml uv.lock README.md LICENSE NOTICE ./
 RUN uv sync --frozen --no-dev --no-install-project
 
 COPY src ./src
-COPY prompts ./prompts
 RUN uv sync --frozen --no-dev
 
 # Inside the container the page binds every interface; compose publishes it

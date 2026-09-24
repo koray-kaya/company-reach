@@ -31,7 +31,21 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
+      # The whole history, not the default single commit: the privacy check
+      # below has to see every commit ever made, not only the last one.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Company and person data lives in data/, which is gitignored. This
+      # proves it never slipped in, in any commit on any branch (audit:252).
+      - name: data/ was never committed
+        run: |
+          if git log --all --name-only --format= | grep -q '^data/'; then
+            echo "::error::a file under data/ is in the git history"
+            git log --all --name-only --format='%h %s' | grep -B1 '^data/'
+            exit 1
+          fi
 
       - uses: astral-sh/setup-uv@v6
         with:

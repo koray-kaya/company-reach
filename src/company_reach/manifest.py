@@ -19,9 +19,7 @@ from typing import Any
 from company_reach.profile import goal_hash
 from company_reach.settings import Settings
 from company_reach.tools.db import now
-from company_reach.tools.llm import load_prompt
-
-_PROMPT_DIR = Path(__file__).resolve().parents[2] / "prompts"
+from company_reach.tools.llm import PROMPT_DIR, load_prompt
 
 # The settings that change what a run produces. Timeouts and URLs are left
 # out: they change how it gets there, not what comes back.
@@ -48,10 +46,14 @@ def _prompt_versions() -> dict[str, dict[str, str]]:
     was used; the sha says whether the file was edited without the version
     being raised — which is the failure the score cache cannot see."""
     prompts: dict[str, dict[str, str]] = {}
-    for path in sorted(_PROMPT_DIR.glob("*.md")):
-        version, _ = load_prompt(path.stem)
+    for path in sorted(
+        (p for p in PROMPT_DIR.iterdir() if p.name.endswith(".md")),
+        key=lambda p: p.name,
+    ):
+        name = path.name.removesuffix(".md")
+        version, _ = load_prompt(name)
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
-        prompts[path.stem] = {"version": version, "sha256": digest}
+        prompts[name] = {"version": version, "sha256": digest}
     return prompts
 
 

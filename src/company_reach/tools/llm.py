@@ -1,18 +1,18 @@
 """The only module that talks to a language model.
 
-Prompts live in `prompts/` as Markdown files with a version header, so they
-can be read and edited without touching code. The version travels with every
-score: changing a prompt must not silently reuse answers produced by the old
-one. Rendering uses string.Template rather than f-strings or .format() —
-company text is data, and neither `{}` nor `{{` in it can then be mistaken
-for a placeholder.
+Prompts live in `src/company_reach/prompts/` as Markdown files with a
+version header, so they can be read and edited without touching code. The
+version travels with every score: changing a prompt must not silently reuse
+answers produced by the old one. Rendering uses string.Template rather than
+f-strings or .format() — company text is data, and neither `{}` nor `{{` in
+it can then be mistaken for a placeholder.
 """
 
 import asyncio
 import time
 from dataclasses import dataclass
 from functools import lru_cache
-from pathlib import Path
+from importlib.resources import files
 from string import Template
 from typing import Literal
 
@@ -23,16 +23,18 @@ from pydantic import BaseModel
 
 from company_reach.errors import LlmError, PromptError
 from company_reach.settings import Settings
+from company_reach.tools.gates import gate
 
 Effort = Literal["low", "high", "max"]
 
-_PROMPT_DIR = Path(__file__).resolve().parents[3] / "prompts"
+# Inside the package, so an installed copy finds them as a checkout does.
+PROMPT_DIR = files("company_reach").joinpath("prompts")
 
 
 @lru_cache
 def load_prompt(name: str) -> tuple[str, str]:
     """Return (version, template text) for `prompts/<name>.md`."""
-    path = _PROMPT_DIR / f"{name}.md"
+    path = PROMPT_DIR.joinpath(f"{name}.md")
     if not path.is_file():
         raise PromptError(f"no prompt file for {name!r} at {path}")
     raw = path.read_text(encoding="utf-8")
@@ -91,15 +93,12 @@ def _truncated(prompt_name: str, budget: int, effort: Effort) -> LlmError:
     )
 
 
-@lru_cache
 def _get_semaphore(concurrency: int) -> asyncio.Semaphore:
-    """One semaphore per concurrency value, for the whole process. The school
-    endpoint is a shared vLLM server: measured, ten concurrent requests made
-    four of them time out without raising throughput, so the cap is a
-    courtesy as well as a safeguard. Caching on the value rather than holding
-    a module global means a test that changes the setting simply gets its own
-    semaphore — no reset hook that exists only for tests."""
-    return asyncio.Semaphore(concurrency)
+    """The model's cap for the running event loop (`tools/gates.py`). The
+    school endpoint is a shared vLLM server: measured, ten concurrent
+    requests made four of them time out without raising throughput, so the
+    cap is a courtesy as well as a safeguard."""
+    return gate("llm", concurrency)
 
 
 def _client(

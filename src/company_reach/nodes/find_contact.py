@@ -94,6 +94,21 @@ def rank(role: str | None) -> int:
     return len(_RANKS)
 
 
+def other_ending(email_domain_: str, site: str | None) -> bool:
+    """`muster.com` for the site `muster.ch`: the same name under another
+    TLD, and nothing more — no subdomain, no longer name (#25, decided with
+    Koray). Only ever asked of an address read from the site's own pages."""
+    if not site:
+        return False
+    a, b = email_domain_.split("."), site.split(".")
+    return len(a) == len(b) == 2 and a[0] == b[0] and a[1] != b[1]
+
+
+def _on_site(email: str, site: str | None) -> bool:
+    found = email_domain(email)
+    return found == site or other_ending(found, site)
+
+
 def _own_address(person: Person) -> bool:
     return bool(person.email) and not person.email_offsite
 
@@ -127,7 +142,7 @@ def _inbox(
 ) -> tuple[str, str] | None:
     for email, url in addresses:
         local = email.split("@", 1)[0]
-        if email_domain(email) == domain and local in _GENERIC:
+        if _on_site(email, domain) and local in _GENERIC:
             return email, url
     return None
 
@@ -195,7 +210,7 @@ def _without_site_names(
         return Contact(
             email=inbox[0], email_kind="generic", source="site", source_url=inbox[1]
         )
-    offsite = next(((e, u) for e, u in addresses if email_domain(e) != domain), None)
+    offsite = next(((e, u) for e, u in addresses if not _on_site(e, domain)), None)
     if offsite:
         return Contact(
             email=offsite[0],
@@ -221,13 +236,16 @@ def offered(
     for email, _ in addresses:
         if any(r.email == email for r in rows):
             continue
-        if email_domain(email) != domain:
+        if not _on_site(email, domain):
             kind = "third_party"
         elif email.split("@", 1)[0] in _GENERIC:
             kind = "generic"
         else:
             kind = "seen"
         rows.append(ContactAddress(email=email, kind=kind))
+    for row in rows:
+        if row.kind != "third_party" and other_ending(email_domain(row.email), domain):
+            row.note = f"the site's name under another ending than {domain}"
     return rows[:_MAX_OFFERED]
 
 

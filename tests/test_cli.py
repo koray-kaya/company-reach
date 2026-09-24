@@ -346,3 +346,11 @@ def test_forget_suppresses_and_names_what_is_left_to_do(settings, monkeypatch):
     r = runner.invoke(cli.app, ["forget", "someone@nowhere.example"])
     assert r.exit_code == 0, r.output
     assert "suppressed: someone@nowhere.example" in r.output
+
+
+def test_purge_says_what_it_removed(settings, monkeypatch):
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    init_db(settings.db_path)
+    r = runner.invoke(cli.app, ["purge", "--older-than", "365"])
+    assert r.exit_code == 0, r.output
+    assert "0 companies older than 365 days purged" in r.output

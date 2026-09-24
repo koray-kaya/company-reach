@@ -570,3 +570,56 @@ async def test_the_addresses_are_recorded(db_settings):
     assert json.loads(row["addresses"]) == [
         {"email": "info@muster-metallbau.ch", "kind": "generic"}
     ]
+
+
+# --- the site's own name under another ending (#25) -------------------------
+# Decided with Koray (M8 open point 4): an address read from the site's own
+# pages whose domain is the site's name under another TLD counts as on-site;
+# a longer name, a subdomain or a model-given person's address does not.
+
+
+async def test_the_sites_name_under_another_ending_is_its_own_inbox(db_settings):
+    out = await run(
+        state([], {SITE: "Kontakt: info@muster-metallbau.com"}), db_settings
+    )
+    contact = out["contact"]
+    assert (contact.email, contact.email_kind) == (
+        "info@muster-metallbau.com",
+        "generic",
+    )
+    [row] = contact.addresses
+    assert row.kind == "generic" and "another ending" in row.note
+
+
+async def test_a_longer_name_under_another_ending_is_still_third_party(db_settings):
+    out = await run(
+        state([], {SITE: "Kontakt: info@muster-metallbau-shop.com"}), db_settings
+    )
+    assert out["contact"].email_kind == "third_party"
+
+
+async def test_a_subdomain_under_another_ending_is_still_third_party(db_settings):
+    out = await run(
+        state([], {SITE: "Kontakt: info@mail.muster-metallbau.com"}), db_settings
+    )
+    assert out["contact"].email_kind == "third_party"
+
+
+async def test_a_persons_address_under_another_ending_keeps_the_strict_rule(
+    db_settings,
+):
+    # check_profile marked it off-site; the model's persons are not relaxed
+    out = await run(
+        state(
+            [
+                Person(
+                    name="Anna Muster",
+                    email="anna@muster-metallbau.com",
+                    email_offsite=True,
+                )
+            ],
+            {SITE: "Anna Muster anna@muster-metallbau.com"},
+        ),
+        db_settings,
+    )
+    assert out["contact"].email_kind == "third_party"

@@ -179,6 +179,7 @@ class ContactAddress(BaseModel):
 
     email: str
     kind: EmailKind
+    note: str | None = None  # e.g. the site's name under another ending
 
 
 class Contact(BaseModel):

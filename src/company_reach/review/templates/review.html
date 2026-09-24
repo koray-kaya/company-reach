@@ -50,6 +50,7 @@
           <div class="addrs" role="radiogroup" aria-label="Address">
             {% for a in c.addresses %}
             <label class="addr"><input type="radio" name="to" value="{{ a.email }}"{% if loop.first %} checked{% endif %}{% if card.send_block %} disabled{% endif %}><span class="mail">{{ a.email }}</span><span class="kind {{ a.kind }}">{{ a.kind | replace('_', ' ') }}</span></label>
+            {% if a.note %}<p class="hint" style="margin:0 0 0 30px">{{ a.email }}: {{ a.note }}</p>{% endif %}
             {% endfor %}
           </div>
           {% set kind = c.addresses[0].kind %}

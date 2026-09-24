@@ -444,7 +444,7 @@ def record_contact(
             contact.source_date,
             contact.linkedin_lead,
             json.dumps(contact.alternatives, ensure_ascii=False),
-            json.dumps([a.model_dump() for a in contact.addresses]),
+            json.dumps([a.model_dump(exclude_none=True) for a in contact.addresses]),
         ),
     )
     return cur.lastrowid
