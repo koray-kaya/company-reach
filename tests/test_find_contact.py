@@ -16,6 +16,7 @@ from company_reach.models import CompanyProfile, CompanyRecord, Person, ShabPers
 from company_reach.nodes.find_contact import find_contact
 from company_reach.nodes.find_site import SiteChoice
 from company_reach.tools.db import init_db
+from company_reach.tools.search import Result
 
 SITE = "https://muster-metallbau.ch/"
 UID = "CHE000000046"
@@ -71,8 +72,26 @@ def db_settings(settings):
     return settings
 
 
-async def run(st: dict, settings, shab: Shab | None = None) -> dict:
-    return await find_contact(st, settings=settings, shab=shab or Shab())
+class Search:
+    """Stands in for `tools.search.search` and remembers every query. No
+    test here has an HTTP route to linkedin.com, and none needs one: the
+    lead comes from a search result, never from a request to LinkedIn."""
+
+    def __init__(self, results: list[Result] | None = None):
+        self.results = results or []
+        self.queries: list[str] = []
+
+    async def __call__(self, query: str, *, settings, limit: int = 10) -> list[Result]:
+        self.queries.append(query)
+        return self.results
+
+
+async def run(
+    st: dict, settings, shab: Shab | None = None, search: Search | None = None
+) -> dict:
+    return await find_contact(
+        st, settings=settings, shab=shab or Shab(), search=search or Search()
+    )
 
 
 def contact_rows(settings) -> list[sqlite3.Row]:
@@ -398,3 +417,98 @@ async def test_the_alternatives_are_recorded(db_settings):
     )
     [row] = contact_rows(db_settings)
     assert json.loads(row["alternatives"]) == ["Beat Beispiel"]
+
+
+# --- the LinkedIn lead -------------------------------------------------------
+# Looked for only when the tool has no address it saw: a constructed info@,
+# or nothing at all. A lead is a profile URL for a human to check, never an
+# address to write to, and LinkedIn itself is never requested.
+
+ANNA_IN = Result(
+    "https://ch.linkedin.com/in/anna-muster-123",
+    "Anna Muster - Inhaberin - Muster Metallbau AG | LinkedIn",
+    "Musterstadt",
+    "ddg",
+)
+
+
+async def test_a_constructed_address_looks_for_a_lead(db_settings):
+    search = Search([ANNA_IN])
+    out = await run(
+        state([Person(name="Anna Muster", role="Inhaberin")], {SITE: "Anna Muster"}),
+        db_settings,
+        search=search,
+    )
+    [query] = search.queries
+    assert query.startswith("site:linkedin.com/in ")
+    assert '"Anna Muster"' in query and '"Muster Metallbau"' in query
+    contact = out["contact"]
+    assert contact.linkedin_lead == ANNA_IN.url
+    assert contact.email == "info@muster-metallbau.ch"  # never the lead
+
+
+async def test_a_published_address_needs_no_lead(db_settings):
+    search = Search([ANNA_IN])
+    await run(
+        state(
+            [Person(name="Anna Muster")], {SITE: "Anna Muster info@muster-metallbau.ch"}
+        ),
+        db_settings,
+        search=search,
+    )
+    assert search.queries == []
+
+
+async def test_a_namesake_elsewhere_is_not_a_lead(db_settings):
+    # a name alone gives false matches (LEARNINGS §5): the result has to
+    # carry the company too
+    other = Result(
+        "https://ch.linkedin.com/in/anna-muster-9",
+        "Anna Muster - Pflegefachfrau - Spital Beispiel | LinkedIn",
+        "Bern",
+        "ddg",
+    )
+    out = await run(
+        state([Person(name="Anna Muster")], {SITE: "Anna Muster"}),
+        db_settings,
+        search=Search([other]),
+    )
+    assert out["contact"].linkedin_lead is None
+
+
+async def test_only_a_profile_page_is_a_lead(db_settings):
+    company_page = Result(
+        "https://ch.linkedin.com/company/muster-metallbau",
+        "Anna Muster at Muster Metallbau AG | LinkedIn",
+        "",
+        "ddg",
+    )
+    out = await run(
+        state([Person(name="Anna Muster")], {SITE: "Anna Muster"}),
+        db_settings,
+        search=Search([company_page]),
+    )
+    assert out["contact"].linkedin_lead is None
+
+
+async def test_with_nobody_found_the_company_is_looked_up(db_settings):
+    search = Search([ANNA_IN])
+    out = await run(state([], {SITE: "Willkommen"}), db_settings, search=search)
+    [query] = search.queries
+    assert query == 'site:linkedin.com/in "Muster Metallbau"'
+    contact = out["contact"]
+    assert (contact.name, contact.email, contact.linkedin_lead) == (
+        None,
+        None,
+        ANNA_IN.url,
+    )
+
+
+async def test_the_lead_is_recorded(db_settings):
+    await run(
+        state([Person(name="Anna Muster")], {SITE: "Anna Muster"}),
+        db_settings,
+        search=Search([ANNA_IN]),
+    )
+    [row] = contact_rows(db_settings)
+    assert row["linkedin_lead"] == ANNA_IN.url

@@ -76,3 +76,10 @@ def test_skip_comes_before_hold():
 def test_a_constructed_address_says_it_is_a_guess():
     out = recommend(state(contact=contact("info@muster.ch", "constructed")))
     assert "not seen" in out["reason"]
+
+
+def test_a_lead_alone_is_held_and_says_so():
+    lead = Contact(source="site", linkedin_lead="https://ch.linkedin.com/in/x")
+    out = recommend(state(contact=lead))
+    assert out["recommendation"] == "hold"
+    assert "LinkedIn" in out["reason"] and "None" not in out["reason"]

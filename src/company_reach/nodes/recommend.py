@@ -33,6 +33,10 @@ def recommend(state: dict[str, Any]) -> dict:
 
     if contact is None:
         return _verdict("hold", "nobody is named and no address is published")
+    if contact.email is None and contact.name is None:
+        return _verdict(
+            "hold", "no address and nobody named; only a LinkedIn lead to check"
+        )
     if contact.email is None:
         return _verdict(
             "hold", f"{contact.name} is named ({contact.source}) but no address"

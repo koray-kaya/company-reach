@@ -21,6 +21,13 @@ then the one who runs the company, then the board's chair, then everyone
 else; a tie keeps the order of the page. Everyone not chosen is kept on the
 contact as an alternative, so the reviewer can see who else was named.
 
+When the tool saw no address — it constructed info@, or found nothing at
+all — one web search restricted to LinkedIn profiles looks for a lead: the
+person's name and the company, or the company alone. A result counts only
+if its title carries the company (and the surname, when there is one),
+because a name alone matches namesakes elsewhere. The lead is a URL for a
+human to check; it is never an address and LinkedIn itself is never asked.
+
 An address on another domain is never promoted to an invitation. It is kept
 as `third_party`, which `recommend` holds, because that is how a hostile page
 plants a contact (`audit-2026-09-19.md:177`). The addresses on the pages are
@@ -31,17 +38,21 @@ really carries.
 import re
 from collections.abc import Awaitable, Callable
 from typing import Any
+from urllib.parse import urlsplit
 
 from company_reach.models import CompanyProfile, Contact, Person, ShabPerson
-from company_reach.nodes.find_site import SiteChoice
+from company_reach.nodes.find_site import SiteChoice, strip_legal_form
 from company_reach.settings import Settings
+from company_reach.tools import search as search_tool
 from company_reach.tools import shab as shab_tool
 from company_reach.tools.checks import appears_in, is_noise
 from company_reach.tools.db import connect, record_contact
+from company_reach.tools.search import Result
 from company_reach.tools.textify import normalise
 from company_reach.tools.urls import email_domain, registered_domain
 
 Shab = Callable[..., Awaitable[list[ShabPerson]]]
+Search = Callable[..., Awaitable[list[Result]]]
 
 _EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 # "info (at) muster.ch", "info[at]muster.ch", "muster [dot] ch"
@@ -189,11 +200,44 @@ def _without_site_names(
     return None
 
 
+def _is_lead(result: Result, *, company: str, name: str | None) -> bool:
+    parts = urlsplit(result.url)
+    host = (parts.hostname or "").lower()
+    if not (host == "linkedin.com" or host.endswith(".linkedin.com")):
+        return False
+    if not parts.path.startswith("/in/"):
+        return False  # a company page or a post is not a person
+    title = normalise(result.title)
+    # the company's longest word: "St. Galler Metallbau" -> "metallbau"
+    marker = max(normalise(company).split(), key=len)
+    if marker not in title:
+        return False
+    return name is None or normalise(name).split()[-1] in title
+
+
+async def linkedin_lead(
+    company: str, name: str | None, *, settings: Settings, search: Search
+) -> str | None:
+    """A LinkedIn profile URL found by a restricted web search, or None."""
+    short = strip_legal_form(company)
+    who = f' "{name}"' if name else ""
+    query = f'site:linkedin.com/in{who} "{short}"'
+    for result in await search(query, settings=settings):
+        if _is_lead(result, company=short, name=name):
+            return result.url
+    return None
+
+
 async def find_contact(
-    state: dict[str, Any], *, settings: Settings, shab: Shab = shab_tool.persons
+    state: dict[str, Any],
+    *,
+    settings: Settings,
+    shab: Shab = shab_tool.persons,
+    search: Search = search_tool.search,
 ) -> dict:
-    """`shab` is passed in for the reason `enrich_company` takes `child`: a
-    test can hand it a double and see whether it was asked at all."""
+    """`shab` and `search` are passed in for the reason `enrich_company`
+    takes `child`: a test can hand in a double and see whether it was asked
+    at all."""
     site: SiteChoice = state["site"]
     profile: CompanyProfile = state["profile"]
     texts: dict[str, str] = state.get("page_texts") or {}
@@ -216,7 +260,17 @@ async def find_contact(
         found = await shab(state["uid"], settings=settings)
         contact = _without_site_names(found, addresses=addresses, domain=domain)
 
-    if contact is None:  # a finding: nobody named, no inbox published
+    if contact is None or contact.email_kind == "constructed":
+        name = contact.name if contact else None
+        lead = await linkedin_lead(
+            state["company"].name, name, settings=settings, search=search
+        )
+        if contact is not None:
+            contact.linkedin_lead = lead
+        elif lead is not None:
+            contact = Contact(source="site", linkedin_lead=lead)
+
+    if contact is None:  # a finding: nobody named, no inbox, no lead
         return {"contact": None, "contact_id": None}
 
     with connect(settings.db_path) as conn:
