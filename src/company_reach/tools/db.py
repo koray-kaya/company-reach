@@ -272,6 +272,18 @@ def load_criteria(conn: sqlite3.Connection, goal_hash: str) -> StoredCriteria | 
     )
 
 
+def score_run_criteria(conn: sqlite3.Connection, goal_hash: str) -> list[sqlite3.Row]:
+    """The criteria earlier `score` commands recorded for this goal, oldest
+    first. Before the criteria table, every `score` wrote its own set and
+    kept it only on its `runs` row."""
+    return conn.execute(
+        """select id, criteria, model, prompt_versions from runs
+            where goal_hash = ? and criteria is not null
+            order by started_at, rowid""",
+        (goal_hash,),
+    ).fetchall()
+
+
 def current_criteria_hash(conn: sqlite3.Connection, goal_hash: str) -> str | None:
     """The hash a score must carry to count for this goal. None while the
     goal has no criteria stored; then the scores made before criteria were

@@ -23,7 +23,7 @@ from company_reach.graph import (
 )
 from company_reach.import_v0 import import_v0
 from company_reach.manifest import finish_manifest, manifest_path, start_manifest
-from company_reach.models import CompanyResult, StoredCriteria
+from company_reach.models import CompanyResult, SelectionCriteria, StoredCriteria
 from company_reach.nodes.load_pool import load_pool
 from company_reach.nodes.score_pool import score_pool
 from company_reach.nodes.screen_pool import screen_pool
@@ -45,6 +45,7 @@ from company_reach.tools.db import (
     load_criteria,
     pool_standing,
     record_run,
+    score_run_criteria,
     status_by_municipality,
     store_criteria,
 )
@@ -198,18 +199,22 @@ NewCriteria = Annotated[
 
 
 def _goal_criteria(s, goal: str, *, new: bool) -> StoredCriteria:
-    """The goal's one set of criteria (audit H10): the stored set, or, the
-    first time or with --new-criteria, a freshly written set that is stored
-    before anything is scored against it."""
+    """The goal's one set of criteria (audit H10): the stored set; the first
+    time, the latest set an earlier `score` run recorded, if there is one;
+    otherwise, or with --new-criteria, a freshly written set. Whatever is
+    new is stored before anything is scored against it."""
     key = goal_hash(goal)
     with connect(s.db_path) as conn:
         stored = None if new else load_criteria(conn, key)
+        earlier = [] if new else score_run_criteria(conn, key)
     if stored is not None:
         typer.echo(
             f"criteria {stored.criteria_hash} · stored {stored.created_at} · "
             "`--new-criteria` writes a fresh set"
         )
         return stored
+    if earlier:
+        return _adopt_the_latest_score_run(s, key, earlier)
 
     written, prov = asyncio.run(write_criteria(goal, settings=s))
     with connect(s.db_path) as conn:
@@ -231,6 +236,43 @@ def _goal_criteria(s, goal: str, *, new: bool) -> StoredCriteria:
         typer.echo(f"{adopted} scores made before criteria were stored count under it")
     if new:
         typer.echo("scores made under earlier criteria no longer count; run `score`")
+    return stored
+
+
+def _adopt_the_latest_score_run(s, key: str, earlier: list) -> StoredCriteria:
+    """A goal scored before the criteria table has its sets only on the
+    `runs` rows of its `score` commands, one set per command. The latest is
+    stored, with no model call, and the scores made before take its hash. A
+    fresh set would label them with rules none of them was scored against;
+    the latest is the nearest truth, and the message says how mixed it is."""
+    latest = earlier[-1]
+    rules = SelectionCriteria.model_validate_json(latest["criteria"])
+    versions = json.loads(latest["prompt_versions"] or "{}")
+    with connect(s.db_path) as conn:
+        adopted = store_criteria(
+            conn,
+            key,
+            rules,
+            criteria_hash=criteria_hash(rules),
+            model=latest["model"],
+            prompt_version=versions.get("criteria"),
+            adopt_unlinked=True,
+        )
+        stored = load_criteria(conn, key)
+    typer.echo(
+        f"criteria {stored.criteria_hash} · taken from score run {latest['id']} · "
+        "stored"
+    )
+    sets = len({row["criteria"] for row in earlier})
+    if sets > 1:
+        runs = ", ".join(row["id"] for row in earlier)
+        typer.echo(
+            f"{adopted} scores were made across {sets} criteria sets (score runs "
+            f"{runs}); adopting the latest; `score --new-criteria` ranks the "
+            "pool against one set."
+        )
+    elif adopted:
+        typer.echo(f"{adopted} scores made before criteria were stored count under it")
     return stored
 
 

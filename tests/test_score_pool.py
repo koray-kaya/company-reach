@@ -8,6 +8,7 @@ from company_reach import cli
 from company_reach.models import (
     CompanyRecord,
     RawScore,
+    Score,
     ScoreBatch,
     SelectionCriteria,
     StoredCriteria,
@@ -20,8 +21,10 @@ from company_reach.tools.db import (
     current_criteria_hash,
     draw_batch,
     init_db,
+    load_criteria,
     store_criteria,
     upsert_companies,
+    upsert_scores,
 )
 
 URL = "https://api.openai.com/v1/chat/completions"
@@ -328,3 +331,58 @@ def test_scores_carry_the_stored_hash(settings, monkeypatch):
             limit=10,
         )
     assert len(drawn) == 2
+
+
+def test_the_first_store_adopts_the_latest_score_runs_criteria(settings, monkeypatch):
+    """Review of Phase F: before the criteria table every `score` wrote its
+    own set and kept it only on its `runs` row. Adopting a freshly written
+    set labelled those scores with rules none of them saw; the latest set a
+    score run used is the nearest truth, and costs no model call."""
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    uids = seed(settings, 3)
+    calls = fake_model(monkeypatch, "never asked")
+    key = goal_hash("goal")
+    older = SelectionCriteria(
+        must=["makes furniture"], must_not=[], positive_signals=[]
+    )
+    latest = SelectionCriteria(must=["makes things"], must_not=[], positive_signals=[])
+    with connect(settings.db_path) as conn:
+        for run_id, rules, at in (
+            ("s1", older, "2026-09-20T10:00:00+00:00"),
+            ("s2", latest, "2026-09-21T10:00:00+00:00"),
+        ):
+            conn.execute(
+                "insert into runs (id, goal, goal_hash, seed, model,"
+                " prompt_versions, criteria, started_at, status)"
+                " values (?, 'goal', ?, 0, 'test-model', ?, ?, ?, 'scoring')",
+                (
+                    run_id,
+                    key,
+                    json.dumps({"criteria": "1"}),
+                    rules.model_dump_json(),
+                    at,
+                ),
+            )
+        upsert_scores(
+            conn,
+            [Score(uid=uid, score=8, reason="x") for uid in uids[:2]],
+            goal_hash=key,
+            prompt_version=llm.load_prompt("score")[0],
+            model=settings.llm_model,
+            criteria_hash=None,  # made before criteria were stored
+        )
+
+    r = runner.invoke(cli.app, ["score", "--goal", "goal"])
+
+    assert r.exit_code == 0, r.output
+    assert calls["criteria"] == 0
+    assert (
+        "2 scores were made across 2 criteria sets (score runs s1, s2); "
+        "adopting the latest; `score --new-criteria` ranks the pool against "
+        "one set." in r.output
+    )
+    with connect(settings.db_path) as conn:
+        kept = load_criteria(conn, key)
+    assert kept is not None and kept.criteria == latest
+    assert criteria_hashes(settings) == {kept.criteria_hash}
+    assert "1 newly scored" in r.output  # the two adopted cost nothing
