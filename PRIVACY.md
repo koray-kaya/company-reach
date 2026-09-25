@@ -108,9 +108,14 @@ gets it. Everything else is written by code (`tools/invitation.py`):
   response times for the company, the name in the recommendation — and
   vacuums the database so nothing stays in free pages.
   The company and the address go on the never-again list, so they are never
-  contacted again. The ledger keeps the decision without the address. Files
-  the tool did not write are not edited; any that still name the person are
-  listed.
+  contacted again. The ledger keeps the decision without the address; the
+  address a mail went to moves to the never-again list instead. An address
+  is looked up in the contacts, the persons a profile names and the ledger.
+  When no company holds it, `forget` still puts it on the never-again list,
+  says that nothing was deleted, and exits with status 2: the company is
+  found by the UID in the survey link the reply quotes (`?c=CHE…`), and
+  `forget <UID>` deletes it. Files the tool did not write are not edited;
+  any that still name the person are listed.
 - **After a year:** `company-reach purge --older-than 365` removes the same
   data for every company nobody has touched for that long. It keeps the
   ledger and the never-again list, including the address of a mail that was

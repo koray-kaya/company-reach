@@ -716,11 +716,13 @@ def test_review_serves_on_the_loopback_interface_by_default(settings, monkeypatc
 
 
 def test_forget_suppresses_and_names_what_is_left_to_do(settings, monkeypatch):
+    # an address nobody stored exits 2 (test_forget); a UID always has a
+    # company to suppress
     monkeypatch.setattr(cli, "get_settings", lambda: settings)
     init_db(settings.db_path)
-    r = runner.invoke(cli.app, ["forget", "someone@nowhere.example"])
+    r = runner.invoke(cli.app, ["forget", "CHE-000.000.046"])
     assert r.exit_code == 0, r.output
-    assert "suppressed: someone@nowhere.example" in r.output
+    assert "suppressed: CHE000000046" in r.output
 
 
 def test_purge_says_what_it_removed(settings, monkeypatch):

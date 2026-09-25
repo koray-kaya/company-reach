@@ -12,9 +12,17 @@ So `forget <uid|email>`:
   from the page cache;
 * keeps the ledger's decisions but clears their address, because "contacted
   once, ever" has to hold after the person is forgotten;
-* suppresses the uid, and the address when one was given, for good;
+* suppresses the uid, the address when one was given, and every address
+  the company was written to (the ledger no longer holds them), for good;
 * compacts the database, since SQLite keeps deleted rows in free pages until
   it is vacuumed, and a grep of `data/` must find nothing (`audit:256`).
+
+An address is looked up wherever the tool kept one: the contact and every
+address its card offered, the persons a profile names, and the ledger —
+after a purge the only place left. A reply usually comes from the person's
+own mailbox rather than the inbox the mail went to. An address found
+nowhere is still suppressed, and the command says how to find the company:
+by the `c=` UID in the survey link the reply quotes.
 
 Hand-kept research files (`data/v0`, `data/golden`) are not edited by code.
 Every file that still names the person is reported, so a human can.
@@ -34,8 +42,8 @@ from pathlib import Path
 
 from company_reach.models import CompanyProfile
 from company_reach.settings import Settings
-from company_reach.tools.db import connect, suppress
-from company_reach.tools.urls import email_domain, registered_domain
+from company_reach.tools.db import connect, is_suppressed, suppress
+from company_reach.tools.urls import address_key, email_domain, registered_domain
 
 _UID = re.compile(r"^CHE[-.\s\d]+$", re.IGNORECASE)
 _TEXT_FILES = {".md", ".json", ".jsonl", ".txt", ".html", ".csv"}
@@ -48,18 +56,49 @@ class Report:
     rows_deleted: int = 0
     cache_files_deleted: int = 0
     still_named: list[Path] = field(default_factory=list)
+    # an address no table holds and nobody suppressed before: nothing could
+    # be deleted, and the company has to be found another way
+    unknown: bool = False
 
 
 def _uids_for(conn: sqlite3.Connection, key: str) -> list[str]:
+    """The companies an address belongs to, wherever the tool kept it: the
+    chosen contact and every address the card offered, the persons a
+    profile names, and the ledger — which, after a purge, is the only place
+    left. Exact matches only, by `address_key` (case, internationalised
+    domains); a LIKE pattern read "_" as any character and forgot the
+    wrong company."""
     if _UID.match(key):
         return ["CHE" + re.sub(r"\D", "", key)]
-    email = key.strip().lower()
     rows = conn.execute(
-        "select distinct uid from contacts where lower(email) = ? "
-        "or lower(addresses) like ?",
-        (email, f'%"{email}"%'),
+        """select uid from contacts
+            where address_key(email) = :key
+               or exists (select 1 from json_each(contacts.addresses)
+                           where address_key(json_extract(value, '$.email')) = :key)
+           union
+           select uid from profiles
+            where exists (select 1 from json_each(profiles.profile, '$.persons')
+                           where address_key(json_extract(value, '$.email')) = :key)
+           union
+           select uid from ledger where address_key(address) = :key""",
+        {"key": address_key(key)},
     )
     return sorted(r["uid"] for r in rows)
+
+
+def _sent_addresses(conn: sqlite3.Connection, uids: list[str]) -> list[str]:
+    """The addresses these companies were written to. `forget` clears them
+    from the ledger and keeps them on the never-again list instead, so an
+    inbox that asked to be forgotten is not written to again for a sister
+    company."""
+    marks = ",".join("?" * len(uids))
+    rows = conn.execute(
+        f"""select distinct address_key(address) as address from ledger
+             where uid in ({marks}) and status = 'sent' and address is not null
+             order by 1""",
+        uids,
+    )
+    return [r["address"] for r in rows]
 
 
 def _names(conn: sqlite3.Connection, uids: list[str]) -> set[str]:
@@ -187,22 +226,27 @@ def _still_named(data_dir: Path, names: set[str]) -> list[Path]:
 
 def forget(settings: Settings, key: str) -> Report:
     report = Report()
+    by_address = not _UID.match(key)
     with connect(settings.db_path) as conn:
         uids = _uids_for(conn, key)
+        known = bool(uids) or (by_address and is_suppressed(conn, key))
         names = _names(conn, uids) if uids else set()
-        if not _UID.match(key):
-            names.add(key.strip().lower())
+        addresses = [address_key(key)] if by_address else []
+        if by_address:
+            names.update({key.strip().lower(), address_key(key)})
         domains = _domains(conn, uids) if uids else set()
         if uids:
+            addresses += _sent_addresses(conn, uids)
             report.rows_deleted = _delete_rows(
                 conn, uids, domains, reason="forgotten", clear_ledger_addresses=True
             )
         for uid in uids:
             suppress(conn, uid, reason="forgotten on request")
         report.suppressed = list(uids)
-        if not _UID.match(key):
-            suppress(conn, key, reason="forgotten on request")
-            report.suppressed.append(key.strip().lower())
+        for address in dict.fromkeys(addresses):  # in order, once each
+            suppress(conn, address, reason="forgotten on request")
+            report.suppressed.append(address)
+    report.unknown = by_address and not known
     report.companies = uids
     report.cache_files_deleted = _delete_cache(settings.data_dir / "cache", domains)
     _compact(settings.db_path)

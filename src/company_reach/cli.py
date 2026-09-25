@@ -668,6 +668,16 @@ def forget(
     typer.echo(f"suppressed: {', '.join(report.suppressed)}")
     for path in report.still_named:
         typer.echo(f"still named in {path} — a hand-kept file; edit it by hand")
+    if report.unknown:
+        # "0 companies" must not read as a deletion done (review focus 4)
+        typer.echo(
+            f"No company holds {key.strip()}, so nothing was deleted; the address"
+            " is on the never-again list. The reply quotes the invitation, whose"
+            " survey link ends in ?c=CHE…: run `company-reach forget CHE…` with"
+            " that UID.",
+            err=True,
+        )
+        raise typer.Exit(2)
 
 
 @app.command()

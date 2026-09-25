@@ -25,10 +25,15 @@ from company_reach.models import (
     StoredCriteria,
 )
 from company_reach.screen import screen_reason
+from company_reach.tools.urls import address_key
 
 if TYPE_CHECKING:  # avoids pulling langchain into every db import
     from company_reach.tools.llm import Provenance
     from company_reach.tools.search import Asked
+
+
+def _sql_address_key(value: str | None) -> str | None:
+    return address_key(value) if value else None
 
 
 def _open(path: Path) -> sqlite3.Connection:
@@ -41,6 +46,9 @@ def _open(path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
     conn.execute("PRAGMA foreign_keys=ON")
+    # `address_key(x)` in SQL is the Python function: an address compares
+    # the same way in a query as in code (case, internationalised domains)
+    conn.create_function("address_key", 1, _sql_address_key, deterministic=True)
     conn.autocommit = False
     return conn
 
@@ -1060,7 +1068,7 @@ def sent_this_month(conn: sqlite3.Connection, *, today: str | None = None) -> in
 
 
 def _key(key: str) -> str:
-    return key.strip().lower() if "@" in key else key.strip()
+    return address_key(key) if "@" in key else key.strip()
 
 
 def suppress(conn: sqlite3.Connection, key: str, *, reason: str) -> None:
