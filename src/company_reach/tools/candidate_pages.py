@@ -18,6 +18,7 @@ import re
 from dataclasses import dataclass
 from urllib.parse import urljoin, urlsplit
 
+from company_reach.errors import FetchError
 from company_reach.tools.fetcher import Fetcher
 from company_reach.tools.textify import textify
 
@@ -174,8 +175,16 @@ async def _first_with_text(urls: list[str], fetcher: Fetcher) -> str:
 
 
 async def read_candidate(url: str, *, fetcher: Fetcher) -> CandidatePages | None:
-    """The four parts of one site, or None when its home page cannot be read."""
+    """The four parts of one site, or None when its home page had nothing to
+    read — or is one we refuse to ask.
+
+    A home page that answered HTTP 400 or more, or could not be reached,
+    raises instead. The site would not let us look, and that says nothing
+    about whether it is the company's: the audit found a 403 bot wall read
+    as "no website"."""
     home = await fetcher.get(url)
+    if home.unreachable or (home.status is not None and home.status >= 400):
+        raise FetchError(f"{url} ({home.error})")
     if not home.html:
         return None
     home_text = textify(home.html)

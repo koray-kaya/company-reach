@@ -44,12 +44,18 @@ _BACKOFF_S = (2.0, 4.0)
 class Page:
     """What one URL gave us. `error` and `html` are mutually exclusive in
     practice, but both are always present so a caller never has to guess
-    which shape it got."""
+    which shape it got.
+
+    `unreachable` marks a request that did not complete — DNS, connection,
+    TLS or timeout. That may pass on another day; a refusal of ours (scheme,
+    private address, robots.txt, size) never will, and a caller deciding
+    whether it "looked" needs to tell the two apart."""
 
     url: str
     status: int | None = None
     html: str = ""
     error: str | None = None
+    unreachable: bool = False
 
 
 async def resolve_host(host: str) -> list[str]:
@@ -135,13 +141,17 @@ class Fetcher:
 
     # -- guards --------------------------------------------------------------
 
-    async def _refuse(self, url: str) -> str | None:
-        """The reason this URL must not be fetched, or None."""
+    async def _refuse(self, url: str) -> Page | None:
+        """A Page saying why this URL must not be fetched, or None."""
         parts = urlsplit(url)
         if parts.scheme not in _ALLOWED_SCHEMES:
-            return f"refused scheme {parts.scheme!r}: only http and https are fetched"
+            return Page(
+                url=url,
+                error=f"refused scheme {parts.scheme!r}: only http and https "
+                "are fetched",
+            )
         if not parts.hostname:
-            return "refused: no host in the URL"
+            return Page(url=url, error="refused: no host in the URL")
 
         # A literal address is checked as itself. Asking DNS about "127.0.0.1"
         # happens to give the right answer, but then the guard's correctness
@@ -152,22 +162,31 @@ class Fetcher:
         except ValueError:
             literal = None
         if literal is not None:
-            return (
-                None
-                if _is_public(parts.hostname)
-                else f"refused {parts.hostname}: private or otherwise "
-                f"non-public address"
+            if _is_public(parts.hostname):
+                return None
+            return Page(
+                url=url,
+                error=f"refused {parts.hostname}: private or otherwise "
+                "non-public address",
             )
 
         try:
             addresses = await resolve_host(parts.hostname)
         except (OSError, socket.gaierror) as error:
-            return f"could not resolve {parts.hostname}: {error}"
+            return Page(
+                url=url,
+                error=f"could not resolve {parts.hostname}: {error}",
+                unreachable=True,
+            )
         if not addresses:
-            return f"could not resolve {parts.hostname}"
+            return Page(
+                url=url, error=f"could not resolve {parts.hostname}", unreachable=True
+            )
         if not all(_is_public(address) for address in addresses):
-            return (
-                f"refused {parts.hostname}: resolves to an address that is not public"
+            return Page(
+                url=url,
+                error=f"refused {parts.hostname}: resolves to an address that is "
+                "not public",
             )
         return None
 
@@ -213,7 +232,7 @@ class Fetcher:
 
         refusal = await self._refuse(url)
         if refusal is not None:
-            return Page(url=url, error=refusal)
+            return refusal
 
         async with httpx.AsyncClient(
             timeout=httpx.Timeout(15.0, connect=5.0),
@@ -234,7 +253,9 @@ class Fetcher:
         try:
             answer = await client.get(url)
         except httpx.HTTPError as error:
-            return Page(url=url, error=f"{type(error).__name__}: {error}")
+            return Page(
+                url=url, error=f"{type(error).__name__}: {error}", unreachable=True
+            )
 
         if answer.status_code >= 400:
             return Page(

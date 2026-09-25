@@ -17,7 +17,7 @@ import respx
 from pydantic import SecretStr
 from search_fakes import as_outcome
 
-from company_reach.errors import SearchError
+from company_reach.errors import FetchError, SearchError
 from company_reach.models import CompanyRecord
 from company_reach.nodes import find_site as node
 from company_reach.nodes.find_site import (
@@ -923,3 +923,69 @@ async def test_without_a_key_brave_is_not_asked_before_no_site(
     assert out["site"] is None
     assert "Brave" not in out["reason"]
     assert not brave.called
+
+
+# --- a candidate that refused us (B5) ----------------------------------------
+
+
+OTHER = "https://muster-stahl.ch"
+
+
+def two_candidates(monkeypatch) -> None:
+    async def searcher(query, *, settings, limit=10):
+        return [
+            Result(f"{SITE}/", "Muster Metallbau AG", "x", "ddg"),
+            Result(f"{OTHER}/", "Muster Stahl", "x", "ddg"),
+        ]
+
+    async def no_guesses(names, **kw):
+        return []
+
+    async def resolve(host):
+        return ["93.184.216.34"]
+
+    monkeypatch.setattr("company_reach.tools.fetcher.resolve_host", resolve)
+    monkeypatch.setattr(node, "resolving_domains", no_guesses)
+    monkeypatch.setattr(node, "search_outcome", as_outcome(searcher))
+
+
+@respx.mock
+async def test_every_candidate_refused_is_an_error(settings: Settings, monkeypatch):
+    """Two candidates, both behind a 403. Nothing was read, so nothing was
+    decided: the company is retried later, not written off."""
+    two_candidates(monkeypatch)
+    respx.get(host="muster-metallbau.ch").mock(return_value=httpx.Response(403))
+    respx.get(host="muster-stahl.ch").mock(return_value=httpx.Response(403))
+
+    with pytest.raises(FetchError, match="no candidate site could be read"):
+        await find_site(state(), settings=settings, fetcher=quick(settings))
+    with connect(settings.db_path) as conn:
+        assert site_record(conn, "r1", UID) is None
+
+
+@respx.mock
+async def test_one_refused_one_readable_proceeds(settings: Settings, monkeypatch):
+    two_candidates(monkeypatch)
+    respx.get(host="muster-stahl.ch").mock(return_value=httpx.Response(403))
+    serve(IMPRESSUM_WITH_UID)
+    model_says(monkeypatch, f"{SITE}/", "Muster Metallbau AG")
+
+    out = await find_site(state(), settings=settings, fetcher=quick(settings))
+    assert out["site"].url == f"{SITE}/"
+
+
+@respx.mock
+async def test_candidates_that_said_nothing_are_still_a_finding(
+    settings: Settings, monkeypatch
+):
+    """Both answered 200 with an empty page: we looked, and there was
+    nothing there. That stays a finding."""
+    two_candidates(monkeypatch)
+    respx.get(host="muster-metallbau.ch").mock(
+        return_value=httpx.Response(200, html="")
+    )
+    respx.get(host="muster-stahl.ch").mock(return_value=httpx.Response(200, html=""))
+
+    out = await find_site(state(), settings=settings, fetcher=quick(settings))
+    assert out["site"] is None
+    assert out["recommendation"] == "skip"

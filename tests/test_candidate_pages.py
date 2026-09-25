@@ -6,8 +6,10 @@ puts it rather than where we would guess.
 """
 
 import httpx
+import pytest
 import respx
 
+from company_reach.errors import FetchError
 from company_reach.settings import Settings
 from company_reach.tools.candidate_pages import (
     CandidatePages,
@@ -163,14 +165,53 @@ async def test_the_impressum_path_is_tried_before_a_privacy_link(
     assert "CHE-000.000.046" in pages.impressum
 
 
+@pytest.mark.parametrize(
+    "answer",
+    [httpx.Response(403), httpx.Response(503), httpx.ConnectError("refused")],
+    ids=["403", "503", "unreachable"],
+)
 @respx.mock
-async def test_an_unreachable_home_page_is_no_candidate(
-    settings: Settings, monkeypatch
-):
+async def test_a_refused_home_page_is_an_error(settings: Settings, monkeypatch, answer):
+    """A 403 is a site that would not let us look — often a bot wall in
+    front of exactly the company we want. It says nothing about whether the
+    company has a website, so it must not read as "nothing there"."""
+
     async def resolve(host):
         return ["93.184.216.34"]
 
     monkeypatch.setattr("company_reach.tools.fetcher.resolve_host", resolve)
-    respx.get(host="muster-metallbau.ch").mock(return_value=httpx.Response(404))
+    respx.get(f"{SITE}robots.txt").mock(return_value=httpx.Response(404))
+    if isinstance(answer, Exception):
+        respx.get(SITE).mock(side_effect=answer)
+    else:
+        respx.get(SITE).mock(return_value=answer)
 
+    with pytest.raises(FetchError, match="muster-metallbau.ch"):
+        await read_candidate(SITE, fetcher=Fetcher(settings, delay_s=0.0))
+
+
+@respx.mock
+async def test_a_home_page_with_no_text_is_no_candidate(
+    settings: Settings, monkeypatch
+):
+    """It answered, and there was nothing to read: we looked."""
+
+    async def resolve(host):
+        return ["93.184.216.34"]
+
+    monkeypatch.setattr("company_reach.tools.fetcher.resolve_host", resolve)
+    respx.get(f"{SITE}robots.txt").mock(return_value=httpx.Response(404))
+    respx.get(SITE).mock(return_value=httpx.Response(200, html=""))
+
+    assert await read_candidate(SITE, fetcher=Fetcher(settings, delay_s=0.0)) is None
+
+
+async def test_a_host_we_refuse_to_ask_is_no_candidate(settings: Settings, monkeypatch):
+    """A private address is our refusal, not the site's, and asking again
+    will not change it."""
+
+    async def private(host):
+        return ["10.0.0.5"]
+
+    monkeypatch.setattr("company_reach.tools.fetcher.resolve_host", private)
     assert await read_candidate(SITE, fetcher=Fetcher(settings, delay_s=0.0)) is None

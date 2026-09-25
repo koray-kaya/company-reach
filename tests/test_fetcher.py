@@ -130,6 +130,29 @@ async def test_a_transport_error_does_not_raise_either(f: Fetcher):
     respx.get(HOME).mock(side_effect=httpx.ConnectError("refused"))
     page = await f.get(HOME)
     assert page.error is not None
+    assert page.unreachable
+
+
+async def test_a_name_that_does_not_resolve_is_unreachable(f: Fetcher, monkeypatch):
+    """DNS failing is not a refusal of ours: it may pass, so the page is
+    marked the way a timeout is."""
+
+    async def fails(host: str) -> list[str]:
+        raise OSError("temporary failure in name resolution")
+
+    monkeypatch.setattr(fetcher_module, "resolve_host", fails)
+    page = await f.get(HOME)
+    assert page.unreachable
+
+
+async def test_our_own_refusal_is_not_unreachable(f: Fetcher, monkeypatch):
+    async def private(host: str) -> list[str]:
+        return ["10.0.0.5"]
+
+    monkeypatch.setattr(fetcher_module, "resolve_host", private)
+    page = await f.get(HOME)
+    assert page.error is not None
+    assert not page.unreachable
 
 
 @respx.mock

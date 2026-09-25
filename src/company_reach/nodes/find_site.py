@@ -48,7 +48,7 @@ from urllib.parse import urljoin, urlsplit, urlunsplit
 
 from pydantic import BaseModel, Field
 
-from company_reach.errors import SearchError
+from company_reach.errors import FetchError, SearchError
 from company_reach.models import CompanyRecord
 from company_reach.settings import Settings
 from company_reach.tools import llm
@@ -414,16 +414,29 @@ async def read_candidates(
     """What each candidate says about itself. A candidate with no text at all
     is left out: the model cannot choose what it cannot read.
 
+    A candidate that would not let us look is left out too — unless that was
+    every one of them. Then nothing was read and nothing can be decided, so
+    it raises, and a later run retries the company instead of writing it
+    off.
+
     Candidates are read at the same time, the way the earlier prototype
     did. They are different sites, so this does not touch the per-host
     delay; one site's pages are still read one after the other."""
-    read = await asyncio.gather(
-        *[read_candidate(url, fetcher=fetcher) for url in candidates]
-    )
+
+    async def attempt(url: str) -> CandidatePages | FetchError | None:
+        try:
+            return await read_candidate(url, fetcher=fetcher)
+        except FetchError as error:
+            return error
+
+    read = await asyncio.gather(*[attempt(url) for url in candidates])
+    failed = [str(r) for r in read if isinstance(r, FetchError)]
+    if candidates and len(failed) == len(candidates):
+        raise FetchError(f"no candidate site could be read: {'; '.join(failed)}")
     return {
         url: pages
         for url, pages in zip(candidates, read, strict=True)
-        if pages is not None and pages.full_text().strip()
+        if isinstance(pages, CandidatePages) and pages.full_text().strip()
     }
 
 
