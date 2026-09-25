@@ -768,6 +768,7 @@ Needs open point 5 (`tldextract`).
 | F3 | `screen_reason` is computed in `upsert_companies` at import; `screen` re-applies the rules to all rows and fails on zero rows | `test_pool_nodes::test_an_import_is_screened` |
 | F4 | `run --target N`: draw until N sendable, the pool is exhausted, or a batch cap is reached. `RECURSION_LIMIT` is derived from the cap | `test_graph::test_the_loop_runs_until_the_target` |
 | F5 | Several municipalities in one pool; `company-reach status` shows pooled, scored, drawable, drawn, sent and undecided per municipality | `test_cli::test_status_counts_per_municipality` |
+| F6 | `run --dry` works on a temporary copy of the database, so a demonstration never marks real companies as seen (found in Phase A's final review) | `test_cli::test_a_dry_run_leaves_the_real_database_untouched` |
 
 ## Phase G — evaluation and operations (after the pilot)
 
@@ -775,6 +776,7 @@ Needs open point 6.
 
 | Task | What | The failing test first |
 |---|---|---|
+| G0 | Phase A review minors: `about_me` into `start_manifest`; `run --goal` without a profile exits cleanly; `_engines_check` parses inside its `try` and checks the status; tests pin 429/5xx retries; doctor fixtures clear shell variables; one shared `is_placeholder_url` | one test each |
 | G1 | Evaluations write to a temporary database, never `data/company_reach.db` | `test_prompts` fixture asserts the path |
 | G2 | Scoring evaluation: three trials, spread reported, the production decision (score ≥ 7 against human ≥ 6: precision, recall) asserted with a margin; results appended to `data/evals/results.jsonl` | the evaluation itself (opt-in) |
 | G3 | A contact-choice and recommend evaluation on fictional fixtures (no model) | `test_find_contact` table over the golden subset |
