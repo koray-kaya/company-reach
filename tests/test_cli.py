@@ -39,6 +39,18 @@ def test_pool_then_screen(settings, monkeypatch):
     r = runner.invoke(cli.app, ["screen", "--run-id", "r1"])
     assert r.exit_code == 0, r.output
     assert "kept 2" in r.output and "dropped 1" in r.output
+    # every import is screened now; the old option still works, and says so
+    assert "--run-id is no longer needed" in r.output
+
+
+def test_screen_over_an_empty_database_fails(settings, monkeypatch):
+    """Audit: `screen` that matched nothing printed "kept 0, dropped 0" and
+    exited 0, which reads as done."""
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    init_db(settings.db_path)
+    r = runner.invoke(cli.app, ["screen"])
+    assert r.exit_code == 1
+    assert "run `pool`" in r.output
 
 
 def _seed_scored_pool(
@@ -141,7 +153,8 @@ def test_run_dry_on_an_empty_database_says_what_to_run(settings, monkeypatch):
     )
 
     assert r.exit_code != 0
-    assert "pool" in r.output and "screen" in r.output and "score" in r.output
+    # `pool` screens what it stores, so `screen` is no longer a step to name
+    assert "pool" in r.output and "score" in r.output
 
 
 def _dry_run(run_id: str = "r1"):

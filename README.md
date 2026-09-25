@@ -58,15 +58,16 @@ When running with `uv run`, set `SEARXNG_URL=http://127.0.0.1:8080` in
 Then, for one town:
 
 ```bash
-uv run company-reach pool --municipality 3203   # the register's companies
-uv run company-reach screen --run-id <run>      # the rule-based exclusions
+uv run company-reach pool --municipality 3203   # the register's companies, screened
 uv run company-reach criteria                   # what your goal means, first
 uv run company-reach score --limit 200          # rank them against the goal
 uv run company-reach run                        # enrich a batch of ten
 uv run company-reach review <run>               # decide, one company at a time
 ```
 
-`3203` is the federal id of a municipality (that one is St. Gallen). Every
+`3203` is the federal id of a municipality (that one is St. Gallen). `pool`
+applies the rule-based exclusions as it stores each company; after the rules
+change, `company-reach screen` applies them again to every company. Every
 command is safe to run again: nothing already done is repeated, and scoring
 is incremental. The criteria are written once per goal and stored, so every
 `score` pass ranks against the rules `criteria` showed you;

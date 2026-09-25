@@ -24,6 +24,7 @@ from company_reach.models import (
     SelectionCriteria,
     StoredCriteria,
 )
+from company_reach.screen import screen_reason
 
 if TYPE_CHECKING:  # avoids pulling langchain into every db import
     from company_reach.tools.llm import Provenance
@@ -126,6 +127,10 @@ def now() -> str:
 def upsert_companies(
     conn: sqlite3.Connection, records: list[CompanyRecord], run_id: str
 ) -> int:
+    """Store companies, screened as they are stored. Screening used to be a
+    command of its own, keyed by the import's run id: a mistyped or stale id
+    screened nothing, and an unscreened company read as kept. Now every
+    insert and every update carries the rules' verdict, so NULL means kept."""
     rows = [
         (
             r.uid,
@@ -137,6 +142,7 @@ def upsert_companies(
             r.city,
             r.purpose,
             r.purpose_head,
+            screen_reason(r),
             now(),
             run_id,
         )
@@ -144,11 +150,13 @@ def upsert_companies(
     ]
     conn.executemany(
         """INSERT INTO companies (uid, name, legal_form, municipality, street,
-             postal_code, city, purpose, purpose_head, imported_at, import_run_id)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?)
+             postal_code, city, purpose, purpose_head, screen_reason,
+             imported_at, import_run_id)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(uid) DO UPDATE SET name=excluded.name, purpose=excluded.purpose,
              purpose_head=excluded.purpose_head, street=excluded.street,
              postal_code=excluded.postal_code, city=excluded.city,
+             screen_reason=excluded.screen_reason,
              imported_at=excluded.imported_at, import_run_id=excluded.import_run_id""",
         rows,
     )

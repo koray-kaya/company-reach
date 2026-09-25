@@ -88,8 +88,7 @@ def _require_a_scored_pool(s, goal: str, run_id: str) -> None:
         return
     if standing.pooled == 0:
         typer.echo(
-            "No company is pooled yet. Run `pool`, then `screen`, then `score`"
-            " before `run`.",
+            "No company is pooled yet. Run `pool`, then `score` before `run`.",
             err=True,
         )
         raise typer.Exit(2)
@@ -246,11 +245,22 @@ def pool(municipality: str = "3203", run_id: str | None = None) -> None:
 
 @app.command()
 def screen(
-    run_id: Annotated[str, typer.Option(help="The run whose companies to screen.")],
+    # Hidden and ignored: kept so a command written down before every import
+    # was screened still runs, and says what changed instead of failing.
+    run_id: Annotated[str | None, typer.Option(hidden=True)] = None,
 ) -> None:
-    """Apply the rule-based exclusions to the companies of a run."""
+    """Apply the rule-based exclusions again to every company. `pool`
+    already screens what it stores; this is for when the rules change."""
     s = get_settings()
-    kept, dropped = screen_pool(run_id, settings=s)
+    if run_id is not None:
+        typer.echo(
+            "--run-id is no longer needed: every import is screened as it is "
+            "stored, and `screen` covers every company."
+        )
+    kept, dropped = screen_pool(settings=s)
+    if kept + dropped == 0:
+        typer.echo("No company in the database to screen; run `pool` first.", err=True)
+        raise typer.Exit(1)
     typer.echo(f"kept {kept}, dropped {dropped}")
 
 
