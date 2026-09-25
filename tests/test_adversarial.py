@@ -98,9 +98,10 @@ def test_a_lookalike_domain_is_marked_not_waved_through():
     assert out.persons[0].email_offsite is True
 
 
-def test_a_group_page_keeps_its_own_contact_marked():
-    """A parent's Impressum on a subsidiary's site. The address is real and
-    belongs to another firm, which is exactly the third-party case."""
+def test_a_group_page_names_no_person_for_its_parent():
+    """A parent's Impressum on a subsidiary's site. The parent is a firm by
+    its legal form, so it is no person to greet; its address is still on
+    the page, and `find_contact` offers it as third party, which holds."""
     out = check(
         raw(
             [
@@ -111,7 +112,7 @@ def test_a_group_page_keeps_its_own_contact_marked():
         ),
         "group_with_other_uid",
     )
-    assert out.persons[0].email_offsite is True
+    assert out.persons == []
 
 
 def test_a_directory_page_yields_no_contact_for_the_company():

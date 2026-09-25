@@ -76,22 +76,42 @@ def test_a_name_differing_only_in_typography_is_kept():
 
 
 @pytest.mark.parametrize(
-    "name",
+    ("name", "role"),
     [
-        "Muster Metallbau AG",  # the register name
-        "MUSTER METALLBAU AG",  # however it is cased
-        "Muster Metallbau",  # its short name, the legal form stripped
-        "Kontakt",  # a single word is not somebody to greet
-        "Hans",
-        "a",
+        ("Muster Metallbau AG", "Geschäftsleitung"),  # the register name
+        ("MUSTER METALLBAU AG", "Geschäftsleitung"),  # however it is cased
+        ("Muster Metallbau", None),  # its short name, and nothing says who
+        ("Kontakt", "Geschäftsleitung"),  # one word is not somebody to greet
+        ("Hans", "Geschäftsleitung"),
+        ("a", "Geschäftsleitung"),
     ],
 )
-def test_the_company_name_is_not_a_person(name):
+def test_the_company_name_is_not_a_person(name, role):
     """Audit (presence check): the name is on the page, so presence passed,
     and the invitation greeted "Guten Tag Muster Metallbau AG". A firm or a
     single word is on the page for other reasons than being a person."""
     page = IMPRESSUM + " Kontakt: Hans, a"
-    out = check(raw(persons=[RawPerson(name=name, role="Geschäftsleitung")]), page)
+    out = check(raw(persons=[RawPerson(name=name, role=role)]), page)
+    assert out.persons == []
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "Muster Holding AG",
+        "Beispiel Treuhand GmbH",
+        "Muster Immobilien S.A.",
+        "Stiftung Beispielhaus",
+        "Genossenschaft Muster",
+    ],
+)
+def test_any_firm_is_not_a_person_whatever_its_role(name):
+    """Review of E2: a parent or an agency named in the Impressum is a firm
+    by its legal form, whoever the model says it is."""
+    out = check(
+        raw(persons=[RawPerson(name=name, role="Gesellschafterin")]),
+        IMPRESSUM + f" Gesellschafterin: {name}",
+    )
     assert out.persons == []
 
 
@@ -100,6 +120,28 @@ def test_an_owner_whose_name_the_firm_carries_is_still_a_person():
     page = IMPRESSUM + " Inhaber: Hans Muster"
     out = check(raw(persons=[RawPerson(name="Hans Muster")]), page)
     assert [p.name for p in out.persons] == ["Hans Muster"]
+
+
+def test_an_owner_the_firm_is_named_after_is_kept_when_a_role_says_so():
+    """Review of E2: at "Hans Muster GmbH" the short name is the owner. A
+    role says the model read a person; without one it may have read the
+    firm, and the name is not kept."""
+    page = "Impressum. Hans Muster GmbH, Beispielstrasse 1. Inhaber: Hans Muster"
+    persons = [RawPerson(name="Hans Muster", role="Inhaber")]
+    out = checked(
+        raw(persons=persons),
+        texts={SITE: page},
+        site_url=SITE,
+        company="Hans Muster GmbH",
+    )
+    assert [p.name for p in out.persons] == ["Hans Muster"]
+    out = checked(
+        raw(persons=[RawPerson(name="Hans Muster")]),
+        texts={SITE: page},
+        site_url=SITE,
+        company="Hans Muster GmbH",
+    )
+    assert out.persons == []
 
 
 # --- e-mail addresses --------------------------------------------------------

@@ -7,8 +7,9 @@ because a human is invited to write to it. So nothing the model returns is
 believed on its own:
 
 * a name has to appear in one of the pages, or the person is dropped;
-* a name has to be somebody's: the company's own name, its short name or a
-  single word is on the page for other reasons, and is dropped too;
+* a name has to be somebody's: a firm — the company itself, a parent, an
+  agency — or a single word is on the page for other reasons, and is
+  dropped too;
 * an address has to appear too, or it is dropped while the person stays,
   since being named is a separate claim from being reachable;
 * an address on a domain other than the verified site's is kept and marked.
@@ -39,6 +40,12 @@ _NOISE_HOSTS = ("sentry", "wixpress", "example.", "schema.org", "w3.org")
 _HEX32 = re.compile(r"^[0-9a-f]{32}$", re.IGNORECASE)
 _IMAGE = re.compile(r"\.(png|jpe?g|gif|svg|webp)$", re.IGNORECASE)
 _RETINA = re.compile(r"@[23]x", re.IGNORECASE)
+# Words a firm's name carries and a person's does not, compared as whole
+# words, casefolded and without dots ("S.A." is "sa").
+_FIRM_WORDS = {
+    "ag", "gmbh", "sa", "sàrl", "sarl", "sagl", "holding", "kg", "ltd", "inc",
+    "genossenschaft", "stiftung", "verein",
+}  # fmt: skip
 
 
 def is_noise(email: str) -> bool:
@@ -57,26 +64,31 @@ def appears_in(value: str, haystack: str) -> bool:
     return bool(value.strip()) and normalise(value) in haystack
 
 
-def names_a_person(name: str, *, company: str) -> bool:
+def names_a_person(name: str, *, company: str, short_name_too: bool = False) -> bool:
     """Whether a name, from the site or from SHAB, is someone to greet.
 
     The audit found both failures behind "Guten Tag Muster Metallbau AG": the
     model listed the firm as a person, and presence passed because the firm's
     name is on every page of its site. A single word ("Kontakt", "Hans") is
-    no better — it greets nobody in particular.
+    no better — it greets nobody in particular. So a name is refused when it
+    is one word, carries a legal form ("Muster Holding AG" — a parent, an
+    agency, the company itself), or is the register name.
 
-    Only the whole name is compared with the firm's. A family firm carries
-    its owner's name, and "Anna Muster" at "Muster Metallbau AG" is exactly
-    who to write to. The cost is the firm named after the owner and nothing
-    else: "Hans Muster GmbH" loses "Hans Muster", and its inbox is greeted
-    without a name.
+    The firm's short name, legal form stripped, is refused only when the
+    caller asks (`short_name_too`): a family firm carries its owner's name,
+    and at "Hans Muster GmbH" the short name *is* the owner. `check_profile`
+    asks when the model gave the name no role, since then nothing says it
+    read a person; SHAB never asks, because its person blocks list people.
     """
     folded = normalise(name).strip(" ,.-")
-    words = [word for word in folded.split() if any(c.isalpha() for c in word)]
-    if len(words) < 2:
+    words = [word.strip(",()").replace(".", "") for word in folded.split()]
+    if sum(any(c.isalpha() for c in word) for word in words) < 2:
         return False
-    firm = {normalise(company).strip(" ,.-"), normalise(strip_legal_form(company))}
-    return folded not in firm
+    if _FIRM_WORDS.intersection(words):
+        return False
+    if folded == normalise(company).strip(" ,.-"):
+        return False
+    return not (short_name_too and folded == normalise(strip_legal_form(company)))
 
 
 def checked(
@@ -90,7 +102,11 @@ def checked(
     for person in raw.persons:
         if not appears_in(person.name, haystack):
             continue
-        if not names_a_person(person.name, company=company):
+        # without a role, nothing says the firm's short name was a person
+        short_name_too = person.role is None
+        if not names_a_person(
+            person.name, company=company, short_name_too=short_name_too
+        ):
             continue
         email = person.email
         if email is not None and (is_noise(email) or not appears_in(email, haystack)):

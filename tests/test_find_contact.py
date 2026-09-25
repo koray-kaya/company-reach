@@ -16,6 +16,7 @@ from pydantic import SecretStr
 
 from company_reach.errors import SearchError, ShabError
 from company_reach.models import CompanyProfile, CompanyRecord, Person, ShabPerson
+from company_reach.nodes.draft import greeting
 from company_reach.nodes.find_contact import find_contact
 from company_reach.nodes.find_site import SiteChoice
 from company_reach.tools.db import init_db
@@ -600,6 +601,25 @@ async def test_a_firm_or_a_single_word_in_shab_is_not_a_person(db_settings):
     out = await run(state([], {SITE: "Willkommen"}), db_settings, shab)
     assert out["contact"].name == "Anna Muster"
     assert out["contact"].alternatives == []
+
+
+async def test_a_firm_named_after_its_owner_greets_the_owner(db_settings):
+    """Review of E2: at "Hans Muster GmbH", SHAB names Hans Muster and the
+    holding that owns the shares — the parser keeps a firm written without
+    its CHE number. The short-name rule dropped Hans, and the mail greeted
+    "Guten Tag Muster Holding AG"."""
+    st = state([], {SITE: "Kontakt: info@muster-metallbau.ch"})
+    st["company"] = COMPANY.model_copy(update={"name": "Hans Muster GmbH"})
+    shab = Shab(
+        [
+            shab_person("Muster Holding AG", "Gesellschafterin"),
+            shab_person("Hans Muster", "Vorsitzender der Geschäftsführung"),
+        ]
+    )
+    out = await run(st, db_settings, shab)
+    contact = out["contact"]
+    assert greeting(contact) == "Guten Tag Hans Muster"
+    assert contact.alternatives == []
 
 
 async def test_nothing_anywhere_is_a_finding(db_settings):
