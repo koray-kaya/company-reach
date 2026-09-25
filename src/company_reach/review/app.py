@@ -22,6 +22,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -61,6 +62,10 @@ _SAME_ORIGIN = ("same-origin", "none")
 def create_app(settings: Settings, *, jobs: Jobs | None = None) -> FastAPI:
     # No /docs, no /openapi.json: a local page for one person, not an API.
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+    # DNS rebinding: a site whose name turns into 127.0.0.1 is the same origin
+    # to the browser, and could read the cards and press the buttons. Only
+    # the Host header it sends tells it apart.
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost"])
     jobs = jobs or Jobs(settings.data_dir)
     app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
     templates = Jinja2Templates(directory=HERE / "templates")

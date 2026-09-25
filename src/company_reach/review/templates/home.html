@@ -49,7 +49,7 @@
 
   {% if job %}
   <section id="job">
-    <p class="label">{% if job.running %}running{% elif job.returncode == 0 %}finished{% else %}failed (exit {{ job.returncode }}){% endif %} · started {{ job.started.strftime("%H:%M") }}</p>
+    <p class="label">{% if job.running %}running{% elif job.returncode is none %}ended{% elif job.returncode == 0 %}finished{% else %}failed (exit {{ job.returncode }}){% endif %} · started {{ job.started.strftime("%H:%M") }}</p>
     {% if job.running %}<p class="state">This page refreshes by itself until the command ends.</p>{% endif %}
     <pre class="log">{{ job_tail }}</pre>
   </section>

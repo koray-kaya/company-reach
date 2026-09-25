@@ -38,3 +38,37 @@ def test_the_desktop_app_runs_the_start_script(tmp_path):
     ).stdout
     assert f"{SCRIPTS.resolve()}/start.sh" in source
     assert "display dialog" in source  # a failure is shown, not swallowed
+
+
+def test_the_desktop_app_path_must_end_in_app(tmp_path):
+    # the path is deleted before the app is written: a folder given by
+    # mistake must not be
+    folder = tmp_path / "Desktop"
+    folder.mkdir()
+    (folder / "note.txt").write_text("keep me")
+    out = subprocess.run(
+        [str(SCRIPTS / "make-desktop-app.sh"), str(folder)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert out.returncode != 0
+    assert ".app" in out.stderr
+    assert (folder / "note.txt").read_text() == "keep me"
+
+
+@pytest.mark.skipif(
+    sys.platform != "darwin" or not shutil.which("osacompile"), reason="macOS only"
+)
+def test_the_build_leaves_no_temporary_file(tmp_path):
+    scratch = tmp_path / "tmp"
+    scratch.mkdir()
+    out = subprocess.run(
+        [str(SCRIPTS / "make-desktop-app.sh"), str(tmp_path / "X.app")],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env={"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "TMPDIR": str(scratch)},
+    )
+    assert out.returncode == 0, out.stderr
+    assert list(scratch.iterdir()) == []

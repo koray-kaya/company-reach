@@ -141,7 +141,7 @@ body.home{overflow:auto}
 .home button.small{padding:4px 10px;font-size:13px}
 .home button:disabled{opacity:.45;cursor:not-allowed}
 .home .state{font-size:14px;color:var(--text);margin-bottom:8px}
-.home .log{margin:0;padding:12px;border-radius:8px;background:var(--card);border:1px solid var(--line);font-size:12.5px;line-height:1.45;white-space:pre-wrap;overflow-wrap:anywhere;max-height:420px;overflow:auto}
+.home .log{margin:0;padding:12px;border-radius:8px;background:var(--card);border:1px solid var(--line);font-size:12.5px;line-height:1.45;white-space:pre-wrap;overflow-wrap:anywhere}
 .home .run{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--line)}
 .home .run .src{font-size:13px;color:var(--muted);flex:1;min-width:200px}
 .home .blocked{color:var(--warn-ink)}

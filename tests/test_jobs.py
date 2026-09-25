@@ -6,6 +6,7 @@ shell. The runner is tested with a stand-in for `python -m company_reach`,
 so no test here calls a model or the register.
 """
 
+import json
 import subprocess
 import sys
 import time
@@ -43,6 +44,7 @@ def test_each_action_is_a_fixed_argument_list(action, value, argv):
         ("pool", ""),
         ("pool", "3203 --run-id x"),
         ("pool", "abc"),
+        ("pool", "\u0663\u0662\u0660\u0663"),  # digits, but not ASCII ones
         ("forget", "info@muster.ch"),  # not a button
         ("", ""),
     ],
@@ -138,3 +140,53 @@ def test_old_logs_are_removed(tmp_path):
         wait(jobs.start("doctor"))
     assert len(list((tmp_path / "jobs").glob("*.log"))) == 3
     assert jobs.current.log.exists()
+
+
+def test_a_command_started_before_the_page_restarted_still_blocks(tmp_path):
+    # stop.sh and start.sh restart the page; a round it started runs on
+    first = Jobs(tmp_path, command=fake("import time; time.sleep(30)"))
+    job = first.start("round")
+    try:
+        again = Jobs(tmp_path, command=fake("pass"))
+        assert again.current is not None
+        assert again.current.running
+        assert again.current.action == "round"
+        assert again.current.tail().startswith("$ company-reach run --target 10")
+        with pytest.raises(JobBusy, match="round"):
+            again.start("score")
+    finally:
+        job.process.kill()
+        job.process.wait()
+    assert not again.current.running
+    wait(again.start("score"))
+
+
+def test_a_vanished_log_reads_as_empty(tmp_path):
+    jobs = Jobs(tmp_path, command=fake("pass"))
+    job = jobs.start("doctor")
+    wait(job)
+    job.log.unlink()
+    assert job.tail() == ""
+
+
+def test_a_process_number_reused_by_another_program_is_not_a_job(tmp_path):
+    # after a restart of the machine the recorded pid can belong to anything;
+    # it must not keep the buttons locked
+    other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        (tmp_path / "jobs").mkdir()
+        (tmp_path / "jobs" / "current.json").write_text(
+            json.dumps(
+                {
+                    "action": "round",
+                    "argv": ["run", "--target", "10"],
+                    "log": "x-round.log",
+                    "started": "2026-09-25T10:00:00",
+                    "pid": other.pid,
+                }
+            )
+        )
+        assert Jobs(tmp_path, command=fake("pass")).current is None
+    finally:
+        other.kill()
+        other.wait()

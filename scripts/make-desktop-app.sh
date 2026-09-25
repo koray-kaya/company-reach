@@ -11,7 +11,15 @@ set -euo pipefail
 
 here="$(cd "$(dirname "$0")/.." && pwd)"
 app="${1:-$HOME/Desktop/Company Reach.app}"
-source="$(mktemp -t company-reach).applescript"
+# the path is removed before the app is written: only ever an .app
+case "$app" in
+*.app) ;;
+*)
+  echo "the app's path must end in .app: $app" >&2
+  exit 1
+  ;;
+esac
+source="$(mktemp "${TMPDIR:-/tmp}/company-reach.XXXXXX")"
 trap 'rm -f "$source"' EXIT
 
 cat >"$source" <<APPLESCRIPT

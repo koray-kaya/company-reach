@@ -9,14 +9,19 @@ have. Its output goes to a log under `data/jobs/`, which the page reads back.
 
 The logs name companies and sometimes people, so they stay in the data
 folder and only the last few are kept.
+
+A command outlives the page that started it (stop.sh, start.sh), so the
+running one is also written to `data/jobs/current.json`: a page started
+again shows it and starts nothing else until it has ended.
 """
 
+import json
 import os
 import re
 import subprocess
 import sys
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
@@ -24,7 +29,7 @@ from pathlib import Path
 # never starting with "-", so it cannot be read as an option
 _RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
 # FSO municipality numbers, one or a comma list
-_MUNICIPALITIES = re.compile(r"\d{1,4}(,\d{1,4})*")
+_MUNICIPALITIES = re.compile(r"[0-9]{1,4}(,[0-9]{1,4})*")
 
 FIXED = {
     "round": ["run", "--target", "10"],
@@ -53,25 +58,53 @@ class JobBusy(Exception):
     """Another command is still running."""
 
 
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _runs(pid: int, argv: list[str]) -> bool:
+    """The process still runs this command. After a restart of the machine
+    the number can belong to any program; the command line tells them apart."""
+    shown = subprocess.run(
+        ["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True
+    )
+    return shown.returncode == 0 and " ".join(argv) in shown.stdout
+
+
 @dataclass
 class Job:
     action: str
-    argv: list[str]
     log: Path
     started: datetime
-    process: subprocess.Popen
+    pid: int
+    # None for a command an earlier page started: it is only watched
+    process: subprocess.Popen | None = None
+    argv: list[str] = field(default_factory=list)
 
     @property
     def returncode(self) -> int | None:
-        return self.process.poll()
+        """The exit code; None while it runs, and for a command an earlier
+        page started, whose code nobody here can read."""
+        return self.process.poll() if self.process else None
 
     @property
     def running(self) -> bool:
-        return self.returncode is None
+        if self.process:
+            return self.process.poll() is None
+        return _alive(self.pid) and _runs(self.pid, self.argv)
 
     def tail(self, lines: int = 40) -> str:
-        with self.log.open(encoding="utf-8", errors="replace") as f:
-            return "".join(deque(f, maxlen=lines))
+        try:
+            with self.log.open(encoding="utf-8", errors="replace") as f:
+                return "".join(deque(f, maxlen=lines))
+        except FileNotFoundError:
+            return ""
 
 
 class Jobs:
@@ -88,7 +121,8 @@ class Jobs:
         # how `company-reach` is started; a test hands in a stand-in
         self.command = command or [sys.executable, "-m", "company_reach"]
         self.keep = keep
-        self.current: Job | None = None
+        self.state = self.dir / "current.json"
+        self.current: Job | None = self._left_running()
 
     def start(self, action: str, value: str = "") -> Job:
         argv = argv_for(action, value)
@@ -110,9 +144,35 @@ class Jobs:
                 # the command finishes even if the page is stopped
                 start_new_session=True,
             )
-        self.current = Job(action, argv, log, started, process)
+        self.current = Job(action, log, started, process.pid, process, argv)
+        self.state.write_text(
+            json.dumps(
+                {
+                    "action": action,
+                    "argv": argv,
+                    "log": log.name,
+                    "started": started.isoformat(),
+                    "pid": process.pid,
+                }
+            )
+        )
         self._prune()
         return self.current
+
+    def _left_running(self) -> Job | None:
+        """The command an earlier page started, while it still runs."""
+        try:
+            left = json.loads(self.state.read_text())
+            job = Job(
+                left["action"],
+                self.dir / left["log"],
+                datetime.fromisoformat(left["started"]),
+                int(left["pid"]),
+                argv=[str(a) for a in left["argv"]],
+            )
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
+        return job if job.running else None
 
     def _prune(self) -> None:
         logs = sorted(self.dir.glob("*.log"))

@@ -5,8 +5,10 @@ The commands are replaced by a stand-in for `python -m company_reach`; what
 each button runs is pinned in test_jobs.py.
 """
 
+import re
 import sys
 import time
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -19,6 +21,7 @@ from company_reach.settings import Settings
 from company_reach.tools.db import connect
 
 SAME = {"Sec-Fetch-Site": "same-origin"}
+LOCAL = "http://127.0.0.1:8000"
 
 
 @pytest.fixture
@@ -30,7 +33,12 @@ def page(settings: Settings) -> Settings:
 
 def open_page(settings: Settings, code: str = "pass") -> tuple[TestClient, Jobs]:
     jobs = Jobs(settings.data_dir, command=[sys.executable, "-c", code])
-    return TestClient(create_app(settings, jobs=jobs), follow_redirects=False), jobs
+    return (
+        TestClient(
+            create_app(settings, jobs=jobs), base_url=LOCAL, follow_redirects=False
+        ),
+        jobs,
+    )
 
 
 def wait(jobs: Jobs, seconds: float = 20) -> None:
@@ -180,3 +188,38 @@ def test_a_second_button_while_one_runs_is_refused(page):
         assert "score" in r.text
     finally:
         stop(jobs)
+
+
+def test_a_command_from_before_a_restart_is_shown_and_blocks(page):
+    client, jobs = open_page(page, "import time; time.sleep(30)")
+    client.post("/jobs/round", headers=SAME)
+    try:
+        restarted, _ = open_page(page)
+        html = restarted.get("/").text
+        assert 'http-equiv="refresh"' in html
+        assert "company-reach run --target 10" in html
+        assert restarted.post("/jobs/score", headers=SAME).status_code == 409
+    finally:
+        stop(jobs)
+
+
+def test_the_log_box_shows_the_newest_lines():
+    # a box shorter than the tail, rebuilt by each refresh at its top, hid the
+    # newest output of a long round
+    css = (
+        Path(__file__).parent.parent / "src/company_reach/review/static/review.css"
+    ).read_text()
+    rule = re.search(r"\.home \.log\{([^}]*)\}", css).group(1)
+    assert "max-height" not in rule
+
+
+@pytest.mark.parametrize("host", ["evil.example", "evil.example:8000"])
+def test_a_request_for_another_host_is_refused(page, host):
+    # DNS rebinding: a site whose name turns into 127.0.0.1 is "same origin"
+    # to the browser; only the Host header tells it apart
+    client, jobs = open_page(page)
+    assert client.get("/", headers={"host": host}).status_code == 400
+    r = client.post("/jobs/round", headers=SAME | {"host": host})
+    assert r.status_code == 400
+    assert jobs.current is None
+    assert client.get("/", headers={"host": "localhost:8000"}).status_code == 200

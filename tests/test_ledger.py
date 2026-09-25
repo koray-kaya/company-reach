@@ -156,6 +156,7 @@ def test_a_sent_row_survives_a_redraft(settings):
     settings.profile_path.write_text(profile_text(SURVEY))
     client = TestClient(
         create_app(settings.model_copy(update={"sending_approved": True})),
+        base_url="http://127.0.0.1",
         follow_redirects=False,
     )
     html = client.get(f"/review/{RUN}/0").text
