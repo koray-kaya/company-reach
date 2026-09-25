@@ -492,6 +492,36 @@ def record_contact(
     return cur.lastrowid
 
 
+def contact_for(
+    conn: sqlite3.Connection, run_id: str, uid: str
+) -> tuple[int, Contact] | None:
+    """The company's latest contact in a run, with its row id (the draft
+    refers to it), or None when the run found nobody to write to."""
+    row = conn.execute(
+        "select * from contacts where run_id = ? and uid = ? order by id desc limit 1",
+        (run_id, uid),
+    ).fetchone()
+    if row is None:
+        return None
+    addresses = json.loads(row["addresses"] or "[]")
+    if not addresses and row["email"] and row["email_kind"]:
+        # a run from before M7 stored only the chosen address
+        addresses = [{"email": row["email"], "kind": row["email_kind"]}]
+    return row["id"], Contact(
+        name=row["name"],
+        role=row["role"],
+        email=row["email"],
+        email_kind=row["email_kind"],
+        source=row["source"],
+        source_url=row["source_url"],
+        source_date=row["source_date"],
+        linkedin_lead=row["linkedin_lead"],
+        alternatives=json.loads(row["alternatives"] or "[]"),
+        addresses=addresses,
+        salutation=row["salutation"],
+    )
+
+
 def set_salutation(
     conn: sqlite3.Connection, run_id: str, uid: str, salutation: str
 ) -> None:

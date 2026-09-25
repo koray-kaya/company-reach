@@ -354,6 +354,39 @@ def retry(
 
 
 @app.command()
+def redraft(
+    run_id: Annotated[str, typer.Argument(help="The run whose cards to redraft.")],
+    uid: Annotated[
+        str | None,
+        typer.Option(help="Only this company, whether its draft is stale or not."),
+    ] = None,
+) -> None:
+    """Draft again the undecided send cards a run can no longer send.
+
+    A card stops being sendable when survey_url changed after drafting, when
+    the frame changed, or when its draft was never checked. The mail is
+    rebuilt from what the database holds — draft and check only, no search
+    and no fetch. Decided companies keep the draft they were decided on.
+    """
+    from company_reach.redraft import redraft_run
+
+    s = get_settings()
+    try:
+        outcomes = asyncio.run(redraft_run(run_id, settings=s, uid=uid))
+    except CompanyReachError as error:
+        typer.echo(str(error), err=True)
+        raise typer.Exit(1) from error
+
+    if not outcomes:
+        typer.echo(f"nothing to redraft in run {run_id}: every open card is current")
+        return
+    sendable = sum(o.outcome == "sendable" for o in outcomes)
+    typer.echo(f"{len(outcomes)} redrafted · {sendable} sendable")
+    for o in outcomes:
+        typer.echo(f"  {o.uid}  {o.outcome}")
+
+
+@app.command()
 def enrich(
     uid: Annotated[str, typer.Option(help="The company to enrich.")],
     until: Annotated[

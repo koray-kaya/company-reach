@@ -27,6 +27,7 @@ from urllib.parse import urlsplit
 from company_reach.models import CompanyProfile, Contact, dotted_uid
 from company_reach.tools.db import (
     company_by_uid,
+    contact_for,
     decision_for,
     is_suppressed,
     search_log,
@@ -119,29 +120,8 @@ def _search_line(row: sqlite3.Row) -> str:
 
 
 def _contact(conn: sqlite3.Connection, run_id: str, uid: str) -> Contact | None:
-    row = conn.execute(
-        "select * from contacts where run_id = ? and uid = ? order by id desc limit 1",
-        (run_id, uid),
-    ).fetchone()
-    if row is None:
-        return None
-    addresses = json.loads(row["addresses"] or "[]")
-    if not addresses and row["email"] and row["email_kind"]:
-        # a run from before M7 stored only the chosen address
-        addresses = [{"email": row["email"], "kind": row["email_kind"]}]
-    return Contact(
-        name=row["name"],
-        role=row["role"],
-        email=row["email"],
-        email_kind=row["email_kind"],
-        source=row["source"],
-        source_url=row["source_url"],
-        source_date=row["source_date"],
-        linkedin_lead=row["linkedin_lead"],
-        alternatives=json.loads(row["alternatives"] or "[]"),
-        addresses=addresses,
-        salutation=row["salutation"],
-    )
+    found = contact_for(conn, run_id, uid)
+    return found[1] if found else None
 
 
 def _draft(conn: sqlite3.Connection, run_id: str, uid: str) -> DraftView | None:
@@ -199,10 +179,14 @@ def _send_block(
     link = draft.link or ""
     host = urlsplit(link).hostname or ""
     if host == "example" or host.endswith(".example"):
-        return f"The survey link is a placeholder ({host}); set survey_url and redraft."
+        return (
+            f"The survey link is a placeholder ({host}); set survey_url, then "
+            f"run `company-reach redraft {run_id}`."
+        )
     if not survey_url or not link.startswith(survey_url.rstrip("/")):
         return (
-            "The draft links to a survey other than the profile's survey_url; redraft."
+            "The draft links to a survey other than the profile's survey_url; "
+            f"run `company-reach redraft {run_id}`."
         )
     return None
 
