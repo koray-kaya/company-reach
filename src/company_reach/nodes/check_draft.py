@@ -83,13 +83,39 @@ _EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 _URL_IN_BODY = re.compile(r"https?://\S+")
 
 # A role noun describes the reader, and in the wrong gender it is the worst
-# mistake this mail can make; code writes the greeting. Case-insensitive
-# because a compound writes the noun in lower case ("Mitinhaberin").
+# mistake this mail can make; code writes the greeting. Matched at the end
+# of a word too, since German compounds it ("Firmengründer",
+# "Filialleiterin"), and case-insensitive for the same reason.
 _ROLE = re.compile(
-    r"\b(Mit)?(Inhaber|Geschäftsführer|Gründer|Chef|Leiter|Präsident|Direktor"
-    r"|Unternehmer|Teilhaber|Verwaltungsrat|Verwaltungsrätin|CEO)(in|innen)?\b",
+    r"(Inhaber|Geschäftsführer|Gründer|Chef|Leiter|Präsident|Direktor"
+    r"|Unternehmer|Teilhaber|Verwaltungsrat|Verwaltungsrätin|CEO)(in|innen)?$",
     re.IGNORECASE,
 )
+# Things, not people, that end the same way.
+_NOT_ROLES = (
+    "halbleiter", "ableiter", "stromleiter", "wärmeleiter", "lichtleiter",
+    "supraleiter", "wellenleiter",
+)  # fmt: skip
+_WORD = re.compile(r"[\wäöüÄÖÜéèàç]+")
+# What code writes and the sentence must not: the school (an invented one
+# was the audit's first finding), a salutation, a greeting.
+_FRAME_WORDS = re.compile(
+    r"\b(Universität\w*|Hochschule\w*|Fachhochschule\w*|studier\w*|Student\w*"
+    r"|Professor\w*|Herrn?|Frau|Sehr geehrte\w*|Guten Tag|Grüezi)\b",
+    re.IGNORECASE,
+)
+
+
+def _role_noun(text: str) -> str | None:
+    for word in _WORD.findall(text):
+        low = word.lower()
+        if any(low.endswith(thing) for thing in _NOT_ROLES):
+            continue
+        if _ROLE.search(word):
+            return word
+    return None
+
+
 # Praise, denials of selling, and what the frame already says.
 _BANNED = re.compile(
     r"\b(wertvoll\w*|besonders|genau|spannend\w*|innovativ\w*|führend\w*"
@@ -138,9 +164,12 @@ def sentence_problems(text: str) -> list[str]:
             f"the sentence is longer than {MAX_WORDS} words or "
             f"{MAX_SENTENCE_CHARS} characters ({words} words); write at most 20"
         )
-    if role := _ROLE.search(text):
+    if role := _role_noun(text):
+        found.append(f"the sentence describes the reader with a role noun ({role})")
+    if own := _FRAME_WORDS.search(text):
         found.append(
-            f"the sentence describes the reader with a role noun ({role.group()})"
+            f"the sentence says '{own.group()}', which code writes: the school, "
+            "the salutation and the greeting are not the sentence's to say"
         )
     if banned := _BANNED.search(text):
         found.append(

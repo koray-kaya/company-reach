@@ -180,6 +180,54 @@ def test_a_role_noun_fails(noun):
 @pytest.mark.parametrize(
     "text",
     [
+        # the review's probes: an invented institution, a salutation, a
+        # second greeting — all of them written by code already
+        "Ich schreibe Ihnen, weil ich an der Universität Bern über KMU forsche.",
+        "Ich schreibe Ihnen, weil meine Hochschule Firmen wie Ihre befragt.",
+        "Ich schreibe Ihnen, weil ich an einer Fachhochschule Wirtschaft lerne.",
+        "Ich schreibe Ihnen, weil ich studiere und Ihre Firma Teile fertigt.",
+        "Ich schreibe Ihnen, weil ich als Studentin Firmen wie Ihre suche.",
+        "Ich schreibe Ihnen, weil mein Professor Ihre Käserei nannte.",
+        "Ich schreibe Ihnen, weil Herr Muster Treppen aus Stahl fertigt.",
+        "Ich schreibe Ihnen, weil Sie, Frau Muster, Käse herstellen.",
+        "Ich schreibe Ihnen, weil Sehr geehrte Kunden Ihre Käserei loben.",
+        "Ich schreibe Ihnen, weil Guten Tag auf Ihrer Website steht.",
+        "Ich schreibe Ihnen, weil Grüezi Ihr Leitspruch ist.",
+    ],
+)
+def test_the_school_a_salutation_or_a_greeting_fails(text):
+    assert any("code writes" in p for p in sentence(text))
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Ich schreibe Ihnen, weil Sie als Firmengründer Treppen fertigen.",
+        "Ich schreibe Ihnen, weil Sie als Filialleiterin Käse verkaufen.",
+        "Ich schreibe Ihnen, weil Sie als Bauunternehmer Häuser bauen.",
+    ],
+)
+def test_a_role_noun_inside_a_compound_fails(text):
+    assert any("role noun" in p for p in sentence(text))
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Ich schreibe Ihnen, weil Ihre Firma Leiterplatten bestückt.",
+        "Ich schreibe Ihnen, weil Ihre Firma Halbleiter prüft.",
+        "Ich schreibe Ihnen, weil Ihre Firma Blitzableiter montiert.",
+        "Ich schreibe Ihnen, weil Ihre Firma Leitern und Gerüste vermietet.",
+        "Ich schreibe Ihnen, weil Ihre Firma in Frauenfeld Herrenmode näht.",
+    ],
+)
+def test_things_that_only_look_like_roles_or_salutations_pass(text):
+    assert sentence(text) == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
         "Ich schreibe Ihnen, weil Ihre Sicht besonders wertvoll ist.",
         "Ich schreibe Ihnen, weil Ihre innovative Firma Teile fertigt.",
         "Ich schreibe Ihnen, weil ich ohne Verkaufsabsicht und ohne Anruf frage.",
