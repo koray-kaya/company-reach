@@ -11,6 +11,10 @@ from that, and both are checks that run *before* the request:
   perfectly ordinary name can resolve to `169.254.169.254` or into our own
   container network, and reading the text of the URL would not catch that.
 
+Both run again on every redirect. httpx following redirects itself checked
+only the first URL, so a public page answering 302 to a private address
+reached our own network (audit: SSRF on redirect).
+
 The other rule worth stating: a single page that fails is not an error. It
 returns a `Page` carrying what went wrong, because the company may still be
 identifiable from another page. Only a home page that cannot be reached at
@@ -24,9 +28,9 @@ import ipaddress
 import json
 import socket
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import httpx
 from protego import Protego
@@ -38,6 +42,8 @@ USER_AGENT = "company-reach/0.1 (+https://github.com/koray-kaya/company-reach)"
 _ALLOWED_SCHEMES = ("http", "https")
 _HOME_ATTEMPTS = 2
 _BACKOFF_S = (2.0, 4.0)
+# Enough for http → https → www → a language path, with room to spare.
+_MAX_REDIRECTS = 5
 
 
 @dataclass(frozen=True)
@@ -49,13 +55,17 @@ class Page:
     `unreachable` marks a request that did not complete — DNS, connection,
     TLS or timeout. That may pass on another day; a refusal of ours (scheme,
     private address, robots.txt, size) never will, and a caller deciding
-    whether it "looked" needs to tell the two apart."""
+    whether it "looked" needs to tell the two apart.
+
+    `url` is always the URL asked for; `final_url` is where redirects led,
+    and None when there were none."""
 
     url: str
     status: int | None = None
     html: str = ""
     error: str | None = None
     unreachable: bool = False
+    final_url: str | None = None
 
 
 async def resolve_host(host: str) -> list[str]:
@@ -122,7 +132,12 @@ class Fetcher:
         if not (body.is_file() and side.is_file()):
             return None
         meta = json.loads(side.read_text(encoding="utf-8"))
-        return Page(url=url, status=meta.get("status"), html=body.read_text("utf-8"))
+        return Page(
+            url=url,
+            status=meta.get("status"),
+            html=body.read_text("utf-8"),
+            final_url=meta.get("final_url"),
+        )
 
     def _store(self, page: Page) -> None:
         """Only successes. Caching a 503 would turn a transient outage into a
@@ -134,7 +149,12 @@ class Fetcher:
         (self._cache_dir / f"{key}.html").write_text(page.html, encoding="utf-8")
         (self._cache_dir / f"{key}.json").write_text(
             json.dumps(
-                {"url": page.url, "status": page.status, "fetched_at": time.time()}
+                {
+                    "url": page.url,
+                    "final_url": page.final_url,
+                    "status": page.status,
+                    "fetched_at": time.time(),
+                }
             ),
             encoding="utf-8",
         )
@@ -194,7 +214,9 @@ class Fetcher:
 
     async def _rules(self, client: httpx.AsyncClient, url: str) -> Protego | None:
         """Read once per host. A missing or unreadable robots.txt allows
-        everything, which is what the standard says."""
+        everything, which is what the standard says. The client does not
+        follow redirects, so a robots.txt that redirects — possibly to an
+        address we would refuse — is read as no rules at all."""
         parts = urlsplit(url)
         host = parts.netloc
         if host in self._robots:
@@ -230,33 +252,53 @@ class Fetcher:
         if cached is not None:
             return cached
 
-        refusal = await self._refuse(url)
-        if refusal is not None:
-            return refusal
-
         async with httpx.AsyncClient(
             timeout=httpx.Timeout(15.0, connect=5.0),
-            follow_redirects=True,
+            follow_redirects=False,
             headers={"User-Agent": USER_AGENT},
         ) as client:
-            rules = await self._rules(client, url)
-            if rules is not None and not rules.can_fetch(url, USER_AGENT):
-                return Page(url=url, error="skipped: robots.txt disallows this URL")
-
-            await self._wait_turn(urlsplit(url).netloc, rules)
-            page = await self._fetch_once(client, url)
+            page = await self._follow(client, url)
 
         self._store(page)
         return page
 
-    async def _fetch_once(self, client: httpx.AsyncClient, url: str) -> Page:
-        try:
-            answer = await client.get(url)
-        except httpx.HTTPError as error:
-            return Page(
-                url=url, error=f"{type(error).__name__}: {error}", unreachable=True
-            )
+    async def _follow(self, client: httpx.AsyncClient, url: str) -> Page:
+        """The URL, and up to five redirects after it. Every hop is checked
+        as the first one was — scheme, address, robots.txt, the per-host
+        delay — before a request is made to it."""
+        current = url
+        for _ in range(_MAX_REDIRECTS + 1):
+            refusal = await self._refuse(current)
+            if refusal is not None:
+                return _landed(refusal, asked=url)
+            rules = await self._rules(client, current)
+            if rules is not None and not rules.can_fetch(current, USER_AGENT):
+                skipped = Page(
+                    url=current, error="skipped: robots.txt disallows this URL"
+                )
+                return _landed(skipped, asked=url)
 
+            await self._wait_turn(urlsplit(current).netloc, rules)
+            try:
+                answer = await client.get(current)
+            except httpx.HTTPError as error:
+                failed = Page(
+                    url=current,
+                    error=f"{type(error).__name__}: {error}",
+                    unreachable=True,
+                )
+                return _landed(failed, asked=url)
+            if not answer.is_redirect:
+                return _landed(self._page(current, answer), asked=url)
+            current = urljoin(current, answer.headers["location"])
+
+        return Page(
+            url=url,
+            error=f"more than {_MAX_REDIRECTS} redirects",
+            final_url=current,
+        )
+
+    def _page(self, url: str, answer: httpx.Response) -> Page:
         if answer.status_code >= 400:
             return Page(
                 url=url,
@@ -288,3 +330,9 @@ class Fetcher:
             f"home page unreachable after {_HOME_ATTEMPTS} attempts: {url} "
             f"({last.error if last else 'unknown'})"
         )
+
+
+def _landed(page: Page, *, asked: str) -> Page:
+    """The Page for the URL that was asked for, saying where it ended up."""
+    moved = page.url if page.url != asked else None
+    return replace(page, url=asked, final_url=moved)

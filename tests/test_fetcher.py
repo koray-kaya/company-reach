@@ -168,6 +168,104 @@ async def test_a_response_over_the_cap_is_dropped(f: Fetcher, settings: Settings
     assert "large" in page.error
 
 
+# --- redirects ---------------------------------------------------------------
+# httpx followed redirects on its own, so only the first URL went through
+# the scheme and address checks. A public page answering 302 to
+# http://127.0.0.1:8080/ reached our own network (audit: SSRF on redirect).
+
+
+@respx.mock
+async def test_a_redirect_to_a_private_address_is_refused(f: Fetcher):
+    allow_robots()
+    respx.get(HOME).mock(
+        return_value=httpx.Response(
+            302, headers={"Location": "http://127.0.0.1:8080/config"}
+        )
+    )
+    inside = respx.get("http://127.0.0.1:8080/config").mock(
+        return_value=httpx.Response(200, html="<p>internal</p>")
+    )
+    page = await f.get(HOME)
+    assert not inside.called
+    assert page.error is not None and "refused" in page.error
+    assert page.html == ""
+
+
+@respx.mock
+async def test_a_redirect_chain_stops_after_five_hops(f: Fetcher):
+    allow_robots()
+    routes = [
+        respx.get(f"{HOME}r{n}").mock(
+            return_value=httpx.Response(302, headers={"Location": f"/r{n + 1}"})
+        )
+        for n in range(10)
+    ]
+    page = await f.get(f"{HOME}r0")
+    assert page.error is not None and "redirect" in page.error
+    assert sum(r.call_count for r in routes) == 6  # the first request and five hops
+    assert not routes[6].called
+
+
+@respx.mock
+async def test_a_redirect_to_another_domain_is_followed_and_recorded(f: Fetcher):
+    allow_robots()
+    respx.get(HOME).mock(
+        return_value=httpx.Response(301, headers={"Location": "https://muster-neu.ch/"})
+    )
+    respx.get("https://muster-neu.ch/robots.txt").mock(return_value=httpx.Response(404))
+    respx.get("https://muster-neu.ch/").mock(
+        return_value=httpx.Response(200, html="<p>Muster Metallbau AG</p>")
+    )
+    page = await f.get(HOME)
+    assert page.url == HOME
+    assert page.final_url == "https://muster-neu.ch/"
+    assert "Muster Metallbau" in page.html
+
+
+@respx.mock
+async def test_a_page_that_did_not_move_has_no_final_url(f: Fetcher):
+    allow_robots()
+    respx.get(HOME).mock(return_value=httpx.Response(200, html="<p>ok</p>"))
+    assert (await f.get(HOME)).final_url is None
+
+
+@respx.mock
+async def test_a_cached_page_remembers_where_it_landed(settings: Settings, monkeypatch):
+    """A rerun reads from the cache, and must still know the site moved."""
+
+    async def resolve(host: str) -> list[str]:
+        return ["93.184.216.34"]
+
+    monkeypatch.setattr(fetcher_module, "resolve_host", resolve)
+    allow_robots()
+    respx.get(HOME).mock(
+        return_value=httpx.Response(301, headers={"Location": "https://muster-neu.ch/"})
+    )
+    respx.get("https://muster-neu.ch/robots.txt").mock(return_value=httpx.Response(404))
+    respx.get("https://muster-neu.ch/").mock(
+        return_value=httpx.Response(200, html="<p>ok</p>")
+    )
+    await Fetcher(settings, delay_s=0.0).get(HOME)
+    again = await Fetcher(settings, delay_s=0.0).get(HOME)
+    assert again.final_url == "https://muster-neu.ch/"
+
+
+@respx.mock
+async def test_a_redirected_robots_file_means_no_rules(f: Fetcher):
+    """robots.txt is fetched without following redirects: a redirect could
+    point anywhere, and it is read as "no rules"."""
+    respx.get(ROBOTS).mock(
+        return_value=httpx.Response(
+            302, headers={"Location": "http://127.0.0.1:8080/robots.txt"}
+        )
+    )
+    inside = respx.get("http://127.0.0.1:8080/robots.txt")
+    respx.get(HOME).mock(return_value=httpx.Response(200, html="<p>ok</p>"))
+    page = await f.get(HOME)
+    assert page.status == 200
+    assert not inside.called
+
+
 # --- robots.txt --------------------------------------------------------------
 
 

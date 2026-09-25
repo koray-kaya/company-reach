@@ -1041,3 +1041,84 @@ async def test_a_failed_search_is_logged_too(armed):
         ("searxng", "SearXNG answered HTTP 503"),
         ("brave", "Brave answered HTTP 429"),
     ]
+
+
+# --- a candidate that moved (B7) ---------------------------------------------
+
+
+@respx.mock
+async def test_a_candidate_that_moved_is_read_under_its_new_domain(
+    settings: Settings, monkeypatch
+):
+    """Search still knows the old domain; the home page redirects to the
+    new one. The Impressum and the page list are the new site's, and the new
+    site is what gets recorded."""
+    old = "https://muster-alt.ch"
+
+    async def searcher(query, *, settings, limit=10):
+        return [Result(f"{old}/", "Muster Metallbau AG", "x", "ddg")]
+
+    async def no_guesses(names, **kw):
+        return []
+
+    async def resolve(host):
+        return ["93.184.216.34"]
+
+    monkeypatch.setattr("company_reach.tools.fetcher.resolve_host", resolve)
+    monkeypatch.setattr(node, "resolving_domains", no_guesses)
+    monkeypatch.setattr(node, "search_outcome", as_outcome(searcher))
+    respx.get(f"{old}/robots.txt").mock(return_value=httpx.Response(404))
+    respx.get(f"{old}/").mock(
+        return_value=httpx.Response(301, headers={"Location": f"{SITE}/de/"})
+    )
+    old_site = respx.get(host="muster-alt.ch").mock(return_value=httpx.Response(404))
+    respx.get("https://muster-metallbau.ch/robots.txt").mock(
+        return_value=httpx.Response(404)
+    )
+    respx.get(f"{SITE}/de/").mock(
+        return_value=httpx.Response(
+            200, html="<p>Willkommen</p><a href='impressum'>Impressum</a>"
+        )
+    )
+    respx.get(f"{SITE}/de/impressum").mock(
+        return_value=httpx.Response(200, html=IMPRESSUM_WITH_UID)
+    )
+    respx.get(f"{SITE}/sitemap.xml").mock(
+        return_value=httpx.Response(
+            200, text=f"<urlset><url><loc>{SITE}/de/kontakt</loc></url></urlset>"
+        )
+    )
+    respx.get(host="muster-metallbau.ch").mock(return_value=httpx.Response(404))
+    model_says(monkeypatch, f"{SITE}/", "Muster Metallbau AG")
+
+    out = await find_site(state(), settings=settings, fetcher=quick(settings))
+
+    assert out["site"].url == f"{SITE}/"
+    assert out["site"].tier == "uid"
+    assert f"{SITE}/de/kontakt" in out["page_urls"]
+    assert not old_site.called  # nothing more was read from the old domain
+    with connect(settings.db_path) as conn:
+        assert site_record(conn, "r1", UID)["url"] == f"{SITE}/"
+
+
+@respx.mock
+async def test_without_a_sitemap_links_are_read_where_the_home_page_landed(
+    settings: Settings, monkeypatch
+):
+    """`/` answering from `/de/`: a relative `kontakt` there is
+    `/de/kontakt`, not `/kontakt`."""
+
+    async def resolve(host):
+        return ["93.184.216.34"]
+
+    monkeypatch.setattr("company_reach.tools.fetcher.resolve_host", resolve)
+    respx.get(f"{SITE}/robots.txt").mock(return_value=httpx.Response(404))
+    respx.get(f"{SITE}/sitemap.xml").mock(return_value=httpx.Response(404))
+    respx.get(f"{SITE}/").mock(
+        return_value=httpx.Response(302, headers={"Location": f"{SITE}/de/"})
+    )
+    respx.get(f"{SITE}/de/").mock(
+        return_value=httpx.Response(200, html="<a href='kontakt'>Kontakt</a>")
+    )
+    urls = await node.all_page_urls(f"{SITE}/", fetcher=quick(settings), limit=200)
+    assert f"{SITE}/de/kontakt" in urls

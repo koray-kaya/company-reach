@@ -434,10 +434,20 @@ async def read_candidates(
     if candidates and len(failed) == len(candidates):
         raise FetchError(f"no candidate site could be read: {'; '.join(failed)}")
     return {
-        url: pages
+        _where(url, pages): pages
         for url, pages in zip(candidates, read, strict=True)
         if isinstance(pages, CandidatePages) and pages.full_text().strip()
     }
+
+
+def _where(url: str, pages: CandidatePages) -> str:
+    """The candidate's site root — the new one, when its home page redirected
+    to another domain. Search still knows a company's old domain long after
+    it moved; the site to record and read further is the one it moved to."""
+    moved = pages.final_url
+    if moved and registered_domain(moved) != registered_domain(url):
+        return site_root(moved)
+    return url
 
 
 async def find_site(
@@ -577,7 +587,7 @@ async def all_page_urls(site: str, *, fetcher: Fetcher, limit: int) -> list[str]
     if not found:
         home = await fetcher.get(site)
         if home.html:
-            found = harvest_links(home.html, site)
+            found = harvest_links(home.html, home.final_url or site)
 
     found.append(site)
     return found

@@ -57,10 +57,14 @@ _PROMPT_CHARS = {"schema.org": 400, "home page": 1500, "impressum": 1000, "about
 
 @dataclass(frozen=True)
 class CandidatePages:
+    """`final_url` is where the home page landed after redirects, None when
+    it did not move."""
+
     home: str
     impressum: str = ""
     about: str = ""
     schema: str = ""
+    final_url: str | None = None
 
     def _parts(self) -> dict[str, str]:
         return {
@@ -187,8 +191,11 @@ async def read_candidate(url: str, *, fetcher: Fetcher) -> CandidatePages | None
         raise FetchError(f"{url} ({home.error})")
     if not home.html:
         return None
+    # Links are read where the home page landed: `muster.ch` answering from
+    # `www.muster.ch/de/` has its Impressum at `/de/impressum`.
+    base = home.final_url or url
     home_text = textify(home.html)
-    impressum_links, other_links, about = find_links(home.html, url)
+    impressum_links, other_links, about = find_links(home.html, base)
 
     # A real Impressum link first, then the usual Impressum addresses, and
     # only then Kontakt or Datenschutz. Measured on the golden set: a home
@@ -197,16 +204,17 @@ async def read_candidate(url: str, *, fetcher: Fetcher) -> CandidatePages | None
     impressum = (
         await _first_with_text(impressum_links, fetcher)
         or await _first_with_text(
-            [urljoin(url, path) for path in _LEGAL_PATHS], fetcher
+            [urljoin(base, path) for path in _LEGAL_PATHS], fetcher
         )
         or await _first_with_text(other_links, fetcher)
     )
     about_text = await _first_with_text(about, fetcher) or await _first_with_text(
-        [urljoin(url, path) for path in _ABOUT_PATHS], fetcher
+        [urljoin(base, path) for path in _ABOUT_PATHS], fetcher
     )
     return CandidatePages(
         home=home_text,
         impressum=impressum,
         about=about_text,
         schema=read_schema_org(home.html),
+        final_url=home.final_url,
     )

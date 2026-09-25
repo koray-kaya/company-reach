@@ -144,10 +144,13 @@ def _delete_cache(cache: Path, domains: set[str]) -> int:
     deleted = 0
     for side in cache.glob("*.json") if cache.is_dir() else []:
         try:
-            url = json.loads(side.read_text())["url"]
+            meta = json.loads(side.read_text())
+            # a page kept under the URL asked for may hold the text of the
+            # site it redirected to
+            urls = [meta["url"], meta.get("final_url") or meta["url"]]
         except (ValueError, KeyError):
             continue
-        if registered_domain(url) in domains:
+        if any(registered_domain(url) in domains for url in urls):
             for path in (side, side.with_suffix(".html")):
                 if path.exists():
                     path.unlink()
