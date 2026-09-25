@@ -52,11 +52,11 @@ def contact(name: str | None = "Anna Muster") -> Contact:
     )
 
 
-def make(text: str, c: Contact | None = None, **over) -> Draft:
+def make(text: str, c: Contact | None = None, *, inv=INVITATION, **over) -> Draft:
     c = c or contact()
-    body = assemble(c, text, link=LINK, sender=SENDER, inv=INVITATION)
+    body = assemble(c, text, link=LINK, sender=SENDER, inv=inv)
     fields = {
-        "subject": subject(c, SENDER, INVITATION),
+        "subject": subject(c, SENDER, inv),
         "body": body,
         "model_text": text,
         "link": LINK,
@@ -282,6 +282,22 @@ def test_an_eszett_in_the_mail_is_a_problem():
     assert any("ss, never ß" in p for p in problems(d, c, profile))
 
 
+def test_a_name_from_the_page_may_carry_an_eszett():
+    # "Hans Groß" is how the register writes him; the ß rule is for our own
+    # text — the sentence and the profile — not for a person's name
+    c = contact(name="Hans Groß")
+    assert found(make(GOOD, c), c) == []
+
+
+def test_an_eszett_in_the_topic_is_a_profile_problem():
+    inv = INVITATION.model_copy(update={"topic": "welche Maßnahmen KMU ergreifen"})
+    c = contact()
+    body = assemble(c, GOOD, link=LINK, sender=SENDER, inv=inv)
+    d = make(GOOD, body=body)
+    found_ = problems(d, c, PROFILE.model_copy(update={"invitation": inv}))
+    assert any("invitation.topic" in p and "ß" in p for p in found_)
+
+
 def test_a_tampered_frame_fails():
     d = make(GOOD)
     no_routing = d.model_copy(update={"body": d.body.split("\n\n", 1)[1]})
@@ -354,13 +370,14 @@ class Redraft:
     """Stands in for the `draft` node: hands out the next prepared text and
     remembers the feedback it was given."""
 
-    def __init__(self, *texts: str):
+    def __init__(self, *texts: str, inv=INVITATION):
         self.texts = list(texts)
+        self.inv = inv
         self.feedback: list[str] = []
 
     async def __call__(self, state, *, settings):
         self.feedback.append(state.get("draft_feedback", ""))
-        d = make(self.texts.pop(0), state["contact"])
+        d = make(self.texts.pop(0), state["contact"], inv=self.inv)
         store(settings, d)  # as the real node does
         return {"draft": d}
 
@@ -439,6 +456,50 @@ async def test_a_raising_redraft_leaves_no_draft(db_settings):
     with pytest.raises(LlmError):
         await check_draft(state(first), settings=db_settings, redraft=down)
     assert stored_drafts(db_settings) == 0
+
+
+ESZETT = INVITATION.model_copy(update={"topic": "welche Maßnahmen KMU ergreifen"})
+
+
+@pytest.fixture
+def eszett_profile(db_settings):
+    """A profile whose topic the frame writes with ß: a failure only the
+    owner can fix, in profile.toml."""
+    from fictional_profile import profile_text
+
+    db_settings.profile_path.write_text(
+        profile_text("https://survey.example/form").replace(
+            "wie KMU zu Kunden und Lieferanten kommen", ESZETT.topic
+        )
+    )
+    return db_settings
+
+
+async def test_a_frame_only_failure_asks_no_model(eszett_profile):
+    """Review: a failure in what code writes was sent to the model twice and
+    ended as a hold, although no sentence could fix it. The draft is kept
+    with its problems — not sendable — for `redraft` once the profile is
+    fixed."""
+    redraft = Redraft()
+    first = make(GOOD, inv=ESZETT)
+    store(eszett_profile, first)
+    out = await check_draft(state(first), settings=eszett_profile, redraft=redraft)
+    assert redraft.feedback == []
+    assert out.get("recommendation", "send") == "send"
+    assert "ß" in check_outcome(eszett_profile)
+
+
+async def test_the_model_is_told_only_what_it_can_fix(eszett_profile):
+    redraft = Redraft(GOOD, inv=ESZETT)
+    first = make(EVIL, inv=ESZETT)
+    store(eszett_profile, first)
+    out = await check_draft(state(first), settings=eszett_profile, redraft=redraft)
+    assert len(redraft.feedback) == 1
+    assert "link" in redraft.feedback[0]
+    assert "ß" not in redraft.feedback[0]
+    # the sentence is fixed; the frame still is not: kept, and not sendable
+    assert out.get("recommendation", "send") == "send"
+    assert "ß" in check_outcome(eszett_profile)
 
 
 async def test_two_failures_hold_and_leave_nothing_to_send(db_settings):

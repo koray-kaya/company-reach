@@ -15,7 +15,7 @@ from pydantic import BaseModel
 
 from company_reach.errors import LlmError, ProfileError
 from company_reach.models import Contact
-from company_reach.nodes.check_draft import MAX_SENTENCE_CHARS
+from company_reach.nodes.check_draft import MAX_SENTENCE_CHARS, eszett_fields
 from company_reach.nodes.probe_search import PROBE_QUERY
 from company_reach.profile import Profile, load_profile
 from company_reach.settings import Settings
@@ -177,6 +177,9 @@ def _profile_check(settings: Settings) -> Check:
     for key, value in fields.items():
         if isinstance(value, str) and (unfilled := _UNFILLED.search(value)):
             found.append(f"{key} looks unfilled ({unfilled.group()}): {value}")
+    if spelt := eszett_fields(profile):
+        # every draft would fail on it, and no model call can fix it
+        found.append(f"{', '.join(spelt)} uses ß; Swiss spelling writes ss")
     closes = profile.invitation.closes
     if closes and (closes - date.today()).days < MIN_DAYS_OPEN:
         found.append(

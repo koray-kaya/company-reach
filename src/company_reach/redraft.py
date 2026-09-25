@@ -31,6 +31,7 @@ from company_reach.nodes.check_draft import (
     sentence_problems,
 )
 from company_reach.nodes.draft import draft
+from company_reach.nodes.recommend import recommend
 from company_reach.profile import Profile, load_profile
 from company_reach.settings import Settings
 from company_reach.tools.db import (
@@ -41,6 +42,7 @@ from company_reach.tools.db import (
     is_suppressed,
     profile_by_uid,
     record_result,
+    result_for,
     rewrite_draft,
 )
 from company_reach.tools.invitation import FRAME_VERSION, survey_link
@@ -54,11 +56,19 @@ class Redrafted:
     outcome: str  # "sendable", "not sendable: ...", "hold: ..." or an error
 
 
+_FAILED_TWICE = "the draft failed its checks twice"
+
+
 def _undecided_sends(conn, run_id: str) -> list[str]:
+    """Send cards, and holds whose only fault was a draft that failed its
+    checks twice — its cause may be gone (a profile fixed, another model)."""
     rows = conn.execute(
-        "select uid from results where run_id = ? and recommendation = 'send'"
-        " order by uid",
-        (run_id,),
+        """select uid from results
+            where run_id = ?
+              and (recommendation = 'send'
+                   or (recommendation = 'hold' and reason like ?))
+            order by uid""",
+        (run_id, f"{_FAILED_TWICE}%"),
     )
     return [
         r["uid"]
@@ -182,4 +192,15 @@ async def _one(state: dict, profile: Profile, settings: Settings, *, fresh: bool
                 run_id=run_id,
             )
         return Redrafted(uid, f"hold: {state['reason']}")
+    with connect(settings.db_path) as conn:
+        held = result_for(conn, uid, run_id=run_id)
+        if held and held.recommendation == "hold":
+            # the draft that held it now passes: a send card again, with the
+            # reason recommend gives for this contact
+            again = recommend({"site": True, **state})
+            record_result(
+                conn,
+                CompanyResult(uid=uid, recommendation="send", reason=again["reason"]),
+                run_id=run_id,
+            )
     return Redrafted(uid, "sendable")

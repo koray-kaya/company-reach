@@ -378,6 +378,24 @@ async def test_a_closing_date_two_weeks_ahead_is_fine(settings):
 
 
 @respx.mock
+async def test_an_eszett_in_the_profile_is_reported(settings):
+    # every mail would fail check_draft on it, and no model call can fix it
+    respx.post(URL).mock(side_effect=[probe_ok(), probe_truncated()])
+    _real_survey(
+        settings,
+        **{
+            "wie KMU zu Kunden und Lieferanten kommen": (
+                "welche Maßnahmen KMU ergreifen"
+            )
+        },
+    )
+    check = await profile_check(settings)
+    assert not check.ok
+    assert "invitation.topic" in check.detail
+    assert "ß" in check.detail
+
+
+@respx.mock
 async def test_a_placeholder_in_the_profile_is_reported(settings):
     # the "[Hochschule]" case, caught before a single draft is written
     respx.post(URL).mock(side_effect=[probe_ok(), probe_truncated()])

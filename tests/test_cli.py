@@ -727,6 +727,31 @@ def test_redraft_that_fails_twice_holds_the_company(settings, monkeypatch):
     assert "failed its checks twice" in card.reason
 
 
+@respx.mock
+def test_redraft_picks_up_a_hold_whose_draft_failed_twice(settings, monkeypatch):
+    """A draft that failed twice was deleted and the company held; the
+    cause may be gone (a profile fixed, a better model). `redraft` tries
+    again, and a draft that passes makes it a send card again."""
+    from fictional_profile import profile_text
+    from review_seed import RUN, SEND, SURVEY
+
+    asked = _redraft_setup(settings, monkeypatch)
+    settings.profile_path.write_text(profile_text(SURVEY))
+    with connect(settings.db_path) as conn:
+        conn.execute("delete from drafts where uid = ?", (SEND,))
+        conn.execute(
+            "update results set recommendation = 'hold', reason = ? where uid = ?",
+            ("the draft failed its checks twice: the sentence uses 'wertvoll'", SEND),
+        )
+    r = runner.invoke(cli.app, ["redraft", RUN])
+    assert r.exit_code == 0, r.output
+    assert asked == ["draft"]
+    card = _card(settings, SEND)
+    assert card.recommendation == "send"
+    assert "general inbox" in card.reason
+    assert card.send_block is None
+
+
 def test_redraft_without_sender_asks_no_model(settings, monkeypatch):
     from fictional_profile import profile_text
     from review_seed import RUN

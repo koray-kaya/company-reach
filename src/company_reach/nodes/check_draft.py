@@ -13,22 +13,27 @@ selling, nothing the frame already says, no legal form, no year, no
 placeholder, no e-mail address and no link — written out, defanged, or
 under any ending.
 
-The mail (`problems`): the body is exactly what the frame builds around
-that sentence, routing line, greeting, privacy text and signature included;
-the subject is the frame's; the survey link is the body's only URL, byte for
-byte; nothing the profile supplied is a placeholder; Swiss spelling; at most
+The frame (`frame_problems`): the body is exactly what the frame builds
+around that sentence, routing line, greeting, privacy text and signature
+included; the subject is the frame's; the survey link is the body's only
+URL, byte for byte; nothing the profile supplied is a placeholder or spelt
+with ß (a name from a page or the register is left as written); at most
 1,300 characters, and it fits in a `mailto:` link, which is the binding
 limit. The frame is assembled by code and should never fail; it is checked
 anyway, because a check that only covers what can go wrong today stops
 covering it the day the assembly changes.
 
-A draft that fails is written once more, with the model told why. If the
-second fails too, the company is held and the draft deleted; if the second
-attempt raises, the first is deleted before the error travels on. The
-outcome is stored on the draft row, and the card sends only a draft that
-passed. What survives every rule is non-URL steering — a sentence a hostile
-page talked the model into — and for that the control is the human reading
-the draft before sending it.
+Only a sentence that fails is written once more, with the model told what
+is wrong with the sentence and nothing else — the frame is not the model's
+to fix. If the second sentence fails too, the company is held and the draft
+deleted; if the second attempt raises, the first is deleted before the
+error travels on. A draft whose sentence passes but whose frame fails is
+kept with its problems: the card refuses it, and `redraft` rebuilds it
+without a model call once the profile is fixed. The outcome is stored on
+the draft row, and the card sends only a draft that passed. What survives
+every rule is non-URL steering — a sentence a hostile page talked the model
+into — and for that the control is the human reading the draft before
+sending it.
 """
 
 import re
@@ -168,7 +173,29 @@ def sentence_problems(text: str) -> list[str]:
 def problems(draft: Draft, contact: Contact, profile: Profile) -> list[str]:
     """Every rule the draft breaks, worded for the model's second attempt
     and for the reviewer's card. Empty means it may be sent."""
-    found = sentence_problems(draft.model_text)
+    return sentence_problems(draft.model_text) + frame_problems(draft, contact, profile)
+
+
+def _profile_texts(profile: Profile) -> dict[str, str]:
+    """The profile's texts the frame writes into every mail."""
+    return {
+        **{f"sender.{k}": v for k, v in profile.sender.model_dump().items()},
+        "invitation.topic": profile.invitation.topic,
+    }
+
+
+def eszett_fields(profile: Profile) -> list[str]:
+    """Profile fields written with ß. Swiss spelling writes ss; a name from
+    a page or the register is the person's own and is left alone."""
+    return [k for k, v in _profile_texts(profile).items() if "ß" in str(v)]
+
+
+def frame_problems(draft: Draft, contact: Contact, profile: Profile) -> list[str]:
+    """What is wrong with everything code wrote around the sentence. No
+    model call can fix these: they come from the profile, the contact, or
+    code, so a draft failing only here is kept, unsendable, for `redraft`
+    once the cause is fixed."""
+    found: list[str] = []
     body = draft.body
 
     if _URL_IN_BODY.findall(body) != [draft.link]:
@@ -198,8 +225,10 @@ def problems(draft: Draft, contact: Contact, profile: Profile) -> list[str]:
             f"the mail contains a placeholder ({placeholder.group()}); fill in "
             "[sender] and [invitation] in profile.toml"
         )
-    if "ß" in body or "ß" in draft.subject:
-        found.append("Swiss spelling: write ss, never ß")
+    if fields := eszett_fields(profile):
+        found.append(
+            f"Swiss spelling: write ss, never ß, in {', '.join(fields)} in profile.toml"
+        )
     if len(body) > MAX_CHARS:
         found.append(f"the mail is longer than 1,300 characters ({len(body)})")
     if not draft.mailto_fits:
@@ -248,16 +277,20 @@ async def check_draft(
     run_id, uid = state["run_id"], state["uid"]
     contact: Contact = state["contact"]
     profile = load_profile(settings.profile_path)
-    found = problems(state["draft"], contact, profile)
-    if not found:
+    first = state["draft"]
+    wrong = sentence_problems(first.model_text)
+    if not wrong:
+        # the sentence is fine: whatever else fails, the model cannot fix it
         with connect(settings.db_path) as conn:
-            record_draft_check(conn, run_id, uid, [])
+            record_draft_check(
+                conn, run_id, uid, frame_problems(first, contact, profile)
+            )
         return {}
 
     try:
         second = (
             await redraft(
-                state | {"draft_feedback": "; ".join(found)}, settings=settings
+                state | {"draft_feedback": "; ".join(wrong)}, settings=settings
             )
         )["draft"]
     except Exception:
@@ -266,12 +299,14 @@ async def check_draft(
         with connect(settings.db_path) as conn:
             delete_draft(conn, run_id, uid)
         raise
-    found = problems(second, contact, profile)
-    if not found:
+    if not sentence_problems(second.model_text):
         with connect(settings.db_path) as conn:
-            record_draft_check(conn, run_id, uid, [])
+            record_draft_check(
+                conn, run_id, uid, frame_problems(second, contact, profile)
+            )
         return {"draft": second}
 
+    found = problems(second, contact, profile)
     with connect(settings.db_path) as conn:
         delete_draft(conn, run_id, uid)
     return {
