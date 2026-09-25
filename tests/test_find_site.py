@@ -118,6 +118,27 @@ def test_one_candidate_per_registered_domain():
     assert dedupe_candidates(results) == [f"{SITE}/"]
 
 
+def test_a_subdomain_is_the_same_candidate():
+    # the registered domain, not the host: shop. and de. are the company's
+    results = [
+        Result(f"{SITE}/", "x", "y", "e"),
+        Result("https://shop.muster-metallbau.ch/produkte", "x", "y", "e"),
+        Result("https://de.muster-metallbau.ch/", "x", "y", "e"),
+    ]
+    assert dedupe_candidates(results) == [f"{SITE}/"]
+
+
+def test_two_customers_of_one_site_builder_are_two_candidates():
+    results = [
+        Result("https://muster-metallbau.wixsite.com/home", "x", "y", "e"),
+        Result("https://beispiel-holzbau.wixsite.com/home", "x", "y", "e"),
+    ]
+    assert dedupe_candidates(results) == [
+        "https://muster-metallbau.wixsite.com/",
+        "https://beispiel-holzbau.wixsite.com/",
+    ]
+
+
 def test_non_http_results_are_dropped():
     results = [
         Result("javascript:alert(1)", "x", "y", "e"),

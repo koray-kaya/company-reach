@@ -65,12 +65,12 @@ def shab_person(
     )
 
 
-def state(persons: list[Person], pages: dict[str, str]) -> dict:
+def state(persons: list[Person], pages: dict[str, str], site: str = SITE) -> dict:
     return {
         "run_id": "run-1",
         "uid": UID,
         "company": COMPANY,
-        "site": SiteChoice(SITE, "uid", "CHE-000.000.046", SITE),
+        "site": SiteChoice(site, "uid", "CHE-000.000.046", site),
         "profile": CompanyProfile(description="Baut Metallteile.", persons=persons),
         "page_texts": pages,
     }
@@ -920,3 +920,68 @@ async def test_a_persons_address_under_another_ending_keeps_the_strict_rule(
         db_settings,
     )
     assert out["contact"].email_kind == "third_party"
+
+
+# --- subdomains and site builders (audit) -----------------------------------
+# A site is compared on its registered domain: de.muster-metallbau.ch and
+# mail.muster-metallbau.ch are the company's, muster-metallbau.wixsite.com is
+# a customer of Wix. An inbox is guessed only on a domain of the site's own.
+
+
+async def test_a_subdomain_site_greets_at_the_inbox_on_its_apex(db_settings):
+    site = "https://de.muster-metallbau.ch/"
+    out = await run(
+        state(
+            [Person(name="Anna Muster", role="Inhaberin")],
+            {site: "Anna Muster, Inhaberin. info@muster-metallbau.ch"},
+            site=site,
+        ),
+        db_settings,
+    )
+    contact = out["contact"]
+    assert (contact.email, contact.email_kind) == (
+        "info@muster-metallbau.ch",
+        "generic",
+    )
+    assert pairs(contact) == [("info@muster-metallbau.ch", "generic")]
+
+
+async def test_an_inbox_on_a_mail_subdomain_is_the_sites_own(db_settings):
+    out = await run(
+        state([], {SITE: "Kontakt: info@mail.muster-metallbau.ch"}), db_settings
+    )
+    assert out["contact"].email_kind == "generic"
+
+
+async def test_no_inbox_is_guessed_on_a_subdomain(db_settings):
+    site = "https://shop.muster-metallbau.ch/"
+    search = Search()
+    out = await run(
+        state(
+            [Person(name="Anna Muster", role="Inhaberin")], {site: "Anna Muster"}, site
+        ),
+        db_settings,
+        search=search,
+    )
+    contact = out["contact"]
+    assert (contact.name, contact.email, contact.email_kind) == (
+        "Anna Muster",
+        None,
+        None,
+    )
+    assert search.queries  # no address seen, so a lead is looked for
+
+
+async def test_no_inbox_is_guessed_on_a_site_builder_host(db_settings):
+    site = "https://muster-metallbau.wixsite.com/metallbau"
+    out = await run(
+        state([], {site: "Willkommen"}, site),
+        db_settings,
+        Shab([shab_person("Anna Muster", "Geschäftsführerin")]),
+    )
+    contact = out["contact"]
+    assert (contact.name, contact.email, contact.email_kind) == (
+        "Anna Muster",
+        None,
+        None,
+    )

@@ -15,6 +15,7 @@ dependencies = [
     "lxml>=6.1",
     "fastapi[standard]>=0.141",
     "charset-normalizer>=3.5",
+    "tldextract>=5.3.2",
 ]
 
 [project.scripts]

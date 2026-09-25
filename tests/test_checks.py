@@ -153,6 +153,19 @@ def test_www_does_not_make_the_site_a_different_domain():
     assert out.persons[0].email_offsite is False
 
 
+def test_an_address_on_a_mail_subdomain_is_on_the_site():
+    page = IMPRESSUM + " anna@mail.muster-metallbau.ch"
+    out = check(
+        raw(
+            persons=[
+                RawPerson(name="Anna Muster", email="anna@mail.muster-metallbau.ch")
+            ]
+        ),
+        page,
+    )
+    assert out.persons[0].email_offsite is False
+
+
 # --- the noise the research measured -----------------------------------------
 
 
