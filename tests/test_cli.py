@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 import httpx
+import pytest
 import respx
 from search_fakes import as_outcome
 from typer.testing import CliRunner
@@ -563,6 +564,31 @@ def test_enrich_refuses_a_stopping_point_it_does_not_have(settings, monkeypatch)
     monkeypatch.setattr(cli, "get_settings", lambda: settings)
     r = runner.invoke(cli.app, ["enrich", "--uid", "CHE000000046", "--until", "draft"])
     assert r.exit_code != 0
+
+
+@pytest.mark.parametrize("closed", ["suppressed", "never", "sent"])
+def test_enrich_refuses_a_suppressed_uid(settings, monkeypatch, closed):
+    """Audit: `enrich --uid` bypassed seen, the ledger and suppression, and
+    collected a person the company had asked never to hear from again."""
+    from company_reach.tools.db import record_decision, suppress
+
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    _seed_one_company(settings)
+    with connect(settings.db_path) as conn:
+        if closed == "suppressed":
+            suppress(conn, "CHE000000046", reason="forgotten on request")
+        else:
+            record_decision(conn, "CHE000000046", closed)
+
+    def no_child(**kwargs):
+        raise AssertionError("enrich built a child for a closed company")
+
+    monkeypatch.setattr(cli, "build_child", no_child)
+    r = runner.invoke(cli.app, ["enrich", "--uid", "CHE000000046", "--until", "site"])
+    assert r.exit_code == 2, r.output
+    assert "CHE000000046" in r.output
+    with connect(settings.db_path) as conn:
+        assert conn.execute("select count(*) from searches").fetchone()[0] == 0
 
 
 def test_enrich_on_an_unknown_company_says_so(settings, monkeypatch):

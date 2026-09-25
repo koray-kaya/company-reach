@@ -22,7 +22,12 @@ from typing import Any
 from company_reach.errors import FetchError, LlmError, SearchError, ShabError
 from company_reach.models import CompanyResult, ErrorKind
 from company_reach.settings import Settings
-from company_reach.tools.db import connect, record_result, result_for
+from company_reach.tools.db import (
+    closed_because,
+    connect,
+    record_result,
+    result_for,
+)
 
 _ERROR_KINDS: list[tuple[type[Exception], ErrorKind]] = [
     (SearchError, "search"),
@@ -58,10 +63,20 @@ async def enrich_company(
 
     with connect(settings.db_path) as conn:
         done = result_for(conn, uid, run_id=run_id)
+        closed = closed_because(conn, uid)
     if done is not None and done.error_kind is None and not force:
         # Resume: this company is finished. Skip the child, but still return
         # the stored result — the superstep's accounting has to stay whole.
         return {"results": [done]}
+    if closed:
+        # A resumed batch whose card was marked Never, or forgotten, since
+        # the draw: finished here, and nothing more collected (audit H7)
+        result = CompanyResult(
+            uid=uid, recommendation="skip", reason=f"not enriched: {closed}"
+        )
+        with connect(settings.db_path) as conn:
+            record_result(conn, result, run_id=run_id)
+        return {"results": [result]}
 
     try:
         out = await child.ainvoke(

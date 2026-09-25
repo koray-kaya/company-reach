@@ -953,20 +953,26 @@ def delete_draft(conn: sqlite3.Connection, run_id: str, uid: str) -> None:
     conn.execute("delete from drafts where run_id = ? and uid = ?", (run_id, uid))
 
 
+# A company a reviewer decided about — sent, skipped, never, bounced, even a
+# skip since undone — or one on the never-again list. Nothing more is
+# collected about it: `retry`, `retry --no-site`, a resumed batch and
+# `enrich` all read this one rule (audit H7), and `closed_because` is the
+# same rule for one company.
+_CLOSED = "(uid in (select uid from ledger) or uid in (select key from suppression))"
+
+
 def no_site_uids(conn: sqlite3.Connection, run_id: str) -> list[str]:
-    """The companies of a run written off as having no website, that no
-    reviewer has decided about and nobody asked never to hear from: what
-    `retry --no-site` redoes after a run whose search turned out to have
-    been throttled (#20)."""
+    """The companies of a run written off as having no website, that are
+    not closed: what `retry --no-site` redoes after a run whose search
+    turned out to have been throttled (#20)."""
     return [
         r["uid"]
         for r in conn.execute(
-            """select uid from results
-                where run_id = ? and recommendation = 'skip'
-                  and reason like 'no website found%'
-                  and uid not in (select uid from ledger)
-                  and uid not in (select key from suppression)
-                order by uid""",
+            f"""select uid from results
+                 where run_id = ? and recommendation = 'skip'
+                   and reason like 'no website found%'
+                   and not {_CLOSED}
+                 order by uid""",
             (run_id,),
         )
     ]
@@ -974,19 +980,31 @@ def no_site_uids(conn: sqlite3.Connection, run_id: str) -> list[str]:
 
 def errored_uids(conn: sqlite3.Connection, run_id: str) -> list[str]:
     """The companies of a run whose result is an error: what `retry` redoes.
-    Not one a reviewer decided about or that is on the never-again list —
-    retrying it would collect data about it for nothing."""
+    Not a closed one — retrying it would collect data about it for
+    nothing, or against a deletion request."""
     return [
         r["uid"]
         for r in conn.execute(
-            """select uid from results
-                where run_id = ? and error_kind is not null
-                  and uid not in (select uid from ledger)
-                  and uid not in (select key from suppression)
-                order by uid""",
+            f"""select uid from results
+                 where run_id = ? and error_kind is not null
+                   and not {_CLOSED}
+                 order by uid""",
             (run_id,),
         )
     ]
+
+
+def closed_because(conn: sqlite3.Connection, uid: str) -> str | None:
+    """Why nothing more may be collected about this company, or None: the
+    rule of `_CLOSED`, for one company, in words a command can print."""
+    if is_suppressed(conn, uid):
+        return "it is on the never-again list"
+    row = conn.execute(
+        "select status from ledger where uid = ? order by id desc limit 1", (uid,)
+    ).fetchone()
+    if row is not None:
+        return f"a reviewer decided about it ({row['status']})"
+    return None
 
 
 # --- the ledger and suppression (M7) ----------------------------------------
