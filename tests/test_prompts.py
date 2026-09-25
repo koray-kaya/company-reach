@@ -452,7 +452,7 @@ async def test_drafts_pass_the_checklist():
     openings: list[str] = []
     for state, out in zip(inputs, drafts, strict=True):
         d = out["draft"]
-        found = problems(d, state["contact"])
+        found = problems(d, state["contact"], load_profile(settings.profile_path))
         passed += not found
         for p in found:
             rule = p.split(" (")[0]

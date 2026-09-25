@@ -5,8 +5,9 @@ import json
 import sqlite3
 from pathlib import Path
 
+from fictional_profile import INVITATION, SENDER
+
 from company_reach.models import CompanyRecord, Contact, ContactAddress, Draft
-from company_reach.nodes.draft import assemble
 from company_reach.tools.db import (
     connect,
     init_db,
@@ -16,16 +17,18 @@ from company_reach.tools.db import (
     record_site,
     upsert_companies,
 )
+from company_reach.tools.invitation import FRAME_VERSION, assemble, subject
 from company_reach.tools.llm import Provenance
 from company_reach.tools.search import Asked, Result
 
 RUN = "r1"
 SEND, HOLD, SKIP = "CHE000000046", "CHE123456788", "CHE111111118"
 SURVEY = "https://survey.test/form"
+SENTENCE = "Ich schreibe Ihnen, weil Ihr Betrieb Treppen aus Stahl fertigt."
 PROV = Provenance(
     model="test-model",
     prompt="draft",
-    prompt_version="3",
+    prompt_version="4",
     reasoning_effort="low",
     prompt_tokens=1,
     completion_tokens=1,
@@ -109,20 +112,19 @@ def seed(path: Path, *, link: str | None = None) -> None:
         contact_id = record_contact(conn, RUN, SEND, contact)
         survey_link = link or f"{SURVEY}/?c={SEND}&l=de"
         body = assemble(
-            contact,
-            "Da Sie Treppen fertigen, wäre Ihre Sicht wertvoll.",
-            link=survey_link,
+            contact, SENTENCE, link=survey_link, sender=SENDER, inv=INVITATION
         )
         record_draft(
             conn,
             RUN,
             SEND,
             Draft(
-                subject="Umfrage zu meiner Masterarbeit",
+                subject=subject(contact, SENDER, INVITATION),
                 body=body,
-                model_text="Da Sie Treppen fertigen, wäre Ihre Sicht wertvoll.",
+                model_text=SENTENCE,
                 link=survey_link,
                 mailto_fits=True,
+                frame_version=FRAME_VERSION,
             ),
             contact_id=contact_id,
             provenance=PROV,

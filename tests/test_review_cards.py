@@ -44,7 +44,7 @@ def test_a_sendable_card_carries_what_the_reviewer_needs(db: Path):
         "info@muster-metallbau.ch",
         "studio@agentur.example",
     ]
-    assert card.draft.subject == "Umfrage zu meiner Masterarbeit"
+    assert card.draft.subject == "Für Frau Muster: Masterarbeit an der OST"
     assert card.link_length > 0
     assert card.send_block is None
 

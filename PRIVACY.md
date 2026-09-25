@@ -63,10 +63,39 @@ that did not come from the page itself.
 
 ## What the invitation tells its reader
 
-Every draft carries a fixed sentence, added by code rather than written by
-the model, telling the reader where their name and address came from (the
-company's website or SHAB), that they are used only for this invitation, and
-that a short reply has them deleted and stops any further mail.
+The model writes one sentence of the invitation, saying why this company
+gets it. Everything else is written by code (`tools/invitation.py`):
+
+- **Who writes.** The sender's name and school open the mail, and the
+  signature repeats them with the programme and, only with their consent,
+  the supervisor. Together with the From address this names who is
+  responsible for the data.
+- **Where the name and address came from, and what for.** One fixed text
+  per kind of contact, never the model's words:
+
+  | Contact | Text |
+  |---|---|
+  | named on the site, their own address | Ihren Namen und Ihre Adresse habe ich von Ihrer Website und nutze beides nur für diese Anfrage. |
+  | named on the site, the inbox the site publishes | Ihren Namen und diese Adresse habe ich von Ihrer Website und nutze beides nur für diese Anfrage. |
+  | named on the site, info@ guessed | Ihren Namen habe ich von Ihrer Website und nutze ihn nur für diese Anfrage. |
+  | named in SHAB, the inbox the site publishes | Ihren Namen habe ich aus dem Handelsamtsblatt (SHAB), diese Adresse von Ihrer Website; ich nutze beides nur für diese Anfrage. |
+  | named in SHAB, info@ guessed | Ihren Namen habe ich aus dem Handelsamtsblatt (SHAB) und nutze ihn nur für diese Anfrage. |
+  | named in SHAB, their own address on the site | Ihren Namen habe ich aus dem Handelsamtsblatt (SHAB), Ihre Adresse von Ihrer Website; ich nutze beides nur für diese Anfrage. |
+  | nobody named, the inbox the site publishes | Diese Adresse habe ich von Ihrer Website und nutze sie nur für diese Anfrage. |
+  | a first name only, info@ guessed | Diese Adresse nutze ich nur für diese Anfrage. |
+
+  SHAB is never given as the source of an address, and a guessed address
+  is not said to come from anywhere.
+- **One mail only.** "Ich schreibe Ihnen nur dieses eine Mal." The ledger
+  keeps that promise. Only if the profile allows one reminder (which needs
+  ethics approval first) does the mail say "Ich erinnere Sie höchstens
+  einmal daran" instead.
+- **How to be deleted.** When someone is named: "Ein kurzes «Nein» genügt,
+  dann lösche ich Ihren Namen." It promises the name, not the address,
+  because `forget` keeps the address on the never-again list for good.
+- **What the link carries.** "Der Link enthält die UID Ihrer Firma;
+  veröffentlicht werden nur zusammengefasste Ergebnisse." The survey's first
+  page carries the full notice.
 
 ## How it is deleted
 

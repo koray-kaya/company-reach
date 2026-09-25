@@ -29,9 +29,12 @@ CREATE TABLE IF NOT EXISTS contacts (
   id INTEGER PRIMARY KEY, run_id TEXT, uid TEXT, name TEXT, role TEXT, email TEXT,
   email_kind TEXT, source TEXT, source_url TEXT, source_date TEXT, linkedin_lead TEXT,
   alternatives TEXT, addresses TEXT);
+-- model_text: the model's one sentence, from which the card rebuilds the
+-- mail. frame_version and arm: which frame built the body (frame@1).
 CREATE TABLE IF NOT EXISTS drafts (
   id INTEGER PRIMARY KEY, run_id TEXT, uid TEXT, contact_id INTEGER, subject TEXT, body TEXT,
-  mailto_fits INTEGER, prompt_version TEXT, model TEXT, created_at TEXT);
+  mailto_fits INTEGER, prompt_version TEXT, model TEXT, created_at TEXT,
+  model_text TEXT, frame_version TEXT, arm TEXT);
 CREATE TABLE IF NOT EXISTS results (
   run_id TEXT NOT NULL, uid TEXT NOT NULL, recommendation TEXT, reason TEXT,
   error_kind TEXT, error_text TEXT, finished_at TEXT NOT NULL, PRIMARY KEY (run_id, uid));

@@ -4,15 +4,16 @@ The drafting prompt sees the company's profile, and the profile's
 description can quote a hostile page by design (#22). So this is the guard
 that matters rather than a tidiness rule:
 
-* the model's own text carries no link and no e-mail address;
+* the model's own sentence carries no link and no e-mail address;
 * the finished mail's only URL is the survey link code appended, byte for
   byte;
-* it greets the contact by name, carries the data-protection sentence, is
-  at most 1,200 characters and fits in a `mailto:` link.
+* the mail is exactly what the frame builds around the sentence — routing
+  line, greeting, privacy text and signature included — is at most 1,200
+  characters and fits in a `mailto:` link.
 
-The last three are assembled by code and should never fail; they are
-checked anyway, because a check that only covers what can go wrong today
-stops covering it the day the assembly changes.
+The frame is assembled by code and should never fail; it is checked
+anyway, because a check that only covers what can go wrong today stops
+covering it the day the assembly changes.
 
 A draft that fails is written once more, with the model told why. If the
 second fails too, the company is held and the draft deleted, so nothing that
@@ -27,9 +28,10 @@ from typing import Any
 
 from company_reach.models import Contact, Draft
 from company_reach.nodes import draft as draft_node
+from company_reach.profile import Profile, load_profile
 from company_reach.settings import Settings
 from company_reach.tools.db import connect, delete_draft
-from company_reach.tools.invitation import privacy_sentence
+from company_reach.tools.invitation import assemble
 
 MAX_CHARS = 1200
 
@@ -48,7 +50,7 @@ _URL_IN_BODY = re.compile(r"https?://\S+")
 Redraft = Callable[..., Awaitable[dict]]
 
 
-def problems(draft: Draft, contact: Contact) -> list[str]:
+def problems(draft: Draft, contact: Contact, profile: Profile) -> list[str]:
     """Every rule the draft breaks, worded for the model's second attempt
     and for the reviewer's card. Empty means it may be sent."""
     found: list[str] = []
@@ -64,10 +66,19 @@ def problems(draft: Draft, contact: Contact) -> list[str]:
         )
     if _URL_IN_BODY.findall(body) != [draft.link]:
         found.append("the survey link is not the only URL in the mail")
-    if not body.startswith(draft_node.greeting(contact) + "\n"):
-        found.append(f"the greeting does not name {contact.name or 'nobody'}")
-    if privacy_sentence(contact.source) not in body:
-        found.append("the data-protection sentence is missing")
+    framed = assemble(
+        contact,
+        draft.model_text,
+        link=draft.link,
+        sender=profile.sender,
+        inv=profile.invitation,
+        short=draft.arm == "kurz",
+    )
+    if body != framed:
+        found.append(
+            "the mail is not what the frame writes around the sentence "
+            "(routing line, greeting, privacy text or signature changed)"
+        )
     if len(body) > MAX_CHARS:
         found.append(f"the mail is longer than 1,200 characters ({len(body)})")
     if not draft.mailto_fits:
@@ -84,14 +95,15 @@ async def check_draft(
     """`redraft` is the `draft` node, passed in so a test can hand it a
     double and count how often it was asked."""
     contact: Contact = state["contact"]
-    found = problems(state["draft"], contact)
+    profile = load_profile(settings.profile_path)
+    found = problems(state["draft"], contact, profile)
     if not found:
         return {}
 
     second = (
         await redraft(state | {"draft_feedback": "; ".join(found)}, settings=settings)
     )["draft"]
-    found = problems(second, contact)
+    found = problems(second, contact, profile)
     if not found:
         return {"draft": second}
 

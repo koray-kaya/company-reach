@@ -193,6 +193,29 @@ def test_an_older_database_gains_the_columns_added_since(tmp_path: Path):
     assert {"source_date", "alternatives", "addresses"} <= columns
 
 
+def test_an_old_database_gains_the_new_columns(tmp_path: Path):
+    # frame@1: every draft records the model's own sentence (the card
+    # rebuilds the mail from it) and the frame and arm it was written with.
+    # The tables as M6 and M7 shipped them:
+    path = tmp_path / "old.db"
+    conn = sqlite3.connect(path)
+    conn.execute(
+        """CREATE TABLE drafts (
+             id INTEGER PRIMARY KEY, run_id TEXT, uid TEXT, contact_id INTEGER,
+             subject TEXT, body TEXT, mailto_fits INTEGER, prompt_version TEXT,
+             model TEXT, created_at TEXT)"""
+    )
+    conn.close()
+
+    init_db(path)
+    init_db(path)
+
+    conn = sqlite3.connect(path)
+    drafts = {row[1] for row in conn.execute("pragma table_info(drafts)")}
+    conn.close()
+    assert {"model_text", "frame_version", "arm"} <= drafts
+
+
 def test_any_connection_brings_an_older_database_up_to_date(tmp_path: Path):
     # found live: `enrich` opened a database created before `addresses`
     # existed and failed on its first contact, because only some commands

@@ -219,23 +219,28 @@ class Contact(BaseModel):
 
 
 class DraftAnswer(BaseModel):
-    """What `draft.md` returns: the part of the invitation the model writes.
-    The greeting, the survey link, the data-protection sentence and the
-    closing are added by code, so none of them is a field here."""
+    """What `draft.md` returns: the one sentence of the invitation the model
+    writes. Subject, greeting, request, link, privacy text and signature are
+    all written by code (frame@1), so none of them is a field here."""
 
-    subject: str = Field(description="the subject line, German, short")
-    body: str = Field(
-        description="the middle of the mail, German, plain text: no greeting, "
-        "no closing, no link, no e-mail address"
+    sentence: str = Field(
+        description="one German sentence beginning 'Ich schreibe Ihnen, weil', "
+        "at most 20 words, plain text"
     )
 
 
 class Draft(BaseModel):
     """The invitation as a reviewer will see it.
 
-    `model_text` is kept beside the assembled `body` because `check_draft`
-    judges the two differently: the model's text may carry no URL at all,
-    while the body carries exactly one — the survey link code appended.
+    `model_text` is the model's sentence, kept beside the assembled `body`
+    for two reasons: `check_draft` judges the two differently — the sentence
+    may carry no URL at all, the body exactly one, the survey link code
+    appended — and the review card rebuilds the body from it, without a
+    model call, when the reviewer changes the salutation.
+
+    `frame_version` and `arm` say which frame built the body: a redraft
+    replaces a draft of an older frame, and the ledger copies both onto the
+    `sent` row so the survey's answers can be compared per arm.
     """
 
     subject: str
@@ -243,6 +248,8 @@ class Draft(BaseModel):
     model_text: str
     link: str  # the survey link code appended; the body's only allowed URL
     mailto_fits: bool
+    frame_version: str
+    arm: Literal["voll", "kurz"] = "voll"
 
 
 Recommendation = Literal["send", "hold", "skip"]

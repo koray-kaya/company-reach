@@ -51,6 +51,11 @@ _ADDED_COLUMNS = {
     ("contacts", "addresses"): "TEXT",
     ("searches", "result_count"): "INTEGER",
     ("searches", "error"): "TEXT",
+    # frame@1: a draft of the M6/M7 shape has none of these, so it can
+    # never pass for a current one
+    ("drafts", "model_text"): "TEXT",
+    ("drafts", "frame_version"): "TEXT",
+    ("drafts", "arm"): "TEXT",
 }
 
 
@@ -495,8 +500,9 @@ def record_draft(
     conn.execute("delete from drafts where run_id = ? and uid = ?", (run_id, uid))
     conn.execute(
         """INSERT INTO drafts (run_id, uid, contact_id, subject, body,
-             mailto_fits, prompt_version, model, created_at)
-           VALUES (?,?,?,?,?,?,?,?,?)""",
+             mailto_fits, prompt_version, model, created_at, model_text,
+             frame_version, arm)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             run_id,
             uid,
@@ -507,6 +513,9 @@ def record_draft(
             provenance.prompt_version,
             provenance.model,
             now(),
+            draft.model_text,
+            draft.frame_version,
+            draft.arm,
         ),
     )
 

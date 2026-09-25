@@ -1,7 +1,9 @@
 """A deletion request, honoured everywhere the tool keeps personal data.
 
-The invitation promises it: "wenn Sie kurz antworten, lösche ich sie und
-schreibe Ihnen nicht wieder". So `forget <uid|email>`:
+The invitation promises it: "Ein kurzes «Nein» genügt, dann lösche ich Ihren
+Namen" (frame@1, `tools/invitation.privacy`). It promises the name, never
+the address, because the address is kept on the never-again list for good.
+So `forget <uid|email>`:
 
 * removes the company's contacts (and the alternatives named beside them),
   drafts, profiles and site evidence, and the person's name from the

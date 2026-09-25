@@ -43,19 +43,6 @@ _DIGITS = re.compile(r"\D")
 _WEIGHTS = (5, 4, 3, 2, 7, 6, 5, 4)
 _LANGS = ("de", "en")
 
-# Approved by Koray on 2026-09-24. revDSG: a person whose data was not
-# collected from them is told where it came from, what it is for, and how to
-# have it deleted. "nicht wieder schreiben" is kept by the suppression list.
-_PRIVACY = (
-    "Ihren Namen und Ihre Adresse habe ich {source} entnommen. Ich verwende "
-    "sie nur für diese Einladung; wenn Sie kurz antworten, lösche ich sie und "
-    "schreibe Ihnen nicht wieder."
-)
-_SOURCES = {
-    "site": "von Ihrer Website",
-    "shab": "aus dem Schweizerischen Handelsamtsblatt (SHAB)",
-}
-
 
 class InvitationError(CompanyReachError):
     """A link or sentence could not be built from what was given."""
@@ -93,10 +80,6 @@ def survey_link(survey_url: str, uid: str, *, lang: str = "de") -> str:
     if not uid_is_valid(uid):
         raise InvitationError(f"{uid!r} is not a UID with a valid check digit")
     return f"{survey_url.rstrip('/')}/?c={_compact(uid)}&l={lang}"
-
-
-def privacy_sentence(source: Literal["site", "shab"]) -> str:
-    return _PRIVACY.format(source=_SOURCES[source])
 
 
 # --- names -------------------------------------------------------------------

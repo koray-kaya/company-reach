@@ -22,7 +22,6 @@ from company_reach.tools.invitation import (
     link_block,
     opening,
     privacy,
-    privacy_sentence,
     routing_line,
     salutation,
     split_name,
@@ -99,19 +98,6 @@ def test_the_smoke_tag_is_never_an_invitation():
 def test_no_survey_url_is_an_error():
     with pytest.raises(InvitationError, match="survey_url"):
         survey_link("", UID)
-
-
-# --- the data-protection sentence --------------------------------------------
-
-
-def test_the_sentence_names_the_site_as_the_source():
-    sentence = privacy_sentence("site")
-    assert "von Ihrer Website" in sentence
-    assert "lösche ich sie" in sentence
-
-
-def test_the_sentence_names_shab_as_the_source():
-    assert "Schweizerischen Handelsamtsblatt (SHAB)" in privacy_sentence("shab")
 
 
 # --- the frame (frame@1) -----------------------------------------------------

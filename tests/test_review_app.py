@@ -45,7 +45,7 @@ def test_a_card_shows_the_decision_the_facts_and_the_letter(client):
     assert "Anna Muster at the general inbox the site publishes" in html
     assert "UID matches the register" in html
     assert "info@muster-metallbau.ch" in html
-    assert "Umfrage zu meiner Masterarbeit" in html
+    assert "Für Frau Muster: Masterarbeit an der OST" in html
     assert "1 / 3" in html
     assert 'name="to" value="info@muster-metallbau.ch" checked' in html
 

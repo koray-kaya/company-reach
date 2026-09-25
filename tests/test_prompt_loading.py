@@ -71,3 +71,23 @@ def test_the_prompts_ship_inside_the_package():
 
     shipped = {p.name for p in files("company_reach").joinpath("prompts").iterdir()}
     assert {"extract.md", "draft.md", "score.md", "pick_site.md"} <= shipped
+
+
+def test_draft_v4_renders_with_the_six_variables():
+    from company_reach.tools.untrusted import as_data
+
+    version, text = render(
+        "draft",
+        about_me="A thesis on how small firms find customers.",
+        company_name="Muster Metallbau AG",
+        seat="Musterstadt",
+        role=as_data("Inhaberin", label="ROLE"),
+        profile=as_data("Makes railings.", label="PROFILE"),
+        feedback="",
+    )
+    assert version == "4"
+    assert "$" not in text
+    assert "Ich schreibe Ihnen, weil" in text
+    # the role is a block of its own, like the profile: page data, never
+    # part of our sentence (audit K4)
+    assert "\n<<<ROLE>>>\nInhaberin\n<<<END>>>\n" in text
