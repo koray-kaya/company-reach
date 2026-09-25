@@ -9,10 +9,15 @@ nothing stopped it: the text went into the template exactly as it came off
 the site, so a page containing `<<<END>>>` closed the block early and
 everything after it read as ours.
 
-Only the opening `<<<` is neutralised, because every marker starts with it.
-A page that cannot write `<<<` cannot write `<<<END>>>` either, and one
-substitution is easier to be sure about than a list of them.
+Two defences, because the first alone failed. Every `<<<` in the page is
+broken up, until none is left: one pass of `str.replace` turned `<<<<<END>>>`
+into `<< <<<END>>>`, the marker rebuilt (audit). And every block's markers
+carry a random nonce, `<<<PAGE-<nonce> …>>>` … `<<<END-<nonce>>>>`, fresh for
+each block, so a page cannot know the marker that closes it — not even by
+copying one it saw in an earlier prompt.
 """
+
+import secrets
 
 _OPENER = "<<<"
 # Visibly the same characters, not the same token. The page keeps its
@@ -23,5 +28,9 @@ _BROKEN = "<< <"
 
 def as_data(text: str, *, label: str = "PAGE", url: str | None = None) -> str:
     """One delimited block of untrusted text, ready to drop into a prompt."""
-    head = f"{_OPENER}{label} url={url}>>>" if url else f"{_OPENER}{label}>>>"
-    return f"{head}\n{text.replace(_OPENER, _BROKEN)}\n{_OPENER}END>>>"
+    nonce = secrets.token_hex(8)
+    head = f"{_OPENER}{label}-{nonce}"
+    head = f"{head} url={url}>>>" if url else f"{head}>>>"
+    while _OPENER in text:
+        text = text.replace(_OPENER, _BROKEN)
+    return f"{head}\n{text}\n{_OPENER}END-{nonce}>>>"

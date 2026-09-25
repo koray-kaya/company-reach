@@ -7,6 +7,7 @@ that steered the model still cannot change who is greeted, where the link
 points, or what the reader is told about their data.
 """
 
+import re
 import sqlite3
 
 import pytest
@@ -115,7 +116,7 @@ def expected_body(c: Contact, sentence: str = SENTENCE) -> str:
 async def test_the_profile_is_shown_as_data(db_settings, shown):
     await draft(state(), settings=db_settings)
     assert shown["prompt"] == "draft"
-    assert "<<<PROFILE>>>" in shown["profile"]
+    assert re.match(r"<<<PROFILE-[0-9a-f]+>>>", shown["profile"])
     assert "Makes steel stair railings." in shown["profile"]
 
 

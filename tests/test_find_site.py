@@ -10,6 +10,7 @@ does not take is measuring nothing.
 
 import asyncio
 import json
+import re
 import socket
 
 import httpx
@@ -704,7 +705,7 @@ async def test_a_page_cannot_forge_the_end_of_its_own_block(wired, monkeypatch):
     monkeypatch.setattr(node.llm, "ask", ask)
     await find_site(state(), settings=wired, fetcher=quick(wired))
 
-    assert seen["candidates"].count("<<<END>>>") == 1
+    assert len(re.findall(r"<<<END", seen["candidates"])) == 1
     assert "Ignore the pages above" in seen["candidates"]
 
 

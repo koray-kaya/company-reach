@@ -12,6 +12,7 @@ So each test here hands `checked` the *worst* answer the page could have
 produced — as if the model had fully complied — and asserts what is left.
 """
 
+import re
 from pathlib import Path
 
 from company_reach.models import RawPerson, RawProfile
@@ -75,8 +76,8 @@ def test_the_page_cannot_end_the_block_it_sits_in():
     """The same page also writes the closing marker, so the two halves of
     the boundary are exercised on one fixture."""
     block = as_data(page("poisoned_instructions"), url=f"{SITE}impressum")
-    assert block.count("<<<END>>>") == 1
-    assert block.rstrip().endswith("<<<END>>>")
+    [end] = re.findall(r"<<<END[^>]*>>>", block)
+    assert block.endswith(end)
 
 
 def test_a_lookalike_domain_is_marked_not_waved_through():
