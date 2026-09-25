@@ -8,7 +8,8 @@ from typer.testing import CliRunner
 
 from company_reach import cli
 from company_reach.errors import SearchError
-from company_reach.manifest import manifest_path
+from company_reach.graph import build_stub_child
+from company_reach.manifest import manifest_path, start_manifest
 from company_reach.models import CompanyRecord, RawPerson, Score, SelectionCriteria
 from company_reach.nodes import find_site as find_site_node
 from company_reach.profile import goal_hash
@@ -376,9 +377,10 @@ def test_run_target_reaches_the_loop_and_the_resume_hint(settings, monkeypatch):
         return state | {"sendable_count": 1, "batches_drawn": 3}
 
     monkeypatch.setattr(cli, "run_graph", stopped_at_the_cap)
+    _real_run_without_network(monkeypatch)  # a dry run has no resume hint
     r = runner.invoke(
         cli.app,
-        ["run", "--dry", "--goal", "make and sell", "--run-id", "r1", "--target", "5"],
+        ["run", "--goal", "make and sell", "--run-id", "r1", "--target", "5"],
     )
 
     assert r.exit_code == 0, r.output
@@ -749,14 +751,24 @@ def test_run_with_a_goal_keeps_about_me(settings, monkeypatch):
     assert captured["about_me"] == "Eine Studentin der Beispiel-Hochschule."
 
 
+def _real_run_without_network(monkeypatch) -> None:
+    """A run without --dry that still needs no network: the stub child, and
+    a search probe that answers."""
+
+    async def search_works(state, *, settings):
+        return {}
+
+    monkeypatch.setattr("company_reach.graph.probe_search", search_works)
+    monkeypatch.setattr(cli, "build_child", lambda settings: build_stub_child())
+
+
 def test_run_names_its_id_before_it_starts(settings, monkeypatch):
     """A run that is stopped halfway can be resumed only with its id, so the
     id is printed before anything else happens."""
     monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    _real_run_without_network(monkeypatch)
     _seed_scored_pool(settings, {"CHE000000001": 9})
-    r = runner.invoke(
-        cli.app, ["run", "--dry", "--goal", "make and sell", "--run-id", "r7"]
-    )
+    r = runner.invoke(cli.app, ["run", "--goal", "make and sell", "--run-id", "r7"])
     assert r.exit_code == 0, r.output
     first = r.output.splitlines()[0]
     assert "r7" in first and "--run-id r7" in first
@@ -764,15 +776,70 @@ def test_run_names_its_id_before_it_starts(settings, monkeypatch):
 
 
 def test_the_resume_hint_repeats_the_options_given(settings, monkeypatch):
-    """Final review of Phase A: following the hint after `run --dry --goal X`
-    would have started a real run with the profile's goal."""
+    """Final review of Phase A: following the hint after `run --goal X` must
+    not start a run with the profile's goal, or other options."""
     monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    _real_run_without_network(monkeypatch)
     _seed_scored_pool(settings, {"CHE000000001": 9})
     r = runner.invoke(
-        cli.app, ["run", "--dry", "--goal", "make and sell", "--run-id", "r8"]
+        cli.app,
+        [
+            "run",
+            "--goal",
+            "make and sell",
+            "--run-id",
+            "r8",
+            "--seed",
+            "3",
+            "--target",
+            "2",
+        ],
     )
     first = r.output.splitlines()[0]
-    assert "--dry" in first and '--goal "make and sell"' in first
+    assert '--goal "make and sell"' in first
+    assert "--seed 3" in first and "--target 2" in first
+
+
+def test_a_dry_run_promises_no_resume(settings, monkeypatch):
+    """Review of Phase F: a dry run keeps nothing, so "run it again with" and
+    "finish them with" promised what a rerun on a fresh copy cannot do."""
+    from company_reach.graph import draw_batch
+
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    _seed_scored_pool(settings, {"CHE000000001": 9})
+
+    async def drawn_then_stopped(state, *, settings, **kwargs):
+        draw_batch(state, settings=settings)  # on the copy, never finished
+        return state | {"pool_exhausted": True}
+
+    monkeypatch.setattr(cli, "run_graph", drawn_then_stopped)
+    r = _dry_run("d1")
+
+    assert r.exit_code == 0, r.output
+    first = r.output.splitlines()[0]
+    assert "d1" in first and "run it again" not in first
+    assert "1 errors" in r.output
+    assert "finish them with" not in r.output
+    assert "a dry run keeps nothing; its errors vanish with the copy" in r.output
+
+
+def test_a_dry_run_refuses_a_real_run_id(settings, monkeypatch):
+    """Review of Phase F: `run --dry --run-id <a real run>` overwrote that
+    run's manifest. A real run that stopped before drawing has a manifest
+    and nothing in the database; a dry run's own id may be used again."""
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    _seed_scored_pool(settings, {"CHE000000001": 9})
+    start_manifest("r5", settings=settings, goal="make and sell", seed=0)
+    before = manifest_path("r5", settings=settings).read_text()
+
+    r = _dry_run("r5")
+
+    assert r.exit_code == 2
+    assert "r5 is a real run; use another id" in r.output
+    assert manifest_path("r5", settings=settings).read_text() == before
+
+    assert _dry_run("d2").exit_code == 0
+    assert _dry_run("d2").exit_code == 0  # a dry id again is fine
 
 
 def test_a_leftover_unfinished_company_is_reported(settings, monkeypatch):
@@ -800,12 +867,15 @@ def test_a_leftover_unfinished_company_is_reported(settings, monkeypatch):
     assert "1 errors" in r.output
     assert "retry r9" in r.output
 
-    # after --dry the hint must not be `retry`, which runs the real child
+    # a dry run may not take a real run's id: it would overwrite its manifest
+    # and report the real run's errors as its own (review of Phase F)
     dry = runner.invoke(
         cli.app, ["run", "--dry", "--goal", "make and sell", "--run-id", "r9"]
     )
-    assert "company-reach retry" not in dry.output
-    assert "finish them with: company-reach run --run-id r9 --dry" in dry.output
+    assert dry.exit_code == 2
+    assert "r9 is a real run; use another id" in dry.output
+    manifest = json.loads(manifest_path("r9", settings=settings).read_text())
+    assert manifest["dry"] is False and manifest["counts"]["errors"] == 1
 
 
 # --- redraft (frame@1) --------------------------------------------------------

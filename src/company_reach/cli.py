@@ -2,6 +2,7 @@
 --help; the wiring to the `company-reach` executable is [project.scripts]."""
 
 import asyncio
+import json
 import tempfile
 import uuid
 from collections.abc import Iterator
@@ -84,6 +85,28 @@ def _work_database(s: Settings, *, dry: bool) -> Iterator[Settings]:
         if s.db_path.is_file():
             copy_database(s.db_path, work.db_path)
         yield work
+
+
+def _refuse_a_real_run_id(s: Settings, work: Settings, run_id: str) -> None:
+    """A dry run under a real run's id would overwrite that run's manifest
+    and count its errors as its own. A real id has rows in the database
+    (read here from the copy, which holds the same) or a manifest that is not
+    marked dry: a real run that stopped before drawing has only the latter.
+    A manifest from before dry runs were marked counts as real."""
+    path = manifest_path(run_id, settings=s)
+    real_manifest = (
+        path.is_file()
+        and json.loads(path.read_text(encoding="utf-8")).get("dry") is not True
+    )
+    with connect(work.db_path) as conn:
+        in_database = conn.execute(
+            "select 1 from seen where run_id = :id"
+            " union select 1 from results where run_id = :id",
+            {"id": run_id},
+        ).fetchone()
+    if real_manifest or in_database:
+        typer.echo(f"{run_id} is a real run; use another id for --dry.", err=True)
+        raise typer.Exit(2)
 
 
 def _require_a_scored_pool(s, goal: str, run_id: str) -> None:
@@ -402,11 +425,12 @@ def run(
     s = get_settings()
     text = _resolve_goal(goal)
     rid = _run_id(run_id)
-    resume = _resume(rid, dry, goal, seed, target)
 
     # `work` holds the database the run reads and writes; `s` the real data
     # directory, where the manifest goes whether the run is dry or not.
     with _work_database(s, dry=dry) as work:
+        if dry:
+            _refuse_a_real_run_id(s, work, rid)
         _require_a_scored_pool(work, text, rid)
 
         with connect(work.db_path) as conn:
@@ -423,7 +447,12 @@ def run(
             target=target,
         )
 
-        typer.echo(f"run {rid} — if it stops, run it again with: {resume}")
+        if dry:
+            # nothing to resume: the copy, and all it did, is thrown away
+            typer.echo(f"run {rid} — dry, on a copy of the database")
+        else:
+            resume = _resume(rid, goal, seed, target)
+            typer.echo(f"run {rid} — if it stops, run it again with: {resume}")
         try:
             child = build_stub_child() if dry else build_child(settings=work)
             out = asyncio.run(
@@ -470,8 +499,8 @@ def run(
         )
     typer.echo(f"manifest: {manifest_path(rid, settings=s)}")
     if counts["errors"] and dry:
-        # `retry` runs the real child; a dry run is finished by itself
-        typer.echo(f"finish them with: {resume}")
+        # not `retry`, which runs the real child against the real database
+        typer.echo("a dry run keeps nothing; its errors vanish with the copy")
     elif counts["errors"]:
         typer.echo(f"retry the errors with: company-reach retry {rid}")
     if dry:
@@ -794,12 +823,11 @@ def report(
     typer.echo(f"responses without a sent invitation: {unmatched}")
 
 
-def _resume(rid: str, dry: bool, goal: str | None, seed: int, target: int) -> str:
-    """The command that continues this run: the same options, or following
-    the hint after a --dry run would start a real one."""
+def _resume(rid: str, goal: str | None, seed: int, target: int) -> str:
+    """The command that continues this real run: the same options, or the
+    hint would start a different run under the same id. A dry run has none;
+    it keeps nothing to continue."""
     parts = ["company-reach run", f"--run-id {rid}"]
-    if dry:
-        parts.append("--dry")
     if goal:
         parts.append(f'--goal "{goal}"')
     if seed:
