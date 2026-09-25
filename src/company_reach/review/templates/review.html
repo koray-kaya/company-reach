@@ -9,6 +9,10 @@
 <body>
 {% set c = card.contact %}
 <form class="app" method="post" action="/decide/{{ run_id }}/{{ card.uid }}?n={{ n }}">
+{% if card.draft %}{# Send names the text this card showed; the server refuses any other #}
+<input type="hidden" name="draft_id" value="{{ card.draft.id }}">
+<input type="hidden" name="body_sha256" value="{{ card.draft.body_sha256 }}">
+{% endif %}
   <header class="bar">
     <div class="goal"><strong>{{ goal }}</strong></div>
     <div class="progress" aria-hidden="true">

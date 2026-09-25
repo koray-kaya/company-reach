@@ -5,6 +5,8 @@ a request from an old client or a script looks like; every POST here says
 which kind of request it is on purpose.
 """
 
+import re
+
 import pytest
 from fastapi.testclient import TestClient
 from fictional_profile import profile_text
@@ -96,6 +98,30 @@ def test_a_position_past_the_end_is_404(client):
 # --- deciding ----------------------------------------------------------------
 
 
+def shown(html: str) -> dict[str, str]:
+    """The draft the card rendered into its form: Send names what it sends."""
+    return dict(re.findall(r'name="(draft_id|body_sha256)" value="([^"]*)"', html))
+
+
+def post_send(
+    client: TestClient,
+    to: str,
+    *,
+    uid: str = SEND,
+    n: int = 0,
+    card: dict[str, str] | None = None,
+):
+    """Send as the page does: from the card as it was opened, unless `card`
+    says what an earlier view of it showed."""
+    if card is None:
+        card = shown(client.get(f"/review/{RUN}/{n}").text)
+    return client.post(
+        f"/decide/{RUN}/{uid}?n={n}",
+        data={"action": "send", "to": to, **card},
+        headers=SAME,
+    )
+
+
 def decision(review: Settings, uid: str) -> str | None:
     with connect(review.db_path) as conn:
         row = decision_for(conn, uid)
@@ -131,11 +157,7 @@ def test_a_typed_url_counts_as_this_page(client, review):
 
 
 def test_send_records_first_then_hands_over_the_mailto(client, review):
-    r = client.post(
-        f"/decide/{RUN}/{SEND}?n=0",
-        data={"action": "send", "to": "info@muster-metallbau.ch"},
-        headers=SAME,
-    )
+    r = post_send(client, "info@muster-metallbau.ch")
     assert r.status_code == 200
     assert decision(review, SEND) == "sent"
     assert 'http-equiv="refresh"' in r.text
@@ -161,11 +183,7 @@ def test_a_profile_change_blocks_send_on_the_server(client, review):
 
 
 def test_send_copies_frame_arm_and_contact_kind(client, review):
-    client.post(
-        f"/decide/{RUN}/{SEND}?n=0",
-        data={"action": "send", "to": "info@muster-metallbau.ch"},
-        headers=SAME,
-    )
+    post_send(client, "info@muster-metallbau.ch")
     with connect(review.db_path) as conn:
         row = conn.execute(
             "select frame_version, arm, contact_kind from ledger"
@@ -174,11 +192,7 @@ def test_send_copies_frame_arm_and_contact_kind(client, review):
 
 
 def test_send_goes_only_to_an_address_the_card_offered(client, review):
-    r = client.post(
-        f"/decide/{RUN}/{SEND}?n=0",
-        data={"action": "send", "to": "someone@elsewhere.example"},
-        headers=SAME,
-    )
+    r = post_send(client, "someone@elsewhere.example")
     assert r.status_code == 400
     assert ledger_rows(review) == 0
 
@@ -208,11 +222,33 @@ def test_a_held_company_cannot_be_sent_by_posting_anyway(client, review):
 
 
 def test_a_company_is_sent_once(client, review):
-    data = {"action": "send", "to": "info@muster-metallbau.ch"}
-    client.post(f"/decide/{RUN}/{SEND}?n=0", data=data, headers=SAME)
-    r = client.post(f"/decide/{RUN}/{SEND}?n=0", data=data, headers=SAME)
+    card = shown(client.get(f"/review/{RUN}/0").text)
+    post_send(client, "info@muster-metallbau.ch", card=card)
+    r = post_send(client, "info@muster-metallbau.ch", card=card)
     assert r.status_code == 409
     assert ledger_rows(review) == 1
+
+
+def test_a_changed_draft_is_not_sent(client, review):
+    """The reviewer approves the text on screen; meanwhile the draft is
+    rebuilt in place, under the same id — the salutation toggle in another
+    tab, a redraft in a terminal. Send must not mail the text nobody read."""
+    before = shown(client.get(f"/review/{RUN}/0").text)
+    assert set(before) == {"draft_id", "body_sha256"}
+    client.post(
+        f"/decide/{RUN}/{SEND}?n=0", data={"action": "salutation:ohne"}, headers=SAME
+    )
+    after = shown(client.get(f"/review/{RUN}/0").text)
+    assert after["draft_id"] == before["draft_id"]  # the id alone cannot tell
+
+    r = post_send(client, "info@muster-metallbau.ch", card=before)
+    assert r.status_code == 409
+    assert "the draft changed; reload the card" in r.text
+    r = post_send(client, "info@muster-metallbau.ch", card={})  # names none
+    assert r.status_code == 409
+    assert ledger_rows(review) == 0
+
+    assert post_send(client, "info@muster-metallbau.ch", card=after).status_code == 200
 
 
 def test_skip_records_the_reason_and_moves_on(client, review):
@@ -236,11 +272,7 @@ def test_undo_takes_a_skip_back_with_a_new_row(client, review):
 
 
 def test_undo_never_takes_back_a_send(client, review):
-    client.post(
-        f"/decide/{RUN}/{SEND}?n=0",
-        data={"action": "send", "to": "info@muster-metallbau.ch"},
-        headers=SAME,
-    )
+    post_send(client, "info@muster-metallbau.ch")
     r = client.post(f"/decide/{RUN}/{SEND}?n=0", data={"action": "undo"}, headers=SAME)
     assert r.status_code == 409
     assert decision(review, SEND) == "sent"
@@ -362,11 +394,7 @@ def test_an_unknown_salutation_is_refused(client, review):
 
 
 def test_a_decided_card_keeps_its_salutation(client, review):
-    client.post(
-        f"/decide/{RUN}/{SEND}?n=0",
-        data={"action": "send", "to": "info@muster-metallbau.ch"},
-        headers=SAME,
-    )
+    assert post_send(client, "info@muster-metallbau.ch").status_code == 200
     r = client.post(
         f"/decide/{RUN}/{SEND}?n=0", data={"action": "salutation:Herr"}, headers=SAME
     )
@@ -376,12 +404,9 @@ def test_a_decided_card_keeps_its_salutation(client, review):
 def test_a_third_party_row_cannot_be_sent(client, review):
     html = client.get(f"/review/{RUN}/0").text
     assert 'value="studio@agentur.example" disabled' in html
-    r = client.post(
-        f"/decide/{RUN}/{SEND}?n=0",
-        data={"action": "send", "to": "studio@agentur.example"},
-        headers=SAME,
-    )
+    r = post_send(client, "studio@agentur.example", card=shown(html))
     assert r.status_code == 409
+    assert "another domain" in r.text
     assert ledger_rows(review) == 0
 
 
@@ -495,12 +520,6 @@ def test_a_third_party_row_cannot_be_chosen(client, review):
 
 
 # --- the address, not only the company (audit: address-level suppression) ---
-
-
-def post_send(client: TestClient, to: str, *, uid: str = SEND, n: int = 0):
-    return client.post(
-        f"/decide/{RUN}/{uid}?n={n}", data={"action": "send", "to": to}, headers=SAME
-    )
 
 
 def test_an_address_already_mailed_is_refused(client, review):

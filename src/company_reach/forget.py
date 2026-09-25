@@ -10,8 +10,9 @@ So `forget <uid|email>`:
   recommendation's reason;
 * removes the pages read from the company's site, from the database and
   from the page cache;
-* keeps the ledger's decisions but clears their address, because "contacted
-  once, ever" has to hold after the person is forgotten;
+* keeps the ledger's decisions but clears their address and a sent row's
+  subject (it can name the person), because "contacted once, ever" has to
+  hold after the person is forgotten;
 * suppresses the uid, the address when one was given, and every address
   the company was written to (the ledger no longer holds them), for good;
 * compacts the database, since SQLite keeps deleted rows in free pages until
@@ -29,8 +30,9 @@ Every file that still names the person is reported, so a human can.
 
 `purge` is the same deletion without a request: personal data of companies
 nobody has touched for a year (#27, decided with Koray). It suppresses
-nobody, and it leaves the ledger whole — a `sent` row keeps its address as
-the record of what was sent and the key to a later deletion request.
+nobody, and it leaves the ledger whole but for a sent row's subject — a
+`sent` row keeps its address as the record of what was sent and the key to
+a later deletion request.
 """
 
 import json
@@ -173,6 +175,9 @@ def _delete_rows(
     conn.execute(
         f"update results set reason = ? where uid in ({marks})", [reason, *uids]
     )
+    # a sent row's subject can name the person ("Für Frau Muster: …"); its
+    # body hash, versions and kind of contact stay
+    conn.execute(f"update ledger set subject = null where uid in ({marks})", uids)
     if clear_ledger_addresses:
         conn.execute(f"update ledger set address = null where uid in ({marks})", uids)
     for row in conn.execute("select url from pages").fetchall():

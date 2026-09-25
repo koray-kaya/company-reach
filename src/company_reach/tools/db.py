@@ -74,6 +74,10 @@ _ADDED_COLUMNS = {
     ("ledger", "arm"): "TEXT",
     ("ledger", "contact_kind"): "TEXT",
     ("scores", "criteria_hash"): "TEXT",
+    # what went out, snapshotted at Send (D4)
+    ("ledger", "subject"): "TEXT",
+    ("ledger", "body_sha256"): "TEXT",
+    ("ledger", "prompt_version"): "TEXT",
 }
 
 
@@ -93,6 +97,26 @@ def _replace_ledger_of_one_row_per_company(conn: sqlite3.Connection) -> None:
     conn.execute("drop table ledger")
 
 
+def _drafts_never_reuse_ids(conn: sqlite3.Connection, schema: str) -> None:
+    """Without AUTOINCREMENT a new row takes the highest id plus one, so
+    replacing the newest draft handed its id on, and a sent row's
+    `draft_id` came to name text that was never sent (audit, D4). A table
+    from before is rebuilt once, every draft and id kept."""
+    sql = conn.execute(
+        "select sql from sqlite_master where type = 'table' and name = 'drafts'"
+    ).fetchone()["sql"]
+    if "AUTOINCREMENT" in sql.upper():
+        return
+    columns = ", ".join(r["name"] for r in conn.execute("pragma table_info(drafts)"))
+    conn.execute("alter table drafts rename to drafts_before_autoincrement")
+    conn.executescript(schema)  # creates drafts anew; the rest exists
+    conn.execute(
+        f"insert into drafts ({columns})"
+        f" select {columns} from drafts_before_autoincrement"
+    )
+    conn.execute("drop table drafts_before_autoincrement")
+
+
 def init_db(path: Path) -> None:
     schema = files("company_reach").joinpath("schema.sql").read_text()
     conn = _open(path)
@@ -104,6 +128,7 @@ def init_db(path: Path) -> None:
                 have = {r["name"] for r in conn.execute(f"pragma table_info({table})")}
                 if column not in have:
                     conn.execute(f"alter table {table} add column {column} {kind}")
+            _drafts_never_reuse_ids(conn, schema)
     finally:
         conn.close()
     _current.add(path.resolve())
@@ -1025,6 +1050,9 @@ def record_decision(
     frame_version: str | None = None,
     arm: str | None = None,
     contact_kind: str | None = None,
+    subject: str | None = None,
+    body_sha256: str | None = None,
+    prompt_version: str | None = None,
 ) -> int:
     """Append one decision. Nothing in the ledger is ever updated or
     deleted by the page: undoing a skip is an `undone` row after it.
@@ -1032,13 +1060,16 @@ def record_decision(
     A `sent` row carries the draft's frame and arm and the kind of contact
     it went to, copied here because `forget` and `purge` delete drafts and
     contacts but keep the ledger — and the survey's answers are compared by
-    them."""
+    them. It also snapshots the subject, the body's sha256 and the prompt
+    version, so the record of what went out does not depend on a draft row
+    that a redraft replaces or a purge deletes."""
     if status not in DECISIONS:
         raise ValueError(f"status must be one of {DECISIONS}, not {status!r}")
     cur = conn.execute(
         """INSERT INTO ledger (uid, status, address, draft_id, run_id, note,
-             decided_at, frame_version, arm, contact_kind)
-           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+             decided_at, frame_version, arm, contact_kind, subject, body_sha256,
+             prompt_version)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             uid,
             status,
@@ -1050,6 +1081,9 @@ def record_decision(
             frame_version,
             arm,
             contact_kind,
+            subject,
+            body_sha256,
+            prompt_version,
         ),
     )
     return cur.lastrowid

@@ -32,7 +32,7 @@ Only on the machine that runs it, under `data/`:
 
 | Place | What |
 |---|---|
-| `data/company_reach.db` (SQLite) | companies, scores, site evidence, the search log (each query, and SearXNG's first ten result URLs — never Brave's), page text, profiles, contacts, drafts, results, the ledger of decisions, the never-again list, and — once imported from the survey's export — when each company's response started and finished (by UID; `report` prints only counts) |
+| `data/company_reach.db` (SQLite) | companies, scores, site evidence, the search log (each query, and SearXNG's first ten result URLs — never Brave's), page text, profiles, contacts, drafts, results, the ledger of decisions (for a mail sent: the address, the subject and a hash of the text), the never-again list, and — once imported from the survey's export — when each company's response started and finished (by UID; `report` prints only counts) |
 | `data/cache/` | the HTML of every page fetched |
 | `data/runs/<run>/manifest.json` | each run's settings, prompt versions and counts — no personal data |
 
@@ -110,8 +110,9 @@ gets it. Everything else is written by code (`tools/invitation.py`):
   response times for the company, the name in the recommendation — and
   vacuums the database so nothing stays in free pages.
   The company and the address go on the never-again list, so they are never
-  contacted again. The ledger keeps the decision without the address; the
-  address a mail went to moves to the never-again list instead. An address
+  contacted again. The ledger keeps the decision without the address or
+  the mail's subject; the address a mail went to moves to the never-again
+  list instead. An address
   is looked up in the contacts, the persons a profile names and the ledger.
   When no company holds it, `forget` still puts it on the never-again list,
   says that nothing was deleted, and exits with status 2: the company is
@@ -121,7 +122,8 @@ gets it. Everything else is written by code (`tools/invitation.py`):
 - **After a year:** `company-reach purge --older-than 365` removes the same
   data for every company nobody has touched for that long. It keeps the
   ledger and the never-again list, including the address of a mail that was
-  sent, because "contacted once, ever" rests on them. `company-reach doctor`
+  sent, because "contacted once, ever" rests on them; only the mail's
+  subject, which can name the person, is cleared. `company-reach doctor`
   reports how many companies a purge would clear.
 
 ## Before the first real invitation

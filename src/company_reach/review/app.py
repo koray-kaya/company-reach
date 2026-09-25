@@ -133,7 +133,8 @@ def create_app(settings: Settings) -> FastAPI:
             raise HTTPException(404, f"{uid} is not in run {run_id!r}")
 
         if action == "send":
-            return send(request, run_id, card, str(form.get("to", "")), n)
+            shown = (str(form.get("draft_id", "")), str(form.get("body_sha256", "")))
+            return send(request, run_id, card, str(form.get("to", "")), n, shown)
         if action.startswith("address:"):
             email = action.removeprefix("address:")
             rows = (
@@ -207,12 +208,27 @@ def create_app(settings: Settings) -> FastAPI:
         raise HTTPException(400, f"unknown action {action!r}")
 
     def send(
-        request: Request, run_id: str, card: Card, to: str, n: int
+        request: Request,
+        run_id: str,
+        card: Card,
+        to: str,
+        n: int,
+        shown: tuple[str, str],
     ) -> HTMLResponse:
         """Record first, then open the mail. "Contacted once, ever" rests on
-        the ledger, so it must not depend on a link being followed."""
+        the ledger, so it must not depend on a link being followed.
+
+        `shown` is the draft id and body hash the card was rendered with.
+        The reviewer approved that text; if the table now holds another —
+        the salutation toggle in a second tab, a redraft in a terminal —
+        nothing is sent."""
         if card.send_block:
             raise HTTPException(409, card.send_block)
+        if card.draft is None or shown != (
+            str(card.draft.id),
+            card.draft.body_sha256,
+        ):
+            raise HTTPException(409, "the draft changed; reload the card")
         offered = (
             {a.email: a.kind for a in card.contact.addresses} if card.contact else {}
         )
@@ -249,6 +265,10 @@ def create_app(settings: Settings) -> FastAPI:
                 frame_version=draft.frame_version,
                 arm=draft.arm,
                 contact_kind=kind,
+                # what went out, independent of the draft row from now on
+                subject=draft.subject,
+                body_sha256=draft.body_sha256,
+                prompt_version=draft.prompt_version,
             )
         link = build(to, draft.subject, draft.body)
         if not link.fits:

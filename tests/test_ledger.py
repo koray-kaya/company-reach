@@ -134,6 +134,96 @@ def test_a_sent_row_keeps_frame_and_kind_after_forget(settings):
     assert tuple(row) == (None, "frame@1", "voll", "generic/site/named")
 
 
+def test_a_sent_row_survives_a_redraft(settings):
+    """The ledger is the record of what was sent (audit: a redraft made
+    `draft_id` point to text never sent). A redraft replaces the company's
+    draft; the sent row keeps the subject, the body's hash and the prompt
+    version that went out, and its draft_id never comes to name other text."""
+    import hashlib
+    import re
+    from dataclasses import replace
+
+    from fastapi.testclient import TestClient
+    from fictional_profile import profile_text
+    from review_seed import PROV, RUN, SEND, SURVEY, seed
+
+    from company_reach.models import Draft
+    from company_reach.review.app import create_app
+    from company_reach.tools.db import record_draft
+
+    seed(settings.db_path)
+    settings.profile_path.write_text(profile_text(SURVEY))
+    client = TestClient(
+        create_app(settings.model_copy(update={"sending_approved": True})),
+        follow_redirects=False,
+    )
+    html = client.get(f"/review/{RUN}/0").text
+    card = dict(re.findall(r'name="(draft_id|body_sha256)" value="([^"]*)"', html))
+    r = client.post(
+        f"/decide/{RUN}/{SEND}?n=0",
+        data={"action": "send", "to": "info@muster-metallbau.ch", **card},
+        headers={"Sec-Fetch-Site": "same-origin"},
+    )
+    assert r.status_code == 200
+
+    with connect(settings.db_path) as conn:
+        sent = conn.execute("select subject, body from drafts").fetchone()
+        record_draft(
+            conn,
+            RUN,
+            SEND,
+            Draft(
+                subject="Ein anderer Betreff",
+                body="Ein anderer Text.",
+                model_text="x",
+                link=f"{SURVEY}/?c={SEND}&l=de",
+                mailto_fits=True,
+                frame_version="frame@1",
+            ),
+            contact_id=None,
+            provenance=replace(PROV, prompt_version="5"),
+        )
+        row = conn.execute("select * from ledger where status = 'sent'").fetchone()
+        joined = conn.execute(
+            "select body from drafts where id = ?", (row["draft_id"],)
+        ).fetchone()
+    assert row["subject"] == sent["subject"]
+    assert row["body_sha256"] == hashlib.sha256(sent["body"].encode()).hexdigest()
+    assert row["prompt_version"] == PROV.prompt_version
+    assert joined is None or joined["body"] == sent["body"]
+
+
+@pytest.mark.parametrize("how", ["forget", "purge"])
+def test_the_snapshot_loses_the_subject_and_keeps_the_hash(settings, how):
+    """A subject like «Für Frau Muster: …» names the person; the hash and
+    the version say what went out without naming anyone."""
+    from review_seed import SEND, seed
+
+    from company_reach.forget import forget, purge
+
+    seed(settings.db_path)
+    with connect(settings.db_path) as conn:
+        record_decision(
+            conn,
+            SEND,
+            "sent",
+            address="info@muster-metallbau.ch",
+            subject="Für Frau Muster: Masterarbeit an der OST",
+            body_sha256="ab" * 32,
+            prompt_version="4",
+            decided_at="2026-09-25T08:00:00+00:00",
+        )
+    if how == "forget":
+        forget(settings, SEND)
+    else:
+        purge(settings, older_than_days=365, today="2027-10-01")
+    with connect(settings.db_path) as conn:
+        row = conn.execute(
+            "select subject, body_sha256, prompt_version from ledger"
+        ).fetchone()
+    assert tuple(row) == (None, "ab" * 32, "4")
+
+
 def test_an_older_ledger_with_one_row_per_company_is_replaced(tmp_path: Path):
     # the M1 shape; every database so far holds it empty
     path = tmp_path / "old.db"

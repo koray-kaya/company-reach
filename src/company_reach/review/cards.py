@@ -24,6 +24,7 @@ Send is refused, with the reason the card shows, when any of these holds
   the profile's current `survey_url`.
 """
 
+import hashlib
 import json
 import re
 import sqlite3
@@ -97,6 +98,13 @@ class DraftView:
             frame_version=self.frame_version or "",
             arm=self.arm or "voll",
         )
+
+    @property
+    def body_sha256(self) -> str:
+        """The card's form carries it and Send compares it: the salutation
+        toggle rebuilds a draft under the same id, so the id alone cannot
+        tell the text the reviewer read from the one in the table now."""
+        return hashlib.sha256(self.body.encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True)
