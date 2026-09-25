@@ -9,7 +9,8 @@
 
 # Swiss registers, directories, credit and monitoring
 zefix.ch
-uid.admin.ch
+# the federal administration: the UID register, Zefix and the rest
+admin.ch
 shab.ch
 handelsregister.ch
 moneyhouse.ch
