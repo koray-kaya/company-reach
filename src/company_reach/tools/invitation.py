@@ -31,6 +31,7 @@ looks right and records nothing.
 import hashlib
 import re
 from datetime import date
+from html import escape
 from typing import Literal, NamedTuple
 from urllib.parse import urlsplit
 
@@ -405,3 +406,26 @@ def assemble(
         closing(sender, inv),
     ]
     return "\n\n".join(part for part in parts if part)
+
+
+_URL = re.compile(r"https://\S+")
+
+
+def as_html(body: str) -> str:
+    """The mail as HTML for the clipboard (issue #62): paragraphs as <p>,
+    line breaks as <br>, and the survey link as a real link. Outlook on the
+    web links a URL that is typed or pasted, never one a compose link fills
+    in. check_draft lets no other URL into a mail, so every https:// in it
+    is the survey's; everything else is escaped text."""
+
+    def paragraph(text: str) -> str:
+        out, last = [], 0
+        for found in _URL.finditer(text):
+            out.append(escape(text[last : found.start()]))
+            url = escape(found.group(0))
+            out.append(f'<a href="{url}">{url}</a>')
+            last = found.end()
+        out.append(escape(text[last:]))
+        return "".join(out).replace("\n", "<br>")
+
+    return "".join(f"<p>{paragraph(p)}</p>" for p in body.split("\n\n"))

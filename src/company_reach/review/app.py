@@ -57,7 +57,7 @@ from company_reach.tools.db import (
     undoable_bounce,
     unsuppress_bounced,
 )
-from company_reach.tools.invitation import named
+from company_reach.tools.invitation import as_html, named
 from company_reach.tools.mailto import build
 
 HERE = Path(__file__).parent
@@ -238,6 +238,7 @@ def create_app(settings: Settings, *, jobs: Jobs | None = None) -> FastAPI:
                 "skip_reasons": SKIP_REASONS,
                 "done": done,
                 "outlook": settings.mail_client == "outlook",
+                "mail_html": as_html(cards[n].draft.body) if cards[n].draft else "",
             },
         )
 
