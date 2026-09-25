@@ -113,10 +113,14 @@ def report_rows(
     latest `sent` row, and how many responses have no `sent` row at all.
     With `within_days`, a start or completion counts only that many days
     after the mail — the plan's primary metric uses 21."""
+    # whole days from the day of the mail: 0 is the day it was sent, and a
+    # start before it (the owner trying the link, an older forward) is no
+    # answer to it
     window = (
         ""
         if within_days is None
-        else "and julianday({col}) - julianday(s.decided_at) <= ?"
+        else "and julianday(date({col})) - julianday(date(s.decided_at))"
+        " between 0 and ?"
     )
     params: list = [] if within_days is None else [within_days, within_days]
     rows = conn.execute(

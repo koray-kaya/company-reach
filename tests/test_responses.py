@@ -128,6 +128,26 @@ def test_a_start_after_the_window_is_not_counted(db, tmp_path):
     assert ever[0].started == 1
 
 
+@pytest.mark.parametrize(
+    ("started", "counted"),
+    [
+        ("2026-09-30T23:00:00+00:00", False),  # the day before the mail
+        ("2026-10-01T08:00:00+00:00", True),  # the same day, earlier hour
+        ("2026-10-22", True),  # day 21
+        ("2026-10-23", False),  # day 22
+    ],
+)
+def test_the_window_counts_whole_days_from_the_mail(db, tmp_path, started, counted):
+    """Review: the window had no lower bound, so a start before the mail —
+    the owner trying the link, a link forwarded from an earlier contact —
+    counted as an answer to it."""
+    with connect(db) as conn:
+        sent(conn, A, at="2026-10-01")
+        import_responses(conn, export(tmp_path, f"{A},{started},"))
+        rows, _ = report_rows(conn, within_days=21)
+    assert rows[0].started == int(counted)
+
+
 def test_an_import_replaces_the_last_export(db, tmp_path):
     # the survey exports everything so far, every time
     with connect(db) as conn:
