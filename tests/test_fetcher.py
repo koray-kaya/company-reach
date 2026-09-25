@@ -215,6 +215,18 @@ async def test_a_redirect_to_a_private_address_is_refused(f: Fetcher):
 
 
 @respx.mock
+async def test_a_redirect_without_a_location_is_an_error_not_a_crash(f: Fetcher):
+    # found in a live round: a site answered 302 with no Location header, and
+    # the company ended as "other error: 'location'" (issue #58)
+    allow_robots()
+    respx.get(HOME).mock(return_value=httpx.Response(302))
+    page = await f.get(HOME)
+    assert page.status == 302
+    assert page.error == "HTTP 302 without a Location header"
+    assert page.html == ""
+
+
+@respx.mock
 async def test_a_redirect_chain_stops_after_five_hops(f: Fetcher):
     allow_robots()
     routes = [

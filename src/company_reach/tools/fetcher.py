@@ -355,7 +355,17 @@ class Fetcher:
                 return _landed(failed, asked=url)
             if not answer.is_redirect:
                 return _landed(self._page(current, answer), asked=url)
-            current = urljoin(current, answer.headers["location"])
+            location = answer.headers.get("location")
+            if not location:
+                # a redirect that names no target: there is nothing to follow
+                # and nothing to read, like any other error answer (#58)
+                broken = Page(
+                    url=current,
+                    status=answer.status_code,
+                    error=f"HTTP {answer.status_code} without a Location header",
+                )
+                return _landed(broken, asked=url)
+            current = urljoin(current, location)
 
         return Page(
             url=url,
