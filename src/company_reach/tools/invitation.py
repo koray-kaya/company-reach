@@ -162,13 +162,19 @@ def split_name(full: str) -> Name:
     return Name(title, tuple(rest), None)
 
 
-def named(contact: Contact) -> bool:
-    """A person can be addressed. A lone first name ("Reto") cannot: it is
-    treated as nobody named everywhere in the mail."""
-    if not contact.name:
+def can_be_addressed(name: str | None) -> bool:
+    """At least two names. A lone first name ("Reto") or a surname alone
+    cannot be greeted, and counts as nobody named — in the mail, and in
+    `find_contact`, which never guesses an address for nobody."""
+    if not name:
         return False
-    name = split_name(contact.name)
-    return len(name.given) + (1 if name.surname else 0) >= 2
+    parts = split_name(name)
+    return len(parts.given) + (1 if parts.surname else 0) >= 2
+
+
+def named(contact: Contact) -> bool:
+    """A person can be addressed; see `can_be_addressed`."""
+    return can_be_addressed(contact.name)
 
 
 def is_feminine_role(role: str | None) -> bool:
@@ -336,9 +342,6 @@ _NAMED_SOURCES = {
 _UNNAMED_SITE = (
     "Diese Adresse habe ich von Ihrer Website und nutze sie nur für diese Anfrage."
 )
-# A lone first name at a guessed info@: nobody is named, and the address was
-# never on the site, so the text claims nothing about where it came from.
-_UNNAMED_CONSTRUCTED = "Diese Adresse nutze ich nur für diese Anfrage."
 _NEIN = "Ein kurzes «Nein» genügt, dann lösche ich Ihren Namen."
 
 
@@ -352,8 +355,11 @@ def privacy(contact: Contact, inv: Invitation) -> str:
     if kind not in ("seen", "generic", "constructed"):
         raise InvitationError(f"no invitation is written to a {kind} address")
     if not named(contact):
-        first = _UNNAMED_CONSTRUCTED if kind == "constructed" else _UNNAMED_SITE
-        return f"{first} {once}"
+        if kind == "constructed":
+            # find_contact never builds this: nobody named is never written
+            # to at a guessed address, and no approved text describes it
+            raise InvitationError("nobody named at a guessed address: no invitation")
+        return f"{_UNNAMED_SITE} {once}"
     return f"{_NAMED_SOURCES[(contact.source, kind)]} {once} {_NEIN}"
 
 

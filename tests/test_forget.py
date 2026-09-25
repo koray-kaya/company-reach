@@ -171,6 +171,8 @@ def test_the_promise_matches_what_forget_deletes(settings, data):
         ("seen", "generic", "constructed"),
         ("Anna Muster", "Reto", None),
     ):
+        if kind == "constructed" and name != "Anna Muster":
+            continue  # nobody named is never written to at a guessed address
         text = privacy(
             Contact(name=name, email="a@b.example", email_kind=kind, source=source),
             INVITATION,

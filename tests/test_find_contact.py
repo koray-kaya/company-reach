@@ -252,6 +252,47 @@ async def test_a_salutation_that_may_be_someone_elses_sets_nothing(
     assert out["contact"].salutation is None
 
 
+async def test_a_lone_first_name_is_nobody_named(db_settings):
+    """Review: "Reto, Inhaber" got a guessed info@ and a Send, although the
+    mail treats a lone first name as nobody named — and nobody named is
+    never written to at a guessed address."""
+    shab = Shab()
+    out = await run(
+        state([Person(name="Reto", role="Inhaber")], {SITE: "Reto, Inhaber"}),
+        db_settings,
+        shab,
+    )
+    assert out["contact"] is None  # no inbox published: a hold
+    assert shab.calls == [UID]  # asked, as when the site names nobody
+
+
+async def test_a_lone_first_name_with_an_inbox_writes_to_the_inbox(db_settings):
+    out = await run(
+        state(
+            [Person(name="Reto", role="Inhaber")],
+            {SITE: "Reto, Inhaber. info@muster-metallbau.ch"},
+        ),
+        db_settings,
+    )
+    contact = out["contact"]
+    assert (contact.name, contact.email_kind) == (None, "generic")
+
+
+async def test_a_named_colleague_is_chosen_over_a_lone_first_name(db_settings):
+    out = await run(
+        state(
+            [
+                Person(name="Reto", role="Inhaber"),
+                Person(name="Anna Muster", role="Leiterin Verkauf"),
+            ],
+            {SITE: "Reto, Inhaber. Anna Muster, Leiterin Verkauf"},
+        ),
+        db_settings,
+    )
+    assert out["contact"].name == "Anna Muster"
+    assert all(not a.startswith("Reto") for a in out["contact"].alternatives)
+
+
 async def test_a_page_salutation_against_a_feminine_role_sets_nothing(db_settings):
     out = await run(
         state(

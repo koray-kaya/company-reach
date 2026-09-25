@@ -341,12 +341,12 @@ def test_privacy_text_when_nobody_is_named():
     assert "Ihren Namen" not in text
 
 
-def test_a_guessed_address_is_never_said_to_come_from_the_site():
-    # a lone first name at a constructed info@: nobody named, and the
-    # address was never on the site
-    text = privacy(person("Reto", "Inhaber", kind="constructed"), INV)
-    assert "Website" not in text
-    assert "Ihren Namen" not in text
+def test_nobody_named_at_a_guessed_address_has_no_text():
+    # find_contact never builds it (a lone first name is nobody named, and
+    # nobody named gets no constructed info@); a mail that claims the site
+    # as the source of a guessed address is refused rather than written
+    with pytest.raises(InvitationError, match="guessed"):
+        privacy(person("Reto", "Inhaber", kind="constructed"), INV)
 
 
 def test_the_reminder_wording_replaces_the_one_mail_promise():

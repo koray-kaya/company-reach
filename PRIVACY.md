@@ -82,7 +82,6 @@ gets it. Everything else is written by code (`tools/invitation.py`):
   | named in SHAB, info@ guessed | Ihren Namen habe ich aus dem Handelsamtsblatt (SHAB) und nutze ihn nur für diese Anfrage. |
   | named in SHAB, their own address on the site | Ihren Namen habe ich aus dem Handelsamtsblatt (SHAB), Ihre Adresse von Ihrer Website; ich nutze beides nur für diese Anfrage. |
   | nobody named, the inbox the site publishes | Diese Adresse habe ich von Ihrer Website und nutze sie nur für diese Anfrage. |
-  | a first name only, info@ guessed | Diese Adresse nutze ich nur für diese Anfrage. |
 
   SHAB is never given as the source of an address, and a guessed address
   is not said to come from anywhere.

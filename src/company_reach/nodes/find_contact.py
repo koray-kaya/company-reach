@@ -60,7 +60,11 @@ from company_reach.tools import search as search_tool
 from company_reach.tools import shab as shab_tool
 from company_reach.tools.checks import appears_in, is_noise
 from company_reach.tools.db import connect, record_contact
-from company_reach.tools.invitation import is_feminine_role, split_name
+from company_reach.tools.invitation import (
+    can_be_addressed,
+    is_feminine_role,
+    split_name,
+)
 from company_reach.tools.search import Result
 from company_reach.tools.textify import normalise
 from company_reach.tools.urls import email_domain, registered_domain
@@ -373,10 +377,11 @@ async def find_contact(
     domain = registered_domain(site.url)
     addresses = page_addresses(texts)
 
-    if profile.persons:
-        ranked = sorted(
-            profile.persons, key=lambda p: (not _own_address(p), rank(p.role))
-        )
+    # A lone first name cannot be greeted, and the mail treats it as nobody
+    # named; so does this node, or it would guess an info@ for nobody.
+    persons = [p for p in profile.persons if can_be_addressed(p.name)]
+    if persons:
+        ranked = sorted(persons, key=lambda p: (not _own_address(p), rank(p.role)))
         contact = _from_site(
             ranked[0],
             texts=texts,
