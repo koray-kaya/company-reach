@@ -129,6 +129,29 @@ def test_a_subdomain_is_the_same_candidate():
     assert dedupe_candidates(results) == [f"{SITE}/"]
 
 
+def test_a_subdomain_ranked_first_gives_way_to_the_apex():
+    """Review of E6: merging kept whichever host search ranked first, and a
+    shop subdomain was read in place of the company's own site."""
+    results = [
+        Result("https://shop.muster-metallbau.ch/produkte", "x", "y", "e"),
+        Result("https://directory.example/muster", "x", "y", "e"),
+        Result(f"{SITE}/impressum", "x", "y", "e"),
+    ]
+    assert dedupe_candidates(results) == [
+        f"{SITE}/",  # still in the place the domain was first ranked
+        "https://directory.example/",
+    ]
+
+
+def test_the_www_host_counts_as_the_apex_too():
+    results = [
+        Result("https://de.muster-metallbau.ch/", "x", "y", "e"),
+        Result("https://www.muster-metallbau.ch/kontakt", "x", "y", "e"),
+        Result(f"{SITE}/", "x", "y", "e"),
+    ]
+    assert dedupe_candidates(results) == ["https://www.muster-metallbau.ch/"]
+
+
 def test_two_customers_of_one_site_builder_are_two_candidates():
     results = [
         Result("https://muster-metallbau.wixsite.com/home", "x", "y", "e"),
