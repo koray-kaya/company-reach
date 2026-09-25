@@ -40,9 +40,11 @@ from company_reach.tools.db import (
     load_criteria,
     pool_standing,
     record_run,
+    status_by_municipality,
     store_criteria,
 )
 from company_reach.tools.doctor import run_checks
+from company_reach.tools.lindas import LindasError
 
 V0_DIR = Path("data/v0")
 
@@ -233,14 +235,49 @@ def score(
     )
 
 
+def _municipality_ids(values: list[str]) -> list[str]:
+    """`--municipality 3203 --municipality 3443` or `--municipality 3203,3443`,
+    each id once, in the order given. An id is the federal (FSO) number and
+    goes into the query's IRI, so anything but digits is refused here."""
+    ids: list[str] = []
+    for value in values:
+        for part in value.split(","):
+            municipality = part.strip()
+            if not municipality.isdigit():
+                raise typer.BadParameter(
+                    f"a municipality is its FSO number, like 3203, not {municipality!r}"
+                )
+            if municipality not in ids:
+                ids.append(municipality)
+    return ids
+
+
 @app.command()
-def pool(municipality: str = "3203", run_id: str | None = None) -> None:
-    """Fetch a municipality's AG+GmbH companies from LINDAS into the database."""
+def pool(
+    municipality: Annotated[
+        list[str] | None,
+        typer.Option(help="FSO number; repeat it, or give a comma list. [3203]"),
+    ] = None,
+    run_id: str | None = None,
+) -> None:
+    """Fetch municipalities' AG+GmbH companies from LINDAS into the database,
+    screened as they are stored."""
     s = get_settings()
+    ids = _municipality_ids(municipality or ["3203"])
     init_db(s.db_path)
     rid = _run_id(run_id)
-    n = load_pool(municipality, rid, settings=s)
-    typer.echo(f"{n} companies stored for municipality {municipality} (run {rid})")
+    failed = False
+    for one in ids:
+        try:
+            n = load_pool(one, rid, settings=s)
+        except LindasError as error:
+            # the others are still worth storing; the exit code tells
+            typer.echo(f"municipality {one}: {error}", err=True)
+            failed = True
+            continue
+        typer.echo(f"{n} companies stored for municipality {one} (run {rid})")
+    if failed:
+        raise typer.Exit(1)
 
 
 @app.command()
@@ -262,6 +299,55 @@ def screen(
         typer.echo("No company in the database to screen; run `pool` first.", err=True)
         raise typer.Exit(1)
     typer.echo(f"kept {kept}, dropped {dropped}")
+
+
+_STATUS_COLUMNS = ("pooled", "kept", "scored", "drawable", "drawn", "sent", "undecided")
+
+
+@app.command()
+def status(goal: str | None = None) -> None:
+    """Where the campaign stands, per municipality: companies pooled, kept by
+    the rules, scored for this goal, drawable by the next run, drawn, sent,
+    and send cards waiting for a decision."""
+    s = get_settings()
+    text = _resolve_goal(goal)
+    version, _ = llm.load_prompt("score")
+    key = goal_hash(text)
+    with connect(s.db_path) as conn:
+        criteria = current_criteria_hash(conn, key)
+        rows = status_by_municipality(
+            conn,
+            goal_hash=key,
+            prompt_version=version,
+            model=s.llm_model,
+            criteria_hash=criteria,
+            min_score=s.draw_min_score,
+        )
+    typer.echo(
+        f"goal {key} · score@{version} · {s.llm_model} · "
+        f"criteria {criteria or 'none stored'} · drawable at score >= "
+        f"{s.draw_min_score}"
+    )
+    if not rows:
+        typer.echo("No company is pooled yet; run `pool`.")
+        return
+    typer.echo("")
+    typer.echo(f"{'municipality':<13}" + "".join(f"{c:>10}" for c in _STATUS_COLUMNS))
+    for row in rows:
+        typer.echo(
+            f"{row['municipality']:<13}"
+            + "".join(f"{row[c]:>10}" for c in _STATUS_COLUMNS)
+        )
+    if len(rows) > 1:
+        typer.echo(
+            f"{'all':<13}"
+            + "".join(f"{sum(r[c] for r in rows):>10}" for c in _STATUS_COLUMNS)
+        )
+    typer.echo("")
+    typer.echo(
+        "scored: under this goal, score prompt, model and criteria · "
+        "undecided: send cards nobody has decided yet"
+    )
 
 
 @app.command()

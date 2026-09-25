@@ -156,6 +156,7 @@ def upsert_companies(
            ON CONFLICT(uid) DO UPDATE SET name=excluded.name, purpose=excluded.purpose,
              purpose_head=excluded.purpose_head, street=excluded.street,
              postal_code=excluded.postal_code, city=excluded.city,
+             municipality=excluded.municipality, legal_form=excluded.legal_form,
              screen_reason=excluded.screen_reason,
              imported_at=excluded.imported_at, import_run_id=excluded.import_run_id""",
         rows,
@@ -347,9 +348,9 @@ def record_run(
         )
 
 
-# What a run may draw, written once. `draw_batch` and the guard in `run` both
-# read this text, so they cannot disagree about it: the guard used to count
-# any score, and passed a pool nothing could be drawn from.
+# What a run may draw, written once. `draw_batch`, the guard in `run` and
+# `status` all read this text, so they cannot disagree about it: the guard
+# used to count any score, and passed a pool nothing could be drawn from.
 _DRAWABLE = """
              from companies c
              join scores s
@@ -524,6 +525,57 @@ def pool_standing(
         other_model=kinds.get("other_model", 0),
         unscored=kinds.get("unscored", 0),
     )
+
+
+def status_by_municipality(
+    conn: sqlite3.Connection,
+    *,
+    goal_hash: str,
+    prompt_version: str,
+    model: str,
+    criteria_hash: str | None,
+    min_score: int,
+) -> list[sqlite3.Row]:
+    """One row per municipality: companies pooled, kept by the rules, scored
+    under the current key, drawable by a new run, drawn, sent, and send
+    cards nobody has decided yet. Drawable is `_DRAWABLE` for a run that has
+    drawn nothing (run id ""), so it says what the next `run` could take."""
+    return conn.execute(
+        f"""with drawable as (select c.uid {_DRAWABLE}),
+                 current as (
+                   select uid from scores
+                    where goal_hash = :goal_hash
+                      and prompt_version = :prompt_version and model = :model
+                      and criteria_hash is :criteria_hash),
+                 -- a company's decision is its latest ledger row, unless undone
+                 decided as (
+                   select l.uid from ledger l
+                    where l.id = (select max(id) from ledger where uid = l.uid)
+                      and l.status <> 'undone')
+            select c.municipality,
+                   count(*) as pooled,
+                   sum(c.screen_reason is null) as kept,
+                   sum(c.screen_reason is null
+                       and c.uid in (select uid from current)) as scored,
+                   sum(c.uid in (select uid from drawable)) as drawable,
+                   sum(c.uid in (select uid from seen)) as drawn,
+                   sum(c.uid in (select uid from ledger where status = 'sent'))
+                     as sent,
+                   sum(c.uid in (select uid from results
+                                  where recommendation = 'send')
+                       and c.uid not in (select uid from decided)) as undecided
+              from companies c
+             group by c.municipality
+             order by c.municipality""",
+        {
+            "run_id": "",
+            "goal_hash": goal_hash,
+            "prompt_version": prompt_version,
+            "model": model,
+            "criteria_hash": criteria_hash,
+            "min_score": min_score,
+        },
+    ).fetchall()
 
 
 def record_seen(

@@ -65,7 +65,10 @@ uv run company-reach run                        # enrich a batch of ten
 uv run company-reach review <run>               # decide, one company at a time
 ```
 
-`3203` is the federal id of a municipality (that one is St. Gallen). `pool`
+`3203` is the federal id of a municipality (that one is St. Gallen); `pool`
+takes several (`--municipality 3203 --municipality 3443`, or `3203,3443`),
+and `company-reach status` shows per municipality how many companies are
+pooled, kept, scored, drawable, drawn, sent and waiting for a decision. `pool`
 applies the rule-based exclusions as it stores each company; after the rules
 change, `company-reach screen` applies them again to every company. Every
 command is safe to run again: nothing already done is repeated, and scoring

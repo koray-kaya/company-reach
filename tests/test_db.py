@@ -67,6 +67,22 @@ def test_upsert_is_idempotent(tmp_path: Path):
         assert conn.execute("select count(*) from companies").fetchone()[0] == 2
 
 
+def test_a_reimport_moves_a_company_to_its_new_municipality(tmp_path: Path):
+    """Audit: a re-import kept the old municipality and legal form, so a
+    company that moved counted in the wrong town and a converted GmbH still
+    showed as one."""
+    db = tmp_path / "t.db"
+    init_db(db)
+    moved = rec("CHE000000001").model_copy(
+        update={"municipality": "3443", "legal_form": "0107"}
+    )
+    with connect(db) as conn:
+        upsert_companies(conn, [rec("CHE000000001")], "r1")
+        upsert_companies(conn, [moved], "r2")
+        row = conn.execute("select municipality, legal_form from companies").fetchone()
+    assert tuple(row) == ("3443", "0107")
+
+
 def test_connection_rolls_back_on_error(tmp_path: Path):
     db = tmp_path / "t.db"
     init_db(db)

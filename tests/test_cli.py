@@ -16,6 +16,7 @@ from company_reach.tools import llm
 from company_reach.tools.db import (
     connect,
     init_db,
+    record_decision,
     record_seen,
     store_criteria,
     upsert_companies,
@@ -51,6 +52,142 @@ def test_screen_over_an_empty_database_fails(settings, monkeypatch):
     r = runner.invoke(cli.app, ["screen"])
     assert r.exit_code == 1
     assert "run `pool`" in r.output
+
+
+# --- several municipalities and `status` (audit K17) -------------------------
+
+
+def _binding(uid: str, name: str) -> dict:
+    return {
+        "uid": {"type": "literal", "value": uid},
+        "name": {"type": "literal", "value": name},
+        "lf": {"type": "literal", "value": "0106"},
+        "desc": {"type": "literal", "value": "Herstellung von Fenstern."},
+    }
+
+
+def _municipalities(settings) -> dict[str, int]:
+    with connect(settings.db_path) as conn:
+        return {
+            r[0]: r[1]
+            for r in conn.execute(
+                "select municipality, count(*) from companies group by municipality"
+            )
+        }
+
+
+@respx.mock
+def test_pool_accepts_several_municipalities(settings, monkeypatch):
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    other = {
+        "head": PAGE["head"],
+        "results": {
+            "bindings": [
+                _binding("CHE000000011", "Beispiel Fenster AG"),
+                _binding("CHE000000012", "Muster Glas GmbH"),
+            ]
+        },
+    }
+
+    def by_municipality(request):
+        asked = request.content.decode()
+        return httpx.Response(200, json=other if "3443" in asked else PAGE)
+
+    respx.post(settings.lindas_url).mock(side_effect=by_municipality)
+
+    r = runner.invoke(
+        cli.app, ["pool", "--municipality", "3203", "--municipality", "3443"]
+    )
+    assert r.exit_code == 0, r.output
+    assert "3 companies stored for municipality 3203" in r.output
+    assert "2 companies stored for municipality 3443" in r.output
+    assert _municipalities(settings) == {"3203": 3, "3443": 2}
+
+    r = runner.invoke(cli.app, ["pool", "--municipality", "3203, 3443"])
+    assert r.exit_code == 0, r.output
+    assert "2 companies stored for municipality 3443" in r.output
+
+    r = runner.invoke(cli.app, ["pool", "--municipality", "3203> ; drop"])
+    assert r.exit_code != 0  # goes into the query's IRI: digits only
+
+
+def test_status_counts_per_municipality(settings, monkeypatch):
+    """Audit: nothing said which towns were pooled, scored, drawn out or
+    waiting for review; steering a campaign took hand-written SQL."""
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    init_db(settings.db_path)
+    version, _ = llm.load_prompt("score")
+    current = dict(
+        goal_hash=goal_hash("make and sell"),
+        prompt_version=version,
+        model=settings.llm_model,
+        criteria_hash=None,
+    )
+
+    def company(uid: str, town: str, name: str = "Muster Fenster AG"):
+        return CompanyRecord(
+            uid=uid,
+            name=name,
+            legal_form="0106",
+            municipality=town,
+            purpose="Herstellung von Fenstern.",
+            purpose_head="Herstellung von Fenstern.",
+        )
+
+    with connect(settings.db_path) as conn:
+        upsert_companies(
+            conn,
+            [
+                company("CHE000000001", "3203"),  # drawn, a send card, undecided
+                company("CHE000000002", "3203"),  # drawn, sent
+                company("CHE000000003", "3203"),  # drawable
+                company("CHE000000004", "3203", "Muster AG in Liquidation"),
+                company("CHE000000005", "3203"),  # below the bar
+                company("CHE000000006", "3203"),  # kept, not scored
+                company("CHE000000011", "3443"),  # drawable
+                company("CHE000000012", "3443"),  # scored under an old prompt
+            ],
+            "import",
+        )
+        upsert_scores(
+            conn,
+            [
+                Score(uid=uid, score=n, reason="x")
+                for uid, n in (
+                    ("CHE000000001", 9),
+                    ("CHE000000002", 8),
+                    ("CHE000000003", 9),
+                    ("CHE000000005", 5),
+                    ("CHE000000011", 7),
+                )
+            ],
+            **current,
+        )
+        upsert_scores(
+            conn,
+            [Score(uid="CHE000000012", score=9, reason="x")],
+            **(current | {"prompt_version": "0"}),
+        )
+        record_seen(conn, ["CHE000000001", "CHE000000002"], run_id="r1", batch_no=1)
+        for uid in ("CHE000000001", "CHE000000002"):
+            conn.execute(
+                "insert into results (run_id, uid, recommendation, finished_at)"
+                " values ('r1', ?, 'send', '2026-09-25T00:00:00+00:00')",
+                (uid,),
+            )
+        record_decision(conn, "CHE000000002", "sent", address="a@b.example")
+
+    r = runner.invoke(cli.app, ["status", "--goal", "make and sell"])
+
+    assert r.exit_code == 0, r.output
+
+    def counts(town: str) -> list[int]:
+        line = next(x for x in r.output.splitlines() if x.startswith(town))
+        return [int(n) for n in line.split()[1:]]
+
+    # pooled, kept, scored, drawable, drawn, sent, undecided
+    assert counts("3203") == [6, 5, 4, 1, 2, 1, 1]
+    assert counts("3443") == [2, 2, 1, 1, 0, 0, 0]
 
 
 def _seed_scored_pool(
