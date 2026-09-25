@@ -317,7 +317,19 @@ def test_choosing_herr_reassembles_without_a_model_call(fallback):
     assert draft["problems"] == ""  # checked again, and it passed
     after = client.get(f"/review/{RUN}/0").text
     assert "Anrede prüfen" not in after
+    assert "your choice" in after
     assert 'value="send" disabled' not in after
+    with connect(fallback.db_path) as conn:
+        origin = conn.execute(
+            "select salutation_origin from contacts where uid = ?", (SEND,)
+        ).fetchone()[0]
+    assert origin == "reviewer"
+
+
+def test_the_card_names_where_the_salutation_came_from(client):
+    html = client.get(f"/review/{RUN}/0").text  # "Inhaberin" proposes Frau
+    assert "from the role" in html
+    assert "Anrede prüfen" in html
 
 
 def test_the_salutation_toggle_rebuilds_the_mail(review, client):

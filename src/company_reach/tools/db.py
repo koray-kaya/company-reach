@@ -52,6 +52,7 @@ _ADDED_COLUMNS = {
     ("searches", "result_count"): "INTEGER",
     ("searches", "error"): "TEXT",
     ("contacts", "salutation"): "TEXT",
+    ("contacts", "salutation_origin"): "TEXT",
     # frame@1: a draft of the M6/M7 shape has none of these, so it can
     # never pass for a current one
     ("drafts", "model_text"): "TEXT",
@@ -472,8 +473,8 @@ def record_contact(
     cur = conn.execute(
         """INSERT INTO contacts (run_id, uid, name, role, email, email_kind,
              source, source_url, source_date, linkedin_lead, alternatives,
-             addresses, salutation)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+             addresses, salutation, salutation_origin)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             run_id,
             uid,
@@ -488,6 +489,7 @@ def record_contact(
             json.dumps(contact.alternatives, ensure_ascii=False),
             json.dumps([a.model_dump(exclude_none=True) for a in contact.addresses]),
             contact.salutation,
+            contact.salutation_origin,
         ),
     )
     return cur.lastrowid
@@ -520,6 +522,7 @@ def contact_for(
         alternatives=json.loads(row["alternatives"] or "[]"),
         addresses=addresses,
         salutation=row["salutation"],
+        salutation_origin=row["salutation_origin"],
     )
 
 
@@ -528,7 +531,7 @@ def set_salutation(
 ) -> None:
     """The reviewer's choice on the card, on the company's latest contact."""
     conn.execute(
-        """update contacts set salutation = ?
+        """update contacts set salutation = ?, salutation_origin = 'reviewer'
             where id = (select max(id) from contacts where run_id = ? and uid = ?)""",
         (salutation, run_id, uid),
     )

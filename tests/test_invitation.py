@@ -17,10 +17,10 @@ from company_reach.tools.invitation import (
     arm_for,
     assemble,
     closing,
-    falls_back,
     german_date,
     greeting,
     link_block,
+    needs_check,
     opening,
     privacy,
     routing_line,
@@ -132,6 +132,7 @@ def person(
     kind: str = "generic",
     source: str = "site",
     salutation: str | None = None,
+    origin: str | None = None,
 ) -> Contact:
     return Contact(
         name=name,
@@ -140,6 +141,7 @@ def person(
         email_kind=kind,
         source=source,
         salutation=salutation,
+        salutation_origin=origin,
     )
 
 
@@ -170,14 +172,14 @@ def test_a_masculine_site_role_never_sets_herr():
     c = person("Marco Vorlage", "Gründer")
     assert salutation(c) == (None, None)
     assert greeting(c) == "Guten Tag Marco Vorlage"
-    assert falls_back(c)
+    assert needs_check(c)
 
 
 def test_a_feminine_role_sets_frau():
     c = person("Dr. Sandra Beispiel-Keller", "Geschäftsführerin")
     assert salutation(c) == ("Frau", "role")
     assert greeting(c) == "Guten Tag Frau Dr. Beispiel-Keller"
-    assert not falls_back(c)
+    assert needs_check(c)  # a role only proposes
 
 
 @pytest.mark.parametrize(
@@ -191,21 +193,40 @@ def test_a_feminine_role_sets_frau():
 )
 def test_a_gendered_shab_role_proposes_a_salutation(role, expected):
     # SHAB genders its entries, so its masculine form is evidence
-    assert salutation(person("Urs Probe", role, source="shab"))[0] == expected
+    c = person("Urs Probe", role, source="shab")
+    assert salutation(c) == (expected, "shab" if expected else None)
+    assert needs_check(c)
 
 
 def test_the_reviewers_choice_wins_over_the_role():
-    chosen = person("Reto Muster", "Inhaberin", salutation="Herr")
-    assert salutation(chosen) == ("Herr", "set")
-    none = person("Anna Muster", "Inhaberin", salutation="ohne")
-    assert salutation(none) == (None, "set")
+    chosen = person("Reto Muster", "Inhaberin", salutation="Herr", origin="reviewer")
+    assert salutation(chosen) == ("Herr", "reviewer")
+    none = person("Anna Muster", "Inhaberin", salutation="ohne", origin="reviewer")
+    assert salutation(none) == (None, "reviewer")
     assert greeting(none) == "Guten Tag Anna Muster"
 
 
-def test_a_reviewers_ohne_is_no_longer_a_fallback():
+@pytest.mark.parametrize(
+    ("value", "origin", "checked"),
+    [
+        ("Frau", "reviewer", True),
+        ("ohne", "reviewer", True),
+        ("Frau", "page", True),  # "Frau Anna Muster" written out on the page
+        ("Frau", "page-surname", False),  # "Frau Muster": which Muster?
+        ("Frau", None, False),  # stored before origins were: not known
+    ],
+)
+def test_only_the_reviewer_or_a_full_page_match_is_certain(value, origin, checked):
+    c = person("Anna Muster", None, salutation=value, origin=origin)
+    assert needs_check(c) is not checked
+
+
+def test_a_reviewers_ohne_is_checked():
     # the full name stays, but someone looked: the card stops asking
-    assert falls_back(person("Marco Vorlage", "Gründer"))
-    assert not falls_back(person("Marco Vorlage", "Gründer", salutation="ohne"))
+    assert needs_check(person("Marco Vorlage", "Gründer"))
+    assert not needs_check(
+        person("Marco Vorlage", "Gründer", salutation="ohne", origin="reviewer")
+    )
 
 
 def test_herr_becomes_herrn_in_subject_and_routing():
@@ -227,7 +248,7 @@ def test_a_lone_first_name_is_treated_as_nobody_named():
         "Für die Geschäftsleitung: Masterarbeit an der OST"
     )
     assert "Ihren Namen" not in privacy(c, INV)
-    assert not falls_back(c)
+    assert not needs_check(c)
 
 
 def test_no_routing_line_for_a_seen_address():

@@ -199,11 +199,16 @@ class Contact(BaseModel):
     the page writes it before the surname, or when the reviewer chose it on
     the card; "ohne" when the reviewer chose no salutation, which overrides
     what a role would propose. `tools/invitation.salutation` reads it first.
+    `salutation_origin` says which: "reviewer"; "page" when the page wrote
+    it before the full name ("Frau Anna Muster"); "page-surname" when only
+    before the surname, which may be someone else of that name. Only the
+    first two need no second look.
     """
 
     name: str | None = None
     role: str | None = None
     salutation: Literal["Frau", "Herr", "ohne"] | None = None
+    salutation_origin: Literal["reviewer", "page", "page-surname"] | None = None
     email: str | None = None
     email_kind: EmailKind | None = None
     source: Literal["site", "shab"]

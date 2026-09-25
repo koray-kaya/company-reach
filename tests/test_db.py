@@ -241,8 +241,8 @@ def test_an_old_database_gains_the_new_columns(tmp_path: Path):
     assert {"model_text", "frame_version", "arm"} <= drafts
     # the outcome of check_draft: null = never checked, "" = passed
     assert "problems" in drafts
-    # Frau / Herr as the page wrote it or the reviewer chose it
-    assert "salutation" in contacts
+    # Frau / Herr as the page wrote it or the reviewer chose it, and which
+    assert {"salutation", "salutation_origin"} <= contacts
 
 
 def test_any_connection_brings_an_older_database_up_to_date(tmp_path: Path):

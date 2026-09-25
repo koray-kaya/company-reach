@@ -172,11 +172,36 @@ def test_fallback_greeting_is_flagged(tmp_path: Path):
     assert card.can_choose_salutation
 
 
-def test_a_salutation_from_the_role_is_not_flagged(db: Path):
+def test_a_salutation_from_the_role_is_flagged_and_says_so(db: Path):
+    # a role only proposes: every value that is not the reviewer's choice or
+    # a full "Frau Anna Muster" on the page is checked by the reviewer
     card = by_uid(db)[SEND]  # "Inhaberin"
-    assert not card.check_salutation
+    assert card.check_salutation
     assert card.salutation == "Frau"
-    assert card.can_choose_salutation  # the reviewer may still change it
+    assert card.salutation_origin == "from the role"
+    assert card.can_choose_salutation
+
+
+@pytest.mark.parametrize(
+    ("origin", "label", "flagged"),
+    [
+        ("reviewer", "your choice", False),
+        ("page", "written on the page", False),
+        ("page-surname", "on the page, surname only", True),
+    ],
+)
+def test_the_card_shows_where_the_salutation_came_from(
+    db: Path, origin, label, flagged
+):
+    with connect(db) as conn:
+        conn.execute(
+            "update contacts set salutation = 'Frau', salutation_origin = ?"
+            " where uid = ?",
+            (origin, SEND),
+        )
+    card = by_uid(db)[SEND]
+    assert card.salutation_origin == label
+    assert card.check_salutation is flagged
 
 
 def test_nobody_named_offers_no_salutation(db: Path):

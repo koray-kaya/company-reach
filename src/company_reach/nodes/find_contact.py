@@ -60,7 +60,7 @@ from company_reach.tools import search as search_tool
 from company_reach.tools import shab as shab_tool
 from company_reach.tools.checks import appears_in, is_noise
 from company_reach.tools.db import connect, record_contact
-from company_reach.tools.invitation import split_name
+from company_reach.tools.invitation import is_feminine_role, split_name
 from company_reach.tools.search import Result
 from company_reach.tools.textify import normalise
 from company_reach.tools.urls import email_domain, registered_domain
@@ -155,24 +155,69 @@ def _inbox(
     return None
 
 
-def stated_salutation(name: str, texts: dict[str, str]) -> str | None:
-    """The salutation the pages write before this person's surname, with or
-    without a title and the given names: "Frau" or "Herr". None when they
-    never do, or write both (two people of one surname)."""
+# "Herr und Frau Muster", "Frau/Herr Muster", "Herr & Frau Muster": a couple
+# or a form of address, never one person's salutation.
+_JOINED = re.compile(r"\b(?:Frau|Herrn?)\s*(?:und|&|/)\s*$")
+_SALUTATION_WORDS = {"Frau", "Herr", "Herrn"}
+
+
+def _surname_after_a_given_name(surname: str, texts: dict[str, str]) -> bool:
+    """Whether the pages write this surname after a capitalised word that
+    is not a salutation — someone's given name, the person's own included,
+    or a word like "Firma" or "Familie"."""
+    before = re.compile(rf"\b([A-ZÄÖÜ][\w-]*)\s+{re.escape(surname)}\b")
+    return any(
+        m.group(1) not in _SALUTATION_WORDS
+        for text in texts.values()
+        for m in before.finditer(text)
+    )
+
+
+def stated_salutation(
+    name: str, texts: dict[str, str], role: str | None = None
+) -> tuple[str, str] | None:
+    """("Frau" | "Herr", origin) when the pages write it before this person,
+    else None. Only a match that cannot be someone else's counts:
+
+    * "Frau Anna Muster", before the full name, is origin "page";
+    * "Frau Muster", before the surname alone, counts ("page-surname") only
+      if the pages never write the surname after a given name — "1978
+      gründete Herr Muster die Firma. Heute führt Anna Muster ..." names a
+      father and a daughter, and the surname alone cannot tell which;
+    * a salutation joined to another ("Herr und Frau Muster") is ignored;
+    * both salutations, or a page's Herr against a feminine role, give
+      nothing.
+
+    Nothing is the safe answer: the greeting falls back to the full name
+    and the card asks the reviewer."""
     parts = split_name(name)
     if not parts.surname:
         return None
-    given = "".join(rf"{re.escape(g)}\s+" for g in parts.given)
+    given = r"\s+".join(re.escape(g) for g in parts.given)
     pattern = re.compile(
-        rf"\b(Frau|Herrn?)\s+(?:(?:Prof|Dr)\.\s*)*(?:{given})?"
+        rf"\b(Frau|Herrn?)\s+(?:(?:Prof|Dr)\.\s*)*(?:({given})\s+)?"
         rf"{re.escape(parts.surname)}\b"
     )
-    said = {
-        "Frau" if match.group(1) == "Frau" else "Herr"
-        for text in texts.values()
-        for match in pattern.finditer(text)
-    }
-    return said.pop() if len(said) == 1 else None
+    full: set[str] = set()
+    bare: set[str] = set()
+    for text in texts.values():
+        for match in pattern.finditer(text):
+            if _JOINED.search(text[: match.start()]):
+                continue
+            word = "Frau" if match.group(1) == "Frau" else "Herr"
+            (full if match.group(2) else bare).add(word)
+    if full:
+        said, origin = full, "page"
+    elif bare and not _surname_after_a_given_name(parts.surname, texts):
+        said, origin = bare, "page-surname"
+    else:
+        return None
+    if len(said) != 1:
+        return None
+    word = said.pop()
+    if word == "Herr" and is_feminine_role(role):
+        return None
+    return word, origin
 
 
 def _from_site(
@@ -184,11 +229,13 @@ def _from_site(
     site_url: str,
 ) -> Contact:
     found_at = _page_with(person.name, texts, site_url)
+    stated = stated_salutation(person.name, texts, person.role)
     base = {
         "name": person.name,
         "role": person.role,
         "source": "site",
-        "salutation": stated_salutation(person.name, texts),
+        "salutation": stated[0] if stated else None,
+        "salutation_origin": stated[1] if stated else None,
     }
     if person.email and not person.email_offsite:
         url = _page_with(person.email, texts, found_at)

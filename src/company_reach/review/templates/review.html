@@ -53,6 +53,7 @@
             <span class="lbl">Salutation:</span>
             {% for choice in ('Frau', 'Herr', 'ohne') %}<button class="btn small{% if now == choice %} on{% endif %}" name="action" value="salutation:{{ choice }}"{% if now == choice %} aria-pressed="true"{% endif %}>{{ choice }}</button>
             {% endfor %}
+            <span class="lbl">({{ card.salutation_origin }})</span>
             {% else %}<span class="lbl">The surname is not clear; change the greeting in your mail client if it needs one.</span>{% endif %}
           </p>
           {% endif %}

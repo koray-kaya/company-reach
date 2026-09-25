@@ -240,7 +240,9 @@ def create_app(settings: Settings) -> FastAPI:
         view = card.draft
         if view is None or view.link is None or card.contact is None:
             raise HTTPException(409, "no current draft to rebuild")
-        contact = card.contact.model_copy(update={"salutation": choice})
+        contact = card.contact.model_copy(
+            update={"salutation": choice, "salutation_origin": "reviewer"}
+        )
         title = subject(contact, profile.sender, profile.invitation)
         body = assemble(
             contact,

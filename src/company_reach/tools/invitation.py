@@ -171,22 +171,27 @@ def named(contact: Contact) -> bool:
     return len(name.given) + (1 if name.surname else 0) >= 2
 
 
-def salutation(contact: Contact) -> tuple[str | None, str | None]:
-    """("Frau" | "Herr" | None, where it came from: "set" | "role" | None).
+def is_feminine_role(role: str | None) -> bool:
+    return bool(role and _FEMININE.search(role))
 
-    In this order: what the reviewer chose or the page wrote before the
-    surname (`Contact.salutation`); a feminine role noun; a masculine role
-    noun from SHAB. Never a guess from a first name, and never a masculine
-    role from a website."""
+
+def salutation(contact: Contact) -> tuple[str | None, str | None]:
+    """("Frau" | "Herr" | None, where it came from).
+
+    In this order: what the reviewer chose or the page wrote
+    (`Contact.salutation`, origin "reviewer", "page" or "page-surname"); a
+    feminine role noun (origin "role", or "shab" from the register); a
+    masculine role noun from SHAB ("shab"). Never a guess from a first name,
+    and never a masculine role from a website."""
     if contact.salutation == "ohne":
-        return None, "set"
+        return None, "reviewer"
     if contact.salutation:
-        return contact.salutation, "set"
-    role = contact.role or ""
-    if _FEMININE.search(role):
-        return "Frau", "role"
-    if contact.source == "shab" and _MASCULINE.search(role):
-        return "Herr", "role"
+        # stored before origins were recorded: the weakest page evidence
+        return contact.salutation, contact.salutation_origin or "page-surname"
+    if is_feminine_role(contact.role):
+        return "Frau", "shab" if contact.source == "shab" else "role"
+    if contact.source == "shab" and _MASCULINE.search(contact.role or ""):
+        return "Herr", "shab"
     return None, None
 
 
@@ -205,14 +210,18 @@ def address(contact: Contact, case: Literal["nom", "acc"] = "nom") -> str | None
     return " ".join([*name.given, *([name.surname] if name.surname else [])])
 
 
-def falls_back(contact: Contact) -> bool:
-    """The greeting uses the full name because no salutation is known: the
-    card asks the reviewer to check it ("Anrede prüfen"). A reviewer who
-    chose "ohne" has checked it."""
-    if not named(contact) or contact.salutation == "ohne":
+def needs_check(contact: Contact) -> bool:
+    """The card asks the reviewer to check the salutation ("Anrede
+    prüfen") unless the reviewer chose it or the page wrote it before the
+    person's full name. A role only proposes, a surname alone may be anyone
+    of that name, and a greeting without Frau or Herr is a fallback: a wrong
+    Frau/Herr is the worst mistake this mail can make."""
+    if not named(contact):
         return False
-    word, _ = salutation(contact)
-    return not (word and split_name(contact.name or "").surname)
+    word, origin = salutation(contact)
+    if origin == "reviewer":
+        return False
+    return not (word and origin == "page" and split_name(contact.name or "").surname)
 
 
 # --- the parts of the mail ---------------------------------------------------

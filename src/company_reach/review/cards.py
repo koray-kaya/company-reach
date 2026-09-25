@@ -34,7 +34,7 @@ from company_reach.tools.db import (
 )
 from company_reach.tools.invitation import (
     FRAME_VERSION,
-    falls_back,
+    needs_check,
     salutation,
     split_name,
 )
@@ -47,6 +47,15 @@ _TIERS = {
     "model": "model choice",
 }
 _ORDER = {"send": 0, "hold": 1, "skip": 2}
+# Where Frau / Herr came from, as the card says it next to the toggle.
+_ORIGINS = {
+    "reviewer": "your choice",
+    "page": "written on the page",
+    "page-surname": "on the page, surname only",
+    "role": "from the role",
+    "shab": "SHAB proposal",
+    None: "none known",
+}
 _URL = re.compile(r"https?://\S+")
 
 
@@ -92,7 +101,9 @@ class Card:
     send_block: str | None
     # the greeting's Frau / Herr, or None when it uses the full name
     salutation: str | None = None
-    # the greeting fell back to the full name: "Anrede prüfen"
+    # where it came from, in the reviewer's words: "from the role", ...
+    salutation_origin: str | None = None
+    # "Anrede prüfen": neither the reviewer's choice nor a full page match
     check_salutation: bool = False
     # a named person with a surname, and a current draft to rebuild
     can_choose_salutation: bool = False
@@ -273,7 +284,8 @@ def load_cards(
                     sending_approved=sending_approved,
                 ),
                 salutation=salutation(contact)[0] if contact else None,
-                check_salutation=bool(contact and draft and falls_back(contact)),
+                salutation_origin=_ORIGINS[salutation(contact)[1]] if contact else None,
+                check_salutation=bool(contact and draft and needs_check(contact)),
                 can_choose_salutation=rebuildable and surname and decision is None,
             )
         )
