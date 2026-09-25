@@ -1060,13 +1060,22 @@ def off_limits_because(conn: sqlite3.Connection, uid: str) -> str | None:
 DECISIONS = ("sent", "skipped", "never", "undone", "not_sent", "bounced")
 _REOPENS = ("undone", "not_sent", "bounced")
 
+# An `undone` row that names a row in `reverses` takes that row back as if it
+# had not happened: a bounce clicked by mistake, while it is still the
+# ledger's newest row. A skip's `undone` names nothing and reopens the card,
+# as it always did.
+UNDONE = (
+    "(select reverses from ledger where status = 'undone' and reverses is not null)"
+)
+
 # The ids of sent rows that were never a mail, and of those nobody received.
 NEVER_LEFT = (
-    "(select reverses from ledger where status = 'not_sent' and reverses is not null)"
+    "(select reverses from ledger where status = 'not_sent'"
+    f" and reverses is not null and id not in {UNDONE})"
 )
 TAKEN_BACK = (
-    "(select reverses from ledger"
-    " where status in ('not_sent', 'bounced') and reverses is not null)"
+    "(select reverses from ledger where status in ('not_sent', 'bounced')"
+    f" and reverses is not null and id not in {UNDONE})"
 )
 
 
@@ -1128,11 +1137,26 @@ def record_decision(
 def decision_for(conn: sqlite3.Connection, uid: str) -> sqlite3.Row | None:
     """The company's current decision, or None while it is undecided —
     never decided, its skip undone, or its send taken back as not sent or
-    bounced (the card is open again)."""
-    row = conn.execute(
-        "select * from ledger where uid = ? order by id desc limit 1", (uid,)
-    ).fetchone()
-    return None if row is None or row["status"] in _REOPENS else row
+    bounced (the card is open again). A row an `undone` took back, and that
+    `undone` itself, are passed over: an undone bounce leaves the send."""
+    rows = conn.execute(
+        "select * from ledger where uid = ? order by id desc", (uid,)
+    ).fetchall()
+    taken_back = {r["reverses"] for r in rows if r["status"] == "undone"}
+    for row in rows:
+        if row["id"] in taken_back or (row["status"] == "undone" and row["reverses"]):
+            continue
+        return None if row["status"] in _REOPENS else row
+    return None
+
+
+def undoable_bounce(conn: sqlite3.Connection, uid: str) -> sqlite3.Row | None:
+    """The company's bounce, while it is still the ledger's newest row —
+    before the reviewer decided anything else — or None."""
+    row = conn.execute("select * from ledger order by id desc limit 1").fetchone()
+    if row is None or (row["uid"], row["status"]) != (uid, "bounced"):
+        return None
+    return row
 
 
 def was_contacted(conn: sqlite3.Connection, uid: str) -> bool:
@@ -1168,10 +1192,20 @@ def _key(key: str) -> str:
 
 
 def suppress(conn: sqlite3.Connection, key: str, *, reason: str) -> None:
-    """A uid or an e-mail address that is never contacted again. Permanent."""
+    """A uid or an e-mail address that is never contacted again. Permanent,
+    with one exception: `unsuppress_bounced`."""
     conn.execute(
         "INSERT OR IGNORE INTO suppression (key, reason, added_at) VALUES (?,?,?)",
         (_key(key), reason, now()),
+    )
+
+
+def unsuppress_bounced(conn: sqlite3.Connection, address: str) -> None:
+    """A bounce taken back takes its address off the list — only a row the
+    bounce wrote; one there for another reason stays."""
+    conn.execute(
+        "delete from suppression where key = ? and reason = 'bounced'",
+        (_key(address),),
     )
 
 

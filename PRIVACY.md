@@ -92,7 +92,8 @@ gets it. Everything else is written by code (`tools/invitation.py`):
   to for another company, such as a sister firm sharing one info@. A mail
   nobody received is not a contact: one that never left the mail client is
   taken back on the page, and one that bounced puts its address on the
-  never-again list; either way the company may be written to at another
+  never-again list (a bounce clicked by mistake is undone before anything
+  else is decided); either way the company may be written to at another
   address. Only if the profile allows one reminder (which needs ethics
   approval first) does the mail say "Ich erinnere Sie höchstens einmal
   daran" instead.

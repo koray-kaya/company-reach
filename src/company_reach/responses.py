@@ -27,7 +27,7 @@ from datetime import datetime
 from pathlib import Path
 
 from company_reach.errors import CompanyReachError
-from company_reach.tools.db import NEVER_LEFT, now
+from company_reach.tools.db import NEVER_LEFT, UNDONE, now
 from company_reach.tools.invitation import compact_uid
 
 _COLUMNS = ("uid", "started_at", "completed_at")
@@ -143,7 +143,8 @@ def report_rows(
             select s.frame_version, s.arm, s.contact_kind,
                    count(*) as sent,
                    sum(exists (select 1 from ledger b
-                                where b.reverses = s.id and b.status = 'bounced'))
+                                where b.reverses = s.id and b.status = 'bounced'
+                                  and b.id not in {UNDONE}))
                        as bounced,
                    sum(exists (select 1 from suppression x where x.key = s.uid)
                        or exists (select 1 from ledger n

@@ -125,6 +125,7 @@
       {% if card.decision == 'sent' %}<button class="btn quiet" id="bounced" name="action" value="bounced" title="The mail came back: its address goes on the never-again list, and the card opens again for another address.">Bounced</button>{% endif %}
     </span>
     {% else %}
+    {% if card.can_undo_bounce %}<button class="btn quiet" name="action" value="undo" title="Clicked by mistake: the send stands again, and the address leaves the never-again list.">Undo bounce</button>{% endif %}
     <span class="lbl">Skip:</span>
     {% for reason in skip_reasons %}<button class="btn" name="action" value="skip:{{ reason }}">{{ reason }}</button>
     {% endfor %}

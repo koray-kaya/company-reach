@@ -41,6 +41,7 @@ from company_reach.tools.db import (
     decision_for,
     is_suppressed,
     search_log,
+    undoable_bounce,
 )
 from company_reach.tools.invitation import (
     FRAME_VERSION,
@@ -143,6 +144,8 @@ class Card:
     address_blocks: dict[str, str] = field(default_factory=dict)
     # the row selected when the card opens: the first one Send accepts
     default_to: str | None = None
+    # its bounce is the ledger's newest row: a mistaken click is undone
+    can_undo_bounce: bool = False
 
 
 def safe_url(url: str | None) -> str | None:
@@ -397,6 +400,7 @@ def load_cards(
                 can_readdress=rebuildable and decision is None,
                 address_blocks=blocks,
                 default_to=default_to,
+                can_undo_bounce=undoable_bounce(conn, uid) is not None,
             )
         )
     return cards
