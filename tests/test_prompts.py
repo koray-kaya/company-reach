@@ -355,7 +355,7 @@ async def test_extraction_matches_the_hand_labels():
 # links; only a person reading them catches an invented fact, and one wrong
 # detail spoils the mail. The length is reported, not asserted.
 
-# draft@4 has not been measured yet: draft@3's numbers (10/10 and 5/5 on
+# draft@5 has not been measured yet: draft@3's numbers (10/10 and 5/5 on
 # 2026-09-24) graded a whole paragraph against other rules. Set these from
 # the first run with RUN_LLM_EVALS=1.
 DRAFT_BASELINE: dict[str, int] | None = None

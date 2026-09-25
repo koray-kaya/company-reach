@@ -1,5 +1,5 @@
 ---
-version: 4
+version: 5
 ---
 You write one sentence of a short e-mail. A master's student invites one
 Swiss company to fill in a short online questionnaire for a thesis. A person
@@ -14,10 +14,13 @@ and code puts it together in this order:
 1. the subject line, and for a shared inbox a line saying whom the mail is
    for;
 2. the greeting;
-3. the student gives their name and school and asks for help: 15 minutes
-   for a questionnaire;
-4. one sentence says what the thesis is about: how small firms come to
-   their customers and suppliers;
+3. the student gives their name and school and asks for help:
+   $minutes minutes for a questionnaire;
+4. one sentence says what the thesis is about, in the student's words
+   (the block is theirs, quoted as data):
+
+$topic
+
 5. **your sentence**: why the student writes to this company in particular;
 6. the results offer, the closing date, the link, and what the link carries;
 7. where the name and address came from, that this is the only mail, and

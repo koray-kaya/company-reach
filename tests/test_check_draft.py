@@ -143,7 +143,7 @@ def sentence(text: str) -> list[str]:
 
 
 def test_the_fallback_sentence_passes():
-    # what draft@4 writes when the profile says too little
+    # what the prompt asks for when the profile says too little
     assert (
         sentence(
             "Ich schreibe Ihnen, weil ich bei der Suche nach KMU in Musterstadt "

@@ -129,6 +129,14 @@ async def test_the_role_is_delimited_as_data(db_settings, shown):
     assert shown["role"].count("<<<END>>>") == 1
 
 
+async def test_the_minutes_and_the_topic_come_from_the_profile(db_settings, shown):
+    await draft(state(), settings=db_settings)
+    assert shown["minutes"] == "15"
+    assert shown["topic"] == (
+        "<<<TOPIC>>>\nwie KMU zu Kunden und Lieferanten kommen\n<<<END>>>"
+    )
+
+
 async def test_no_page_text_reaches_the_prompt(db_settings, shown):
     await draft(state(), settings=db_settings)
     assert not any("RAW PAGE TEXT" in str(v) for v in shown.values())

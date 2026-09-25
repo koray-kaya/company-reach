@@ -91,6 +91,9 @@ async def draft(state: dict[str, Any], *, settings: Settings) -> dict:
         role=as_data(contact.role, label="ROLE") if contact.role else "not known",
         profile=as_data(profile.description, label="PROFILE"),
         feedback=feedback,
+        # the frame says both; the model is told so it does not say them
+        minutes=str(me.invitation.minutes),
+        topic=as_data(me.invitation.topic, label="TOPIC"),
     )
 
     sentence = answer.sentence.strip().replace("ß", "ss")
