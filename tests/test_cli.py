@@ -367,6 +367,28 @@ def test_a_dry_run_leaves_the_real_database_untouched(settings, monkeypatch):
     assert _dry_run("r2").exit_code == 0  # both are still drawable
 
 
+def test_the_dry_copy_stays_under_the_data_directory(settings, monkeypatch):
+    """Review of Phase F: the copy, personal data like the database it
+    copies, went to the system temp directory, where a killed run left it
+    outside `data/` and its care."""
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    _seed_scored_pool(settings, {"CHE000000001": 9})
+    copies: list[Path] = []
+
+    async def look(state, *, settings, **kwargs):
+        copies.append(settings.db_path)
+        return state | {"pool_exhausted": True}
+
+    monkeypatch.setattr(cli, "run_graph", look)
+    r = _dry_run("d1")
+
+    assert r.exit_code == 0, r.output
+    (copy,) = copies
+    assert copy.parent.parent.resolve() == settings.data_dir.resolve()
+    assert copy.parent.name.startswith(".dry-")
+    assert not copy.parent.exists()  # and gone once the run is over
+
+
 def test_run_target_reaches_the_loop_and_the_resume_hint(settings, monkeypatch):
     monkeypatch.setattr(cli, "get_settings", lambda: settings)
     _seed_scored_pool(settings, {"CHE000000001": 9})

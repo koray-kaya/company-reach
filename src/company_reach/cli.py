@@ -79,11 +79,17 @@ def _work_database(s: Settings, *, dry: bool) -> Iterator[Settings]:
     A real run gets `s` itself. A dry run gets settings whose data directory
     is a throwaway copy of the real database: the loop writes `seen` and
     `results`, and on the real database a demonstration marked real
-    companies as drawn, out of every later run (Phase A's final review)."""
+    companies as drawn, out of every later run (Phase A's final review).
+
+    The copy holds the same personal data as the database, so it is made
+    inside the data directory, never the system's temp directory: a run
+    killed before the cleanup leaves a `.dry-*` folder there, under the
+    same care as the rest of `data/`."""
     if not dry:
         yield s
         return
-    with tempfile.TemporaryDirectory(prefix="company-reach-dry-") as tmp:
+    s.data_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=s.data_dir, prefix=".dry-") as tmp:
         work = s.model_copy(update={"data_dir": Path(tmp)})
         if s.db_path.is_file():
             copy_database(s.db_path, work.db_path)
