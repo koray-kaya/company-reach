@@ -214,6 +214,8 @@ def test_an_old_database_gains_the_new_columns(tmp_path: Path):
     drafts = {row[1] for row in conn.execute("pragma table_info(drafts)")}
     conn.close()
     assert {"model_text", "frame_version", "arm"} <= drafts
+    # the outcome of check_draft: null = never checked, "" = passed
+    assert "problems" in drafts
 
 
 def test_any_connection_brings_an_older_database_up_to_date(tmp_path: Path):

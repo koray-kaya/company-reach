@@ -56,6 +56,7 @@ _ADDED_COLUMNS = {
     ("drafts", "model_text"): "TEXT",
     ("drafts", "frame_version"): "TEXT",
     ("drafts", "arm"): "TEXT",
+    ("drafts", "problems"): "TEXT",
 }
 
 
@@ -517,6 +518,18 @@ def record_draft(
             draft.frame_version,
             draft.arm,
         ),
+    )
+
+
+def record_draft_check(
+    conn: sqlite3.Connection, run_id: str, uid: str, found: list[str]
+) -> None:
+    """`check_draft`'s outcome on the company's draft: "" when it passed,
+    the rules it broke otherwise. A draft that was never checked keeps
+    null, and the card sends neither."""
+    conn.execute(
+        "update drafts set problems = ? where run_id = ? and uid = ?",
+        ("; ".join(found), run_id, uid),
     )
 
 

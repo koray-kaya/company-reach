@@ -128,3 +128,29 @@ def test_a_no_site_card_shows_the_search_log(db: Path):
         "Exempel Druck Impressum — searxng · error: SearXNG answered HTTP 503",
         "Exempel Druck Impressum — brave · 1 result",
     ]
+
+
+def test_a_failed_draft_is_not_sendable(db: Path):
+    # the card gates Send on the latest check, not on a row existing
+    with connect(db) as conn:
+        conn.execute(
+            "update drafts set problems = ? where uid = ?",
+            ("the sentence uses 'wertvoll'", SEND),
+        )
+    block = by_uid(db)[SEND].send_block
+    assert "failed its checks" in block
+    assert "wertvoll" in block
+
+
+def test_an_unchecked_draft_is_not_sendable(db: Path):
+    # written, and the run stopped before check_draft looked at it
+    with connect(db) as conn:
+        conn.execute("update drafts set problems = null where uid = ?", (SEND,))
+    assert "never checked" in by_uid(db)[SEND].send_block
+
+
+def test_a_draft_of_an_older_frame_is_not_sendable(db: Path):
+    # every draft stored before frame@1 carries the old frame
+    with connect(db) as conn:
+        conn.execute("update drafts set frame_version = null where uid = ?", (SEND,))
+    assert "older frame" in by_uid(db)[SEND].send_block

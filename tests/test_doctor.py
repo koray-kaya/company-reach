@@ -1,8 +1,10 @@
 import json
+from datetime import date, timedelta
 
 import httpx
 import pytest
 import respx
+from fictional_profile import profile_text
 from typer.testing import CliRunner
 
 from company_reach import cli
@@ -49,10 +51,13 @@ def _config(enabled: list[str]):
     )
 
 
-def _real_survey(settings):
-    settings.profile_path.write_text(
-        f'goal = "Firms that make things."\nsurvey_url = "{REAL_SURVEY}"\n'
-    )
+def _real_survey(settings, **replace: str):
+    """A profile that could draft: a real-looking survey, and the fictional
+    [sender] and [invitation]. `replace` swaps text in it for one test."""
+    text = profile_text(REAL_SURVEY).replace("closes = 2026-10-30\n", "")
+    for old, new in replace.items():
+        text = text.replace(old, new)
+    settings.profile_path.write_text(text)
 
 
 def answer(content: str, *, finish_reason: str = "stop") -> httpx.Response:
@@ -327,3 +332,75 @@ async def test_the_search_check_asks_searxng_alone(settings):
     checks = {c.name: c for c in await run_checks(keyed)}
     assert checks["search"].ok is False
     assert "503" in checks["search"].detail
+
+
+# --- the invitation's profile (frame@1) ---------------------------------------
+
+
+async def profile_check(settings):
+    return next(c for c in await run_checks(settings) if c.name == "profile")
+
+
+def _closing_in(days: int) -> dict[str, str]:
+    closes = (date.today() + timedelta(days=days)).isoformat()
+    return {"minutes = 15\n": f"minutes = 15\ncloses = {closes}\n"}
+
+
+@respx.mock
+async def test_a_missing_sender_field_is_reported(settings):
+    respx.post(URL).mock(side_effect=[probe_ok(), probe_truncated()])
+    settings.profile_path.write_text(
+        f'goal = "Firms that make things."\nsurvey_url = "{REAL_SURVEY}"\n'
+    )
+    check = await profile_check(settings)
+    assert not check.ok
+    for field in ("sender.name", "sender.affiliation", "sender.school_short"):
+        assert field in check.detail
+    assert "invitation.topic" in check.detail
+
+
+@respx.mock
+@pytest.mark.parametrize("days", [-1, 0, 13])
+async def test_a_closing_date_too_soon_is_reported(settings, days):
+    respx.post(URL).mock(side_effect=[probe_ok(), probe_truncated()])
+    _real_survey(settings, **_closing_in(days))
+    check = await profile_check(settings)
+    assert not check.ok
+    assert "closes" in check.detail
+
+
+@respx.mock
+async def test_a_closing_date_two_weeks_ahead_is_fine(settings):
+    respx.post(URL).mock(side_effect=[probe_ok(), probe_truncated()])
+    _real_survey(settings, **_closing_in(14))
+    check = await profile_check(settings)
+    assert check.ok, check.detail
+
+
+@respx.mock
+async def test_a_placeholder_in_the_profile_is_reported(settings):
+    # the "[Hochschule]" case, caught before a single draft is written
+    respx.post(URL).mock(side_effect=[probe_ok(), probe_truncated()])
+    _real_survey(settings, **{'school_short = "OST"': 'school_short = "[Hochschule]"'})
+    check = await profile_check(settings)
+    assert not check.ok
+    assert "[Hochschule]" in check.detail
+
+
+@respx.mock
+async def test_a_worst_case_mail_too_long_for_mailto_is_reported(settings):
+    respx.post(URL).mock(side_effect=[probe_ok(), probe_truncated()])
+    long = " ".join(["Masterstudentin im Studiengang Wirtschaftsinformatik"] * 4)
+    old = 'affiliation = "Masterstudentin, OST Ostschweizer Fachhochschule"'
+    _real_survey(settings, **{old: f'affiliation = "{long}"'})
+    check = await profile_check(settings)
+    assert not check.ok
+    assert "mailto" in check.detail
+
+
+@respx.mock
+async def test_the_fictional_profile_passes_the_worst_case(settings):
+    respx.post(URL).mock(side_effect=[probe_ok(), probe_truncated()])
+    _real_survey(settings)
+    check = await profile_check(settings)
+    assert check.ok, check.detail

@@ -3,8 +3,10 @@ be spent discovering that the key is wrong. Every check runs even when an
 earlier one fails, because one command should report every problem at once
 rather than one per attempt."""
 
+import re
 import tempfile
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -12,12 +14,16 @@ import httpx
 from pydantic import BaseModel
 
 from company_reach.errors import LlmError, ProfileError
+from company_reach.models import Contact
+from company_reach.nodes.check_draft import MAX_SENTENCE_CHARS
 from company_reach.nodes.probe_search import PROBE_QUERY
-from company_reach.profile import load_profile
+from company_reach.profile import Profile, load_profile
 from company_reach.settings import Settings
 from company_reach.tools import llm
 from company_reach.tools.db import connect, init_db
-from company_reach.tools.search import _brave, ask_searxng
+from company_reach.tools.invitation import assemble, subject, survey_link
+from company_reach.tools.mailto import build
+from company_reach.tools.search import _brave, ask_searxng, search
 
 MARKER = "COMPANY-REACH-OK"
 # Every prompt a run loads, so a broken header fails here rather than at the
@@ -123,27 +129,90 @@ async def _budget_check(settings: Settings) -> Check:
     )
 
 
+MIN_DAYS_OPEN = 14
+# The longest mail the frame can build: a 180-character sentence with
+# umlauts, a SHAB name at a shared inbox (the longest routing line and
+# privacy text), a long name and a long address. Fictional, of course.
+_WORST_SENTENCE = (
+    "Ich schreibe Ihnen, weil Ihre Käserei Milch von Bauernhöfen aus der Region "
+    "zu Käse verarbeitet und ihn an Läden, Hotels, Restaurants und Märkte in der "
+    "ganzen Ostschweiz liefert, auch über Grosshändler."
+)[: MAX_SENTENCE_CHARS - 1] + "."
+_WORST_CONTACT = Contact(
+    name="Dr. Katharina Beispiel-Hinterberger",
+    role="Präsidentin des Verwaltungsrates",
+    email="info@beispiel-hinterberger-kaeserei.example",
+    email_kind="generic",
+    source="shab",
+)
+# `mailto:` links must stay under 2,000 encoded characters; 100 are left for
+# a name or an address longer than the worst case above.
+_MAILTO_WARN = 1900
+# A field never filled in: "[Hochschule]", "<Name>", "XY", "..."
+_UNFILLED = re.compile(r"[\[\]{}<>]|\bXY\b|\bXX\b|\.\.\.|…")
+
+
 def _profile_check(settings: Settings) -> Check:
-    """The survey link goes into every draft, so a run that drafts without
-    one would fail at its first company rather than here."""
+    """Everything the invitation takes from the profile, checked before a
+    run rather than at its first company: the survey link, the [sender] and
+    [invitation] fields drafting needs, a closing date far enough ahead, no
+    field left as a placeholder, and room in a `mailto:` link for the longest
+    mail the frame can build."""
     try:
         profile = load_profile(settings.profile_path)
     except ProfileError as e:
         return Check("profile", False, str(e))
-    if not profile.survey_url:
-        return Check(
-            "profile",
-            False,
-            f"{settings.profile_path} has no survey_url; every draft links to it",
-        )
+    found: list[str] = []
+    if gaps := profile.drafting_gaps():
+        found.append(f"missing for drafting: {', '.join(gaps)}")
     host = urlsplit(profile.survey_url).hostname or ""
     if host == "example" or host.endswith(".example"):
-        return Check(
-            "profile",
-            False,
-            f"survey_url is a placeholder ({host}); drafts would be unsendable",
+        found.append(
+            f"survey_url is a placeholder ({host}); drafts would be unsendable"
         )
-    return Check("profile", True, f"goal set, survey_url={profile.survey_url}")
+    fields = {
+        **{f"sender.{k}": v for k, v in profile.sender.model_dump().items()},
+        "invitation.topic": profile.invitation.topic,
+    }
+    for key, value in fields.items():
+        if isinstance(value, str) and (unfilled := _UNFILLED.search(value)):
+            found.append(f"{key} looks unfilled ({unfilled.group()}): {value}")
+    closes = profile.invitation.closes
+    if closes and (closes - date.today()).days < MIN_DAYS_OPEN:
+        found.append(
+            f"invitation.closes is {closes.isoformat()}, less than "
+            f"{MIN_DAYS_OPEN} days ahead; a reader needs time to answer"
+        )
+    if not gaps and not found:
+        length = _worst_case_mailto(profile)
+        if length >= _MAILTO_WARN:
+            found.append(
+                f"the longest mail the frame can build encodes to {length} "
+                f"characters in a mailto: link (limit 2,000); shorten a "
+                "[sender] or [invitation] text"
+            )
+    if found:
+        return Check("profile", False, "; ".join(found))
+    return Check(
+        "profile",
+        True,
+        f"goal set, survey_url={profile.survey_url}, sender "
+        f"{profile.sender.school_short}, closes "
+        f"{closes.isoformat() if closes else 'not set'}",
+    )
+
+
+def _worst_case_mailto(profile: Profile) -> int:
+    link = survey_link(profile.survey_url, "CHE000000046")
+    body = assemble(
+        _WORST_CONTACT,
+        _WORST_SENTENCE,
+        link=link,
+        sender=profile.sender,
+        inv=profile.invitation,
+    )
+    title = subject(_WORST_CONTACT, profile.sender, profile.invitation)
+    return build(_WORST_CONTACT.email or "", title, body).length
 
 
 async def _search_check(settings: Settings) -> Check:

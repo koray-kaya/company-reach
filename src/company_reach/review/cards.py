@@ -10,6 +10,9 @@ Send is refused, with the reason the card shows, when any of these holds
 * the company is already decided, or on the never-again list;
 * there is no draft — a hold or a skip was never drafted, and a draft that
   failed its checks twice was deleted;
+* the draft was written with an older frame, was never checked, or failed
+  its checks: Send rests on the latest check's outcome, never on a draft
+  row existing;
 * ethics approval is not recorded (`SENDING_APPROVED` in `.env`);
 * the draft's survey link is a placeholder, or points somewhere other than
   the profile's current `survey_url`.
@@ -28,6 +31,7 @@ from company_reach.tools.db import (
     is_suppressed,
     search_log,
 )
+from company_reach.tools.invitation import FRAME_VERSION
 from company_reach.tools.mailto import build
 
 _LEGAL_FORMS = {"0106": "AG", "0107": "GmbH"}
@@ -48,6 +52,10 @@ class DraftView:
     mailto_fits: bool
     prompt_version: str
     model: str
+    model_text: str | None
+    frame_version: str | None  # None: written before frame@1
+    arm: str | None
+    problems: str | None  # None: never checked; "": passed
 
     @property
     def link(self) -> str | None:
@@ -138,11 +146,16 @@ def _draft(conn: sqlite3.Connection, run_id: str, uid: str) -> DraftView | None:
         mailto_fits=bool(row["mailto_fits"]),
         prompt_version=row["prompt_version"],
         model=row["model"],
+        model_text=row["model_text"],
+        frame_version=row["frame_version"],
+        arm=row["arm"],
+        problems=row["problems"],
     )
 
 
 def _send_block(
     *,
+    run_id: str,
     draft: DraftView | None,
     reason: str,
     decision: str | None,
@@ -156,6 +169,16 @@ def _send_block(
         return "This company is on the never-again list."
     if draft is None:
         return f"No draft to send — {reason}."
+    if draft.frame_version != FRAME_VERSION:
+        return (
+            f"The draft was written with an older frame "
+            f"({draft.frame_version or 'before frame@1'}); "
+            f"run `company-reach redraft {run_id}`."
+        )
+    if draft.problems is None:
+        return f"The draft was never checked; run `company-reach redraft {run_id}`."
+    if draft.problems:
+        return f"The draft failed its checks ({draft.problems}); redraft it."
     if not sending_approved:
         return (
             "Sending is locked until ethics approval is recorded "
@@ -237,6 +260,7 @@ def load_cards(
                 link_length=build(to, draft.subject, draft.body).length if draft else 0,
                 decision=decision,
                 send_block=_send_block(
+                    run_id=run_id,
                     draft=draft,
                     reason=reason,
                     decision=decision,

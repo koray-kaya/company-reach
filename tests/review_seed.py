@@ -13,6 +13,7 @@ from company_reach.tools.db import (
     init_db,
     record_contact,
     record_draft,
+    record_draft_check,
     record_searches,
     record_site,
     upsert_companies,
@@ -129,6 +130,7 @@ def seed(path: Path, *, link: str | None = None) -> None:
             contact_id=contact_id,
             provenance=PROV,
         )
+        record_draft_check(conn, RUN, SEND, [])  # check_draft passed it
 
         # hold: a site, an off-domain address only, no draft
         _result(
