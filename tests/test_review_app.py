@@ -481,9 +481,7 @@ def test_another_seen_row_rebuilds_the_mail_for_its_owner(two_seen):
     assert body.startswith("Guten Tag Beat Beispiel\n\n")  # his own address
     assert "Anna" not in body
 
-    r = client.post(
-        f"/decide/{RUN}/{SEND}?n=0", data={"action": "send", "to": BEAT}, headers=SAME
-    )
+    r = post_send(client, BEAT)
     assert r.status_code == 200
     with connect(two_seen.db_path) as conn:
         row = conn.execute("select address, contact_kind from ledger").fetchone()
@@ -498,9 +496,7 @@ def test_the_inbox_row_gets_the_inbox_frame(two_seen):
     assert body.startswith("Zuhanden Frau Muster – besten Dank fürs Weiterleiten")
     assert "Ihren Namen und diese Adresse habe ich von Ihrer Website" in body
     assert subject == "Für Frau Muster: Masterarbeit an der OST"
-    client.post(
-        f"/decide/{RUN}/{SEND}?n=0", data={"action": "send", "to": INBOX}, headers=SAME
-    )
+    assert post_send(client, INBOX).status_code == 200
     with connect(two_seen.db_path) as conn:
         kind = conn.execute("select contact_kind from ledger").fetchone()[0]
     assert kind == "generic/site/named"
@@ -508,10 +504,9 @@ def test_the_inbox_row_gets_the_inbox_frame(two_seen):
 
 def test_send_to_a_row_the_mail_was_not_written_for_is_refused(two_seen):
     client = TestClient(create_app(two_seen), follow_redirects=False)
-    r = client.post(
-        f"/decide/{RUN}/{SEND}?n=0", data={"action": "send", "to": BEAT}, headers=SAME
-    )
+    r = post_send(client, BEAT)
     assert r.status_code == 409
+    assert "written for" in r.text
     assert ledger_rows(two_seen) == 0
 
 
@@ -592,7 +587,7 @@ def with_two_addresses(review: Settings) -> None:
     from company_reach.tools.db import record_contact
 
     with connect(review.db_path) as conn:
-        record_contact(
+        contact_id = record_contact(
             conn,
             RUN,
             SEND,
@@ -608,6 +603,12 @@ def with_two_addresses(review: Settings) -> None:
                     ContactAddress(email=OWN, kind="seen"),
                 ],
             ),
+        )
+        # the seeded draft was written for Anna at the inbox: it stays the
+        # draft of this contact (Phase C checks the draft's contact is current)
+        conn.execute(
+            "update drafts set contact_id = ? where run_id = ? and uid = ?",
+            (contact_id, RUN, SEND),
         )
 
 
@@ -659,9 +660,17 @@ def test_bounced_allows_another_address(client, review):
     html = client.get(f"/review/{RUN}/0").text
     assert 'value="info@muster-metallbau.ch" disabled' in html
     assert "(bounced)" in html
-    assert f'value="{OWN}" checked' in html
-
+    # the mail was written for the inbox that bounced: the other address is
+    # offered as a rebuild (Phase C), not preselected for a silent switch
+    assert f'value="address:{OWN}"' in html
     assert post_send(client, "info@muster-metallbau.ch").status_code == 409
+    assert post_send(client, OWN).status_code == 409  # not written for it yet
+
+    r = client.post(
+        f"/decide/{RUN}/{SEND}?n=0", data={"action": f"address:{OWN}"}, headers=SAME
+    )
+    assert r.status_code == 303
+    assert f'value="{OWN}" checked' in client.get(f"/review/{RUN}/0").text
     assert post_send(client, OWN).status_code == 200
     assert [s for s, _ in statuses(review)] == ["sent", "bounced", "sent"]
     with connect(review.db_path) as conn:
@@ -756,3 +765,23 @@ def test_a_bounce_is_final_once_something_else_is_decided(client, review):
     r = client.post(f"/decide/{RUN}/{SEND}?n=0", data={"action": "undo"}, headers=SAME)
     assert r.status_code == 409
     assert decision(review, SEND) is None
+
+
+def test_a_refused_row_cannot_be_chosen_for_a_rebuild(client, review):
+    """Integration of C and D: the rebuild action obeys the same per-inbox
+    refusals as Send. Rebuilding a mail for an inbox on the never-again list
+    would only lead to a Send that is refused, and would overwrite the draft
+    the reviewer could still send."""
+    from company_reach.tools.db import suppress
+
+    with_two_addresses(review)
+    with connect(review.db_path) as conn:
+        suppress(conn, OWN, reason="forgotten on request")
+        before = conn.execute("select id, body from drafts where uid = ?", (SEND,))
+        before = before.fetchall()
+    r = choose(client, OWN)
+    assert r.status_code == 409
+    assert "never-again list" in r.text
+    with connect(review.db_path) as conn:
+        after = conn.execute("select id, body from drafts where uid = ?", (SEND,))
+        assert after.fetchall() == before
