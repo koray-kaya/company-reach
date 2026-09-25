@@ -44,6 +44,7 @@ from company_reach.tools.db import (
     connect,
     count_sendable,
     errored_uids,
+    record_pending,
     record_seen,
 )
 from company_reach.tools.db import draw_batch as db_draw_batch
@@ -133,6 +134,7 @@ def draw_batch(state: ReachState, *, settings: Settings) -> dict:
         )
         if uids:
             record_seen(conn, uids, run_id=state["run_id"], batch_no=batch_no)
+            record_pending(conn, uids, run_id=state["run_id"])
 
     return {
         "batch_uids": uids,

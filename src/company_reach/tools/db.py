@@ -311,6 +311,30 @@ def record_seen(
     return len(uids)
 
 
+def record_pending(conn: sqlite3.Connection, uids: list[str], *, run_id: str) -> None:
+    """A result row for every company of a batch, written with `seen` in one
+    transaction. It reads as an error until the child replaces it, so a crash
+    leaves the company retryable instead of drawn and forgotten (audit H8).
+    INSERT OR IGNORE: on a rerun, a company that already finished keeps its
+    row."""
+    conn.executemany(
+        """INSERT OR IGNORE INTO results (run_id, uid, recommendation, reason,
+             error_kind, error_text, finished_at) VALUES (?,?,?,?,?,?,?)""",
+        [
+            (
+                run_id,
+                uid,
+                None,
+                None,
+                "interrupted",
+                "drawn, but the run stopped before this company finished",
+                now(),
+            )
+            for uid in uids
+        ],
+    )
+
+
 def record_result(
     conn: sqlite3.Connection, result: CompanyResult, *, run_id: str
 ) -> None:

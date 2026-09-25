@@ -20,7 +20,13 @@ from company_reach.graph import (
 from company_reach.models import CompanyRecord, CompanyResult, Score
 from company_reach.profile import goal_hash
 from company_reach.tools import llm
-from company_reach.tools.db import connect, init_db, upsert_companies, upsert_scores
+from company_reach.tools.db import (
+    connect,
+    errored_uids,
+    init_db,
+    upsert_companies,
+    upsert_scores,
+)
 
 
 def test_results_carries_an_add_reducer():
@@ -363,3 +369,23 @@ async def test_retry_probes_search_before_touching_a_company(settings, monkeypat
     with pytest.raises(SearchError):
         await retry_errors("r1", settings=settings, child=child)
     assert child.seen == []
+
+
+def test_a_drawn_batch_is_retryable_before_any_child_finishes(settings):
+    """Audit H8: seen was written before any result row, so a crash in
+    between stranded the batch for good."""
+    _seed(settings, {"CHE000000001": 9, "CHE000000002": 8})
+    out = graph_module.draw_batch(_start(settings), settings=settings)
+    with connect(settings.db_path) as conn:
+        assert errored_uids(conn, "r1") == sorted(out["batch_uids"])
+
+
+async def test_a_finished_run_leaves_nothing_interrupted(settings):
+    _seed(settings, {"CHE000000001": 9, "CHE000000002": 7})
+    child = ChildByUid({"CHE000000001": "skip", "CHE000000002": "send"})
+    await run_graph(_start(settings), settings=settings, dry=True, child=child)
+    with connect(settings.db_path) as conn:
+        n = conn.execute(
+            "select count(*) from results where error_kind = 'interrupted'"
+        ).fetchone()[0]
+    assert n == 0
