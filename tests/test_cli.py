@@ -955,6 +955,97 @@ def test_a_leftover_unfinished_company_is_reported(settings, monkeypatch):
     assert manifest["dry"] is False and manifest["counts"]["errors"] == 1
 
 
+def _stored_rules(settings) -> None:
+    """Criteria stored for the goal, so `score` asks no model for them."""
+    init_db(settings.db_path)
+    with connect(settings.db_path) as conn:
+        store_criteria(
+            conn,
+            goal_hash("make and sell"),
+            SelectionCriteria(must=["makes"], must_not=["holds"], positive_signals=[]),
+            criteria_hash="c1",
+            model="test-model",
+            prompt_version="1",
+            adopt_unlinked=True,
+        )
+
+
+def _runs_row(settings, run_id: str) -> dict:
+    with connect(settings.db_path) as conn:
+        row = conn.execute(
+            "select status, finished_at, counts from runs where id = ?", (run_id,)
+        ).fetchone()
+    return dict(row)
+
+
+def test_score_finishes_its_runs_row(settings, monkeypatch):
+    """Audit: every `runs` row said "scoring" for ever, with no end and no
+    counts, though `score` knew both."""
+    from company_reach.nodes.score_pool import ScoreReport
+
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    _stored_rules(settings)
+
+    async def scored(*args, **kwargs):
+        return ScoreReport(scored=3, cached=2, dropped=1, failed_batches=0, seconds=1)
+
+    monkeypatch.setattr(cli, "score_pool", scored)
+    r = runner.invoke(cli.app, ["score", "--goal", "make and sell", "--run-id", "s1"])
+
+    assert r.exit_code == 0, r.output
+    row = _runs_row(settings, "s1")
+    assert row["status"] == "done"
+    assert row["finished_at"]
+    assert json.loads(row["counts"]) == {
+        "scored": 3,
+        "cached": 2,
+        "dropped": 1,
+        "failed_batches": 0,
+    }
+
+
+def test_a_score_that_stops_says_so_in_its_runs_row(settings, monkeypatch):
+    from company_reach.errors import LlmError
+
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    _stored_rules(settings)
+
+    async def fails(*args, **kwargs):
+        raise LlmError("the endpoint is down")
+
+    monkeypatch.setattr(cli, "score_pool", fails)
+    r = runner.invoke(cli.app, ["score", "--goal", "make and sell", "--run-id", "s2"])
+
+    assert r.exit_code == 1
+    assert "the endpoint is down" in r.output
+    row = _runs_row(settings, "s2")
+    assert (row["status"], bool(row["finished_at"])) == ("failed", True)
+
+
+def test_the_manifest_counts_the_pages_that_needed_javascript(settings, monkeypatch):
+    """Audit: read_pages knew which pages were JavaScript shells and the run
+    forgot it. The manifest says, per company, how many pages were."""
+
+    class ReadsShells:
+        async def ainvoke(self, state, config=None):
+            return {
+                "recommendation": "hold",
+                "reason": "nobody is named",
+                "needs_js": ["https://muster.ch/", "https://muster.ch/team"],
+            }
+
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    _real_run_without_network(monkeypatch)
+    monkeypatch.setattr(cli, "build_child", lambda settings: ReadsShells())
+    _seed_scored_pool(settings, {"CHE000000001": 9, "CHE000000002": 8})
+
+    r = runner.invoke(cli.app, ["run", "--goal", "make and sell", "--run-id", "r8"])
+
+    assert r.exit_code == 0, r.output
+    manifest = json.loads(manifest_path("r8", settings=settings).read_text())
+    assert manifest["counts"]["needs_js"] == {"CHE000000001": 2, "CHE000000002": 2}
+
+
 def test_the_manifest_records_about_me(settings, monkeypatch):
     """Phase A review: the drafts said who writes, and the manifest said
     nobody — `run` never passed about_me to it."""

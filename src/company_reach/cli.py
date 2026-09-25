@@ -41,8 +41,10 @@ from company_reach.tools.db import (
     count_scored,
     current_criteria_hash,
     errored_uids,
+    finish_run,
     init_db,
     load_criteria,
+    needs_js_by_uid,
     off_limits_because,
     pool_standing,
     record_run,
@@ -368,8 +370,24 @@ def score(
     typer.echo("")
 
     record_run(s.db_path, rid, text, stored, seed=seed)
-    report = asyncio.run(
-        score_pool(rid, text, stored, settings=s, limit=limit, seed=seed)
+    try:
+        report = asyncio.run(
+            score_pool(rid, text, stored, settings=s, limit=limit, seed=seed)
+        )
+    except Exception as error:
+        finish_run(s.db_path, rid, status="failed", counts=None)
+        typer.echo(f"score {rid} failed — {type(error).__name__}: {error}", err=True)
+        raise typer.Exit(1) from error
+    finish_run(
+        s.db_path,
+        rid,
+        status="done",
+        counts={
+            "scored": report.scored,
+            "cached": report.cached,
+            "dropped": report.dropped,
+            "failed_batches": report.failed_batches,
+        },
     )
     typer.echo(
         f"{report.scored} newly scored · {report.cached} already scored, skipped"
@@ -582,6 +600,7 @@ def run(
             # crashed attempt left unfinished belongs in the count too.
             errors = len(errored_uids(conn, rid))
             brave = count_brave_queries(conn, rid)
+            shells = needs_js_by_uid(conn, rid)
 
     counts = {
         "batches_drawn": out["batches_drawn"],
@@ -589,6 +608,8 @@ def run(
         "sendable": out["sendable_count"],
         "errors": errors,
         "brave_queries": brave,
+        # per company, the pages that were JavaScript shells
+        "needs_js": shells,
     }
     finish_manifest(rid, settings=s, status="done", counts=counts)
 

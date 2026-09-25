@@ -68,7 +68,6 @@ class Settings(BaseSettings):
     # meaning "this company has no website". Google is a bonus, not baseline:
     # measured, a self-hosted SearXNG behaves like a DuckDuckGo proxy.
     baseline_engines: str = "duckduckgo,mojeek,brave"
-    playwright_url: str | None = None
 
     max_pages_per_site: int = 10
     max_page_urls: int = 200
@@ -103,7 +102,7 @@ class Settings(BaseSettings):
         default=False, validation_alias="COMPANY_REACH_TRACING"
     )
 
-    @field_validator("brave_search_api_key", "playwright_url", mode="before")
+    @field_validator("brave_search_api_key", mode="before")
     @classmethod
     def _blank_is_none(cls, value):
         """An unset optional key is None, however the .env line was written.

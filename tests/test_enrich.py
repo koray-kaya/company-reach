@@ -3,9 +3,10 @@ from pathlib import Path
 import pytest
 
 from company_reach.errors import FetchError, LlmError, SearchError, ShabError
+from company_reach.models import CompanyResult
 from company_reach.nodes.enrich_company import enrich_company
 from company_reach.settings import Settings
-from company_reach.tools.db import connect, init_db
+from company_reach.tools.db import connect, init_db, record_result, result_for
 
 UID = "CHE000000001"
 
@@ -170,3 +171,31 @@ async def test_a_first_attempt_has_no_previous_error(db_settings: Settings):
 
     await run(Remembers(), db_settings)
     assert seen["previous_error"] is None
+
+
+async def test_the_pages_that_needed_javascript_are_counted(db_settings: Settings):
+    """Audit: read_pages recorded which pages were JavaScript shells, and
+    the number was gone when the run ended — the one measurement that
+    would say whether a browser fetcher is worth building."""
+    shells = ["https://muster.ch/", "https://muster.ch/team"]
+    child = Child({"recommendation": "hold", "reason": "r", "needs_js": shells})
+
+    [result] = (await run(child, db_settings))["results"]
+
+    assert result.needs_js == 2
+    assert stored(db_settings)["needs_js"] == 2
+    with connect(db_settings.db_path) as conn:
+        assert result_for(conn, UID, run_id="r1").needs_js == 2
+
+
+async def test_a_verdict_written_later_keeps_the_count(db_settings: Settings):
+    """`redraft` rewrites a company's verdict without reading its pages
+    again; it must not wipe what the run counted."""
+    await run(
+        Child({"recommendation": "send", "reason": "r", "needs_js": ["u"]}), db_settings
+    )
+    with connect(db_settings.db_path) as conn:
+        record_result(
+            conn, CompanyResult(uid=UID, recommendation="hold", reason="x"), run_id="r1"
+        )
+    assert stored(db_settings)["needs_js"] == 1

@@ -31,6 +31,19 @@ Effort = Literal["low", "high", "max"]
 
 # Inside the package, so an installed copy finds them as a checkout does.
 PROMPT_DIR = files("company_reach").joinpath("prompts")
+# Every prompt the code loads, and so every file the directory ships:
+# `doctor` checks each header before a run, and a run's manifest records
+# each version. Three files no code loaded were shipped once, and a broken
+# header in one of them stopped every run (audit).
+PROMPTS = (
+    "criteria",
+    "score",
+    "doctor",
+    "pick_site",
+    "pick_pages",
+    "extract",
+    "draft",
+)
 
 
 @lru_cache

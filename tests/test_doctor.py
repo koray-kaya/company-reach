@@ -266,9 +266,9 @@ async def test_the_placeholder_survey_url_fails(settings):
 
 
 def test_every_prompt_a_run_uses_is_loaded():
-    from company_reach.tools import doctor
+    from company_reach.tools import llm
 
-    assert set(doctor._PROMPTS) >= {
+    assert set(llm.PROMPTS) >= {
         "criteria",
         "score",
         "pick_site",

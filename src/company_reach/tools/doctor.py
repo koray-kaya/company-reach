@@ -31,17 +31,6 @@ from company_reach.tools.mailto import build
 from company_reach.tools.search import _brave, ask_searxng
 
 MARKER = "COMPANY-REACH-OK"
-# Every prompt a run loads, so a broken header fails here rather than at the
-# first company that reaches that node.
-_PROMPTS = (
-    "criteria",
-    "score",
-    "doctor",
-    "pick_site",
-    "pick_pages",
-    "extract",
-    "draft",
-)
 
 
 class _Probe(BaseModel):
@@ -68,8 +57,10 @@ def _settings_check(settings: Settings) -> Check:
 
 
 def _prompts_check() -> Check:
+    """Every prompt a run loads (`llm.PROMPTS`), so a broken header fails
+    here rather than at the first company that reaches that node."""
     try:
-        versions = {name: llm.load_prompt(name)[0] for name in _PROMPTS}
+        versions = {name: llm.load_prompt(name)[0] for name in llm.PROMPTS}
     except Exception as e:
         return Check("prompts", False, str(e))
     return Check("prompts", True, ", ".join(f"{k}@{v}" for k, v in versions.items()))

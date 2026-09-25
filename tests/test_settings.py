@@ -86,7 +86,12 @@ def test_only_the_projects_own_variable_turns_tracing_on(monkeypatch, tmp_path: 
 
 def test_the_example_env_arms_no_fallback(monkeypatch, tmp_path: Path):
     monkeypatch.delenv("BRAVE_SEARCH_API_KEY", raising=False)
-    monkeypatch.delenv("PLAYWRIGHT_URL", raising=False)
     s = Settings(_env_file=".env.example", data_dir=tmp_path)
     assert s.brave_search_api_key is None
-    assert s.playwright_url is None
+
+
+def test_no_playwright_setting_is_left():
+    """Audit: PLAYWRIGHT_URL was read, documented and switched nothing on —
+    no Playwright service exists. It returns with the service, if ever."""
+    assert "playwright_url" not in Settings.model_fields
+    assert "PLAYWRIGHT" not in Path(".env.example").read_text()

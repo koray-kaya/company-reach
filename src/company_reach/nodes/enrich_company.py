@@ -99,6 +99,8 @@ async def enrich_company(
             uid=uid,
             recommendation=out.get("recommendation"),
             reason=out.get("reason"),
+            # read_pages lists the shells; a child that read no pages, none
+            needs_js=len(out.get("needs_js") or []),
         )
     except Exception as error:  # noqa: BLE001 — nothing may escape this node
         result = CompanyResult(

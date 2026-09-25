@@ -287,3 +287,6 @@ class CompanyResult(BaseModel):
     reason: str | None = None
     error_kind: ErrorKind | None = None
     error_text: str | None = None
+    # Pages that came back as a JavaScript shell. None when unknown, so a
+    # verdict written later (`redraft`) keeps the count the run made.
+    needs_js: int | None = None
