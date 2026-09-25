@@ -159,3 +159,14 @@ async def test_a_rejected_request_is_not_retried(settings):
     with pytest.raises(LlmError):
         await llm.ask("criteria", SelectionCriteria, settings=settings, goal="g")
     assert route.call_count == 1
+
+
+@respx.mock
+async def test_the_connect_timeout_stays_short(settings):
+    """Final review of Phase A: a flat float timeout made connect wait as long
+    as a read, so an unreachable endpoint cost two times ten minutes."""
+    route = respx.post(URL).mock(return_value=answer(json.dumps(CRITERIA)))
+    await llm.ask("criteria", SelectionCriteria, settings=settings, goal="g")
+    timeout = route.calls.last.request.extensions["timeout"]
+    assert timeout["connect"] == 10.0
+    assert timeout["read"] == settings.llm_timeout_seconds

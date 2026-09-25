@@ -411,3 +411,48 @@ def test_run_names_its_id_before_it_starts(settings, monkeypatch):
     first = r.output.splitlines()[0]
     assert "r7" in first and "--run-id r7" in first
     assert "CHE000000001" in r.output  # the company line, as it finished
+
+
+def test_the_resume_hint_repeats_the_options_given(settings, monkeypatch):
+    """Final review of Phase A: following the hint after `run --dry --goal X`
+    would have started a real run with the profile's goal."""
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    _seed_scored_pool(settings, {"CHE000000001": 9})
+    r = runner.invoke(
+        cli.app, ["run", "--dry", "--goal", "make and sell", "--run-id", "r8"]
+    )
+    first = r.output.splitlines()[0]
+    assert "--dry" in first and '--goal "make and sell"' in first
+
+
+def test_a_leftover_unfinished_company_is_reported(settings, monkeypatch):
+    """Final review of Phase A: the summary counted errors from this call's
+    children only, so a company left unfinished by an earlier crash went
+    unmentioned."""
+    from company_reach.graph import draw_batch, initial_state
+
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    _seed_scored_pool(settings, {"CHE000000001": 9})
+    state = initial_state(
+        run_id="r9",
+        goal="make and sell",
+        about_me="",
+        municipality="",
+        settings=settings,
+    )
+    draw_batch(state, settings=settings)  # drawn, then the process died
+
+    async def finish_nothing(state, **kwargs):
+        return state | {"pool_exhausted": True}
+
+    monkeypatch.setattr(cli, "run_graph", finish_nothing)
+    r = runner.invoke(cli.app, ["run", "--goal", "make and sell", "--run-id", "r9"])
+    assert "1 errors" in r.output
+    assert "retry r9" in r.output
+
+    # after --dry the hint must not be `retry`, which runs the real child
+    dry = runner.invoke(
+        cli.app, ["run", "--dry", "--goal", "make and sell", "--run-id", "r9"]
+    )
+    assert "company-reach retry" not in dry.output
+    assert "finish them with: company-reach run --run-id r9 --dry" in dry.output

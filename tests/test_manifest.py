@@ -89,3 +89,11 @@ def test_a_failed_run_records_its_reason(settings: Settings):
     )
     data = json.loads(manifest_path("r1", settings=settings).read_text())
     assert data["reason"] == "SearchError: down"
+
+
+def test_a_successful_resume_clears_the_old_reason(settings: Settings):
+    start_manifest("r1", settings=settings, goal="g", seed=0)
+    finish_manifest("r1", settings=settings, status="failed", counts={}, reason="x")
+    finish_manifest("r1", settings=settings, status="done", counts={})
+    data = json.loads(manifest_path("r1", settings=settings).read_text())
+    assert data.get("reason") is None

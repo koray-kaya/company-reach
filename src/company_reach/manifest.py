@@ -124,10 +124,10 @@ def finish_manifest(
         "finished_at": now(),
         "counts": counts,
     }
-    if reason:
-        # why a failed run stopped, so the file answers what the terminal
-        # showed once and then scrolled away
-        fields["reason"] = reason
+    # Why a failed run stopped, so the file answers what the terminal showed
+    # once and then scrolled away. Written on every finish: a resumed run
+    # that succeeds must not keep the reason of the attempt before it.
+    fields["reason"] = reason
     if criteria is not None:
         fields["criteria"] = (
             criteria.model_dump() if hasattr(criteria, "model_dump") else criteria

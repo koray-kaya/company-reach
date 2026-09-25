@@ -101,6 +101,12 @@ def _get_semaphore(concurrency: int) -> asyncio.Semaphore:
     return gate("llm", concurrency)
 
 
+def _timeout(settings: Settings) -> httpx.Timeout:
+    """Long reads, short connects: a call measured 41-130 s, but a host that
+    does not answer the handshake within ten seconds will not answer at all."""
+    return httpx.Timeout(settings.llm_timeout_seconds, connect=10.0)
+
+
 def _client(
     settings: Settings, max_tokens: int, effort: Effort, http_client: httpx.AsyncClient
 ) -> ChatOpenAI:
@@ -117,9 +123,11 @@ def _client(
         max_tokens=max_tokens,
         reasoning_effort=effort,
         http_async_client=http_client,
-        # The SDK sends its own per-request timeout, and None overrides the
-        # injected client's. Audit H5: without this a silent endpoint hangs.
-        timeout=settings.llm_timeout_seconds,
+        # The SDK sends its own per-request timeout, and it overrides the
+        # injected client's: None hung a silent endpoint for good (audit H5),
+        # a plain float stretched connect to the read timeout. So the same
+        # Timeout object goes to both.
+        timeout=_timeout(settings),
         max_retries=0,  # retrying is this module's job, and it counts attempts
     )
 
@@ -147,9 +155,7 @@ async def ask[ModelT: BaseModel](
 
     last: Exception | str | None = None
     async with _get_semaphore(settings.llm_concurrency):
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(settings.llm_timeout_seconds, connect=10.0)
-        ) as http_client:
+        async with httpx.AsyncClient(timeout=_timeout(settings)) as http_client:
             chain = _client(
                 settings, budget, effort, http_client
             ).with_structured_output(

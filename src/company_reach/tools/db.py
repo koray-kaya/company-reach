@@ -284,7 +284,11 @@ def draw_batch(
               and c.uid not in (select key from suppression)
               and (c.uid not in (select uid from seen)
                    or (c.uid in (select uid from results
-                                  where error_kind is not null and run_id <> ?)
+                                  where error_kind is not null
+                                    -- still in flight elsewhere, or crashed:
+                                    -- its own run id finishes it, not ours
+                                    and error_kind <> 'interrupted'
+                                    and run_id <> ?)
                        and c.uid not in (select uid from results
                                           where error_kind is null)))
             order by s.score desc
@@ -327,7 +331,8 @@ def record_pending(conn: sqlite3.Connection, uids: list[str], *, run_id: str) ->
                 None,
                 None,
                 "interrupted",
-                "drawn, but the run stopped before this company finished",
+                "not finished: still running, or the run stopped. "
+                f"`company-reach retry {run_id}` redoes it",
                 now(),
             )
             for uid in uids
