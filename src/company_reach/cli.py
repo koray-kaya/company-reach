@@ -672,6 +672,11 @@ def forget(
             f"still named in {path} — not cleaned by the tool (a hand-kept file,"
             " a backup or a log); edit or delete it by hand"
         )
+    for path in report.not_searched:
+        typer.echo(
+            f"not searched: {path} — compressed or unreadable; open it and check"
+            " by hand"
+        )
     if report.unknown:
         # "0 companies" must not read as a deletion done (review focus 4),
         # the second time as little as the first

@@ -26,9 +26,11 @@ nowhere is still suppressed, and the command says how to find the company:
 by the `c=` UID in the survey link the reply quotes.
 
 Hand-kept research files (`data/v0`, `data/golden`) are not edited by code,
-and neither are copies: a database backup under `data/` or a log. Every
-file that still names the person is reported, so a human can edit or
-delete it; a copy is read block by block, never whole.
+and neither are copies: a database backup under `data/`, a log, a
+command's output. Every file under `data/` but code, binaries and tool
+folders is searched, block by block, never whole; each that still names
+the person is reported, so a human can edit or delete it, and each that
+cannot be searched — compressed or unreadable — is reported as such.
 
 `purge` is the same deletion without a request: personal data of companies
 nobody has touched for a year (#27, decided with Koray) — drawn a year ago,
@@ -52,13 +54,26 @@ from company_reach.tools.db import connect, suppress, suppression_for
 from company_reach.tools.urls import address_key, email_domain, registered_domain
 
 _UID = re.compile(r"^CHE[-.\s\d]+$", re.IGNORECASE)
-# Text the tool or a person writes, and copies of the database and logs —
-# the backup made before a risky step is where a name survives unnoticed.
-_SEARCHED = {
-    *(".md", ".json", ".jsonl", ".txt", ".html", ".csv", ".log"),
-    *(".db", ".db-wal", ".sqlite", ".sqlite3"),
+# Every file under data/ is searched but these: tool folders, code, and
+# binaries that hold no text. An ending nobody listed — a command's .out, a
+# hand-made .bak — is exactly where a name survives unnoticed.
+_SKIPPED_DIRS = {
+    *(".git", ".venv", "venv", "node_modules"),
+    *("__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache"),
+}
+_SKIPPED = {
+    *(".py", ".pyc", ".pyo", ".js", ".css", ".map", ".so", ".dylib", ".dll"),
+    *(".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico"),
+    *(".woff", ".woff2", ".ttf", ".otf", ".db-shm"),
+}
+# Text inside these is compressed, so a byte search cannot see a name: they
+# are listed as not searched, for a human to open.
+_COMPRESSED = {
+    *(".gz", ".tgz", ".zip", ".bz2", ".xz", ".zst", ".7z", ".rar", ".pdf"),
+    *(".docx", ".xlsx", ".pptx", ".odt", ".ods"),
 }
 _BLOCK = 1 << 20  # bytes read at a time
+_LIVE = ("-wal", "-shm")  # the live database's own companions
 _NO_COMPANY = "forgotten on request; no company found"
 
 
@@ -69,6 +84,8 @@ class Report:
     rows_deleted: int = 0
     cache_files_deleted: int = 0
     still_named: list[Path] = field(default_factory=list)
+    # compressed or unreadable: it may name the person, and nobody looked
+    not_searched: list[Path] = field(default_factory=list)
     # an address no company holds: nothing could be deleted, and the company
     # has to be found another way — however often the address is forgotten
     unknown: bool = False
@@ -249,22 +266,41 @@ def _names_in(path: Path, needles: list[str]) -> bool:
     return False
 
 
-def _still_named(data_dir: Path, names: set[str], *, db_path: Path) -> list[Path]:
-    """Every file under `data/` the tool did not clean that still names
-    someone: hand-kept notes, and copies — a database backup (with its
-    WAL) or a log. The live database, just vacuumed, is left out: its
-    never-again list keeps addresses on purpose."""
+def _files(data_dir: Path) -> list[Path]:
+    """Every file under `data_dir`, tool folders pruned before they are
+    walked (a virtualenv holds thousands of files and no person)."""
+    found = []
+    for root, dirs, files in data_dir.walk():
+        dirs[:] = sorted(d for d in dirs if d not in _SKIPPED_DIRS)
+        found.extend(root / f for f in files)
+    return sorted(found)
+
+
+def _still_named(
+    data_dir: Path, names: set[str], *, db_path: Path
+) -> tuple[list[Path], list[Path]]:
+    """The files under `data/` the tool did not clean that still name
+    someone — hand-kept notes, and copies: a database backup with its WAL,
+    a log, a command's output — and the files it could not search, being
+    compressed or unreadable. The live database, just vacuumed, is left
+    out: its never-again list keeps addresses on purpose."""
     needles = sorted({n.lower() for n in names})
     if not needles:
-        return []
-    live = {db_path.resolve(), Path(f"{db_path}-wal").resolve()}
-    found = []
-    for path in sorted(data_dir.rglob("*")):
-        if not path.is_file() or path.suffix not in _SEARCHED:
+        return [], []
+    live = {db_path.resolve(), *(Path(f"{db_path}{s}").resolve() for s in _LIVE)}
+    named, not_searched = [], []
+    for path in _files(data_dir):
+        if path.suffix.lower() in _SKIPPED or path.resolve() in live:
             continue
-        if path.resolve() not in live and _names_in(path, needles):
-            found.append(path)
-    return found
+        if path.suffix.lower() in _COMPRESSED:
+            not_searched.append(path)
+            continue
+        try:
+            if _names_in(path, needles):
+                named.append(path)
+        except OSError:
+            not_searched.append(path)
+    return named, not_searched
 
 
 def forget(settings: Settings, key: str) -> Report:
@@ -297,7 +333,7 @@ def forget(settings: Settings, key: str) -> Report:
     report.companies = uids
     report.cache_files_deleted = _delete_cache(settings.data_dir / "cache", domains)
     _compact(settings.db_path)
-    report.still_named = _still_named(
+    report.still_named, report.not_searched = _still_named(
         settings.data_dir, names, db_path=settings.db_path
     )
     return report

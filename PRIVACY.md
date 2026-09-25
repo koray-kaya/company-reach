@@ -125,7 +125,9 @@ gets it. Everything else is written by code (`tools/invitation.py`):
   `forget <UID>` deletes it. Files the tool did not write are not edited;
   any that still name the person are listed — including a copy of the
   database (a backup under `data/`, with its `-wal` file) and a log, which
-  have to be deleted or cleaned by hand.
+  have to be deleted or cleaned by hand. A file it cannot search — a
+  compressed archive, a PDF, one it may not read — is listed as not
+  searched.
 - **After a year:** `company-reach purge --older-than 365` removes the same
   data for every company nobody has touched for that long — one a run drew,
   and one only `enrich --uid` or an evaluation looked at, whose age is its

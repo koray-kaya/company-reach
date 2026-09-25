@@ -234,6 +234,46 @@ def test_a_name_across_a_read_boundary_is_found(settings, data, monkeypatch):
     assert data / "notes.log" in report.still_named
 
 
+def test_any_file_naming_the_person_is_reported_whatever_its_ending(settings, data):
+    """Review: an allow-list of endings skipped files data/ holds today — a
+    command's .out, a hand-made .bak. Only code, binaries and tool folders
+    are left out."""
+    (data / "export.out").write_text(f"{NAME}\n")
+    (data / "backups").mkdir()
+    (data / "backups" / "company_reach.db.bak").write_text(f"x {NAME} x")
+    (data / ".git").mkdir()
+    (data / ".git" / "COMMIT_EDITMSG").write_text(NAME)
+    (data / "helper.py").write_text(f"# {NAME}")
+    report = forget(settings, SEND)
+    assert data / "export.out" in report.still_named
+    assert data / "backups" / "company_reach.db.bak" in report.still_named
+    assert data / ".git" / "COMMIT_EDITMSG" not in report.still_named
+    assert data / "helper.py" not in report.still_named
+
+
+def test_a_file_that_cannot_be_searched_is_named(settings, data, monkeypatch):
+    """A compressed backup or a file the tool may not read could name the
+    person; it is listed as not searched, never passed over in silence."""
+    import gzip
+
+    from typer.testing import CliRunner
+
+    from company_reach import cli
+
+    (data / "backup.db.gz").write_bytes(gzip.compress(NAME.encode()))
+    locked = data / "locked.txt"
+    locked.write_text(NAME)
+    locked.chmod(0)
+    try:
+        monkeypatch.setattr(cli, "get_settings", lambda: settings)
+        r = CliRunner().invoke(cli.app, ["forget", SEND])
+    finally:
+        locked.chmod(0o600)
+    assert r.exit_code == 0, r.output
+    assert f"not searched: {data / 'backup.db.gz'}" in r.output
+    assert f"not searched: {locked}" in r.output
+
+
 # --- forget by address (audit: a reply from another address deletes nothing) --
 
 
