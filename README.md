@@ -71,13 +71,17 @@ change, `company-reach screen` applies them again to every company. Every
 command is safe to run again: nothing already done is repeated, and scoring
 is incremental. The criteria are written once per goal and stored, so every
 `score` pass ranks against the rules `criteria` showed you;
-`score --new-criteria` writes a fresh set and scores the pool again. `run` finds each company's site, reads it, chooses who to
-write to and drafts an invitation; a company whose search or site failed is
-recorded as an error, not as "no website", and `company-reach retry <run>`
-does it again. Every search query is logged, and a "no website" card on the
-review page lists them; if they show search was throttled,
-`company-reach retry <run> --no-site` redoes those companies too. To look at
-one company on its own:
+`score --new-criteria` writes a fresh set and scores the pool again.
+
+`run` finds each company's site, reads it, chooses who to write to and
+drafts an invitation; a company whose search or site failed is recorded as
+an error, not as "no website", and `company-reach retry <run>` does it
+again. Every search query is logged, and a "no website" card on the review
+page lists them; if they show search was throttled,
+`company-reach retry <run> --no-site` redoes those companies too. A run
+stops at its first batch with a sendable company; `run --target 10` draws on
+until ten are sendable, the pool runs dry, or `MAX_BATCHES_PER_RUN` batches
+(default 3) are drawn. To look at one company on its own:
 `uv run company-reach enrich --uid CHE123456789 --until draft`.
 
 `review` opens the page on `http://127.0.0.1:8000/`. It shows one company

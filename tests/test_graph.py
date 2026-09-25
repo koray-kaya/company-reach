@@ -7,13 +7,15 @@ from langgraph.graph import END
 from company_reach import graph as graph_module
 from company_reach.errors import LlmError, SearchError
 from company_reach.graph import (
-    RECURSION_LIMIT,
+    CHILD_LONGEST_PATH,
     ReachState,
+    build_child,
     build_graph,
     build_stub_child,
     collect,
     initial_state,
     need_another_batch,
+    recursion_limit,
     retry_errors,
     run_graph,
 )
@@ -68,6 +70,7 @@ def _state(**over) -> dict:
         municipality="3203",
         batch_size=10,
         seed=0,
+        target=1,
         pool_count=0,
         kept_count=0,
         criteria=None,
@@ -130,6 +133,12 @@ def test_the_batch_limit_ends_the_run(settings):
     """max_batches_per_run is 3; the third batch is the last."""
     state = _state(sendable_count=0, batches_drawn=3, pool_exhausted=False)
     assert need_another_batch(state, settings=settings) == END
+
+
+def test_below_the_target_draws_again(settings):
+    state = _state(sendable_count=2, target=3, batches_drawn=1)
+    assert need_another_batch(state, settings=settings) == "draw_batch"
+    assert need_another_batch(state | {"sendable_count": 3}, settings=settings) == END
 
 
 # --- the whole loop ----------------------------------------------------------
@@ -252,9 +261,54 @@ async def test_a_rerun_draws_no_new_companies(settings):
     assert len(out["results"]) == 2  # the stored ones, so the count stays whole
 
 
-def test_the_recursion_limit_is_set_explicitly():
-    """LangGraph's default is 1000, so an unset limit is not a defence."""
-    assert RECURSION_LIMIT == 40
+async def test_the_loop_runs_until_the_target(settings):
+    """Audit: the loop stopped at the first batch with one send, so a run
+    gave one to five candidates. With a target it draws on until that many
+    are sendable, the pool runs dry, or the batch cap is reached."""
+    uids = [f"CHE00000000{n}" for n in range(1, 7)]
+    _seed(settings, dict.fromkeys(uids, 9))
+    child = ChildByUid(dict.fromkeys(uids, "send"))
+
+    out = await run_graph(
+        _start(settings, batch_size=2, target=3),
+        settings=settings,
+        dry=True,
+        child=child,
+    )
+
+    assert out["batches_drawn"] == 2  # two sendable after one, four after two
+    assert out["sendable_count"] == 4
+    assert len(child.seen) == 4
+
+
+async def test_the_recursion_limit_follows_the_batch_cap(settings, monkeypatch):
+    """Three supersteps a batch: a cap of twenty batches ran past the fixed
+    limit of forty and failed mid-run."""
+    monkeypatch.setattr(settings, "max_batches_per_run", 20)
+    uids = [f"CHE0000000{n:02d}" for n in range(1, 21)]
+    _seed(settings, dict.fromkeys(uids, 9))
+    child = ChildByUid(dict.fromkeys(uids, "skip"))
+
+    out = await run_graph(
+        _start(settings, batch_size=1), settings=settings, dry=True, child=child
+    )
+
+    assert out["batches_drawn"] == 20
+
+
+def test_the_recursion_limit_stays_small():
+    """LangGraph's default is 1000, so an unset limit is not a defence: at
+    the default cap a routing bug still fails within tens of supersteps."""
+    assert recursion_limit(3) <= 40
+
+
+def test_the_recursion_limit_covers_the_child(settings):
+    """The child inherits the parent's limit when it runs inside a node, so
+    a limit shorter than its longest path would fail every company."""
+    child = build_child(settings=settings).get_graph()
+    nodes = [n for n in child.nodes if n not in ("__start__", "__end__")]
+    assert len(nodes) <= CHILD_LONGEST_PATH
+    assert recursion_limit(1) > CHILD_LONGEST_PATH
 
 
 async def test_run_graph_passes_the_recursion_limit(settings, monkeypatch):
@@ -267,7 +321,7 @@ async def test_run_graph_passes_the_recursion_limit(settings, monkeypatch):
 
     monkeypatch.setattr("company_reach.graph.build_graph", lambda **kw: Spy())
     await run_graph(_start(settings), settings=settings, dry=True, child=ChildByUid({}))
-    assert captured["recursion_limit"] == RECURSION_LIMIT
+    assert captured["recursion_limit"] == recursion_limit(settings.max_batches_per_run)
 
 
 async def test_the_stub_child_runs_through_the_real_graph(settings):

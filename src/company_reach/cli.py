@@ -276,12 +276,20 @@ def run(
     goal: str | None = None,
     seed: int = 0,
     run_id: str | None = None,
+    target: Annotated[
+        int,
+        typer.Option(
+            min=1,
+            help="Draw batches until this many companies are sendable, the "
+            "pool runs dry, or MAX_BATCHES_PER_RUN batches are drawn.",
+        ),
+    ] = 1,
 ) -> None:
     """Draw batches of the best-scoring companies and work through them.
 
     The pool stages are separate commands, so this starts from a database that
-    `pool`, `screen` and `score` have already filled. That is what keeps
-    `--dry` offline and quick enough to demonstrate.
+    `pool` and `score` have already filled. That is what keeps `--dry` offline
+    and quick enough to demonstrate.
     """
     s = get_settings()
     text = _resolve_goal(goal)
@@ -299,11 +307,11 @@ def run(
         municipality="",
         settings=s,
         seed=seed,
+        target=target,
     )
+    resume = _resume(rid, dry, goal, seed, target)
 
-    typer.echo(
-        f"run {rid} — if it stops, run it again with: {_resume(rid, dry, goal, seed)}"
-    )
+    typer.echo(f"run {rid} — if it stops, run it again with: {resume}")
     try:
         child = build_stub_child() if dry else build_child(settings=s)
         out = asyncio.run(
@@ -329,16 +337,26 @@ def run(
     }
     finish_manifest(rid, settings=s, status="done", counts=counts)
 
+    wanted = f" of {target}" if target > 1 else ""
     typer.echo(
         f"{counts['batches_drawn']} batches · {counts['results']} companies · "
-        f"{counts['errors']} errors · {counts['sendable']} sendable · "
+        f"{counts['errors']} errors · {counts['sendable']}{wanted} sendable · "
         f"{brave} Brave queries"
         + ("  · pool exhausted" if out["pool_exhausted"] else "")
     )
+    if (
+        counts["sendable"] < target
+        and not out["pool_exhausted"]
+        and counts["batches_drawn"] >= s.max_batches_per_run
+    ):
+        typer.echo(
+            f"stopped at the batch cap ({s.max_batches_per_run}); run again, "
+            "or raise MAX_BATCHES_PER_RUN"
+        )
     typer.echo(f"manifest: {manifest_path(rid, settings=s)}")
     if counts["errors"] and dry:
         # `retry` runs the real child; a dry run is finished by itself
-        typer.echo(f"finish them with: {_resume(rid, dry, goal, seed)}")
+        typer.echo(f"finish them with: {resume}")
     elif counts["errors"]:
         typer.echo(f"retry the errors with: company-reach retry {rid}")
     if dry:
@@ -658,7 +676,7 @@ def report(
     typer.echo(f"responses without a sent invitation: {unmatched}")
 
 
-def _resume(rid: str, dry: bool, goal: str | None, seed: int) -> str:
+def _resume(rid: str, dry: bool, goal: str | None, seed: int, target: int) -> str:
     """The command that continues this run: the same options, or following
     the hint after a --dry run would start a real one."""
     parts = ["company-reach run", f"--run-id {rid}"]
@@ -668,6 +686,8 @@ def _resume(rid: str, dry: bool, goal: str | None, seed: int) -> str:
         parts.append(f'--goal "{goal}"')
     if seed:
         parts.append(f"--seed {seed}")
+    if target > 1:
+        parts.append(f"--target {target}")
     return " ".join(parts)
 
 

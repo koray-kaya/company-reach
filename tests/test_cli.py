@@ -209,6 +209,28 @@ def test_a_drawn_out_pool_says_it_is_exhausted(settings, monkeypatch):
     assert "pool another municipality" in r.output
 
 
+def test_run_target_reaches_the_loop_and_the_resume_hint(settings, monkeypatch):
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    _seed_scored_pool(settings, {"CHE000000001": 9})
+    captured: dict = {}
+
+    async def stopped_at_the_cap(state, **kwargs):
+        captured.update(state)
+        return state | {"sendable_count": 1, "batches_drawn": 3}
+
+    monkeypatch.setattr(cli, "run_graph", stopped_at_the_cap)
+    r = runner.invoke(
+        cli.app,
+        ["run", "--dry", "--goal", "make and sell", "--run-id", "r1", "--target", "5"],
+    )
+
+    assert r.exit_code == 0, r.output
+    assert captured["target"] == 5
+    assert "--target 5" in r.output.splitlines()[0]
+    assert "1 of 5 sendable" in r.output
+    assert "batch cap" in r.output
+
+
 def _seed_one_company(settings) -> None:
     init_db(settings.db_path)
     with connect(settings.db_path) as conn:
