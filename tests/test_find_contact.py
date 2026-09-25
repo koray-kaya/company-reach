@@ -9,9 +9,12 @@ site named nobody (open point 3).
 import json
 import sqlite3
 
+import httpx
 import pytest
+import respx
+from pydantic import SecretStr
 
-from company_reach.errors import ShabError
+from company_reach.errors import SearchError, ShabError
 from company_reach.models import CompanyProfile, CompanyRecord, Person, ShabPerson
 from company_reach.nodes.find_contact import find_contact
 from company_reach.nodes.find_site import SiteChoice
@@ -502,6 +505,30 @@ async def test_with_nobody_found_the_company_is_looked_up(db_settings):
         None,
         ANNA_IN.url,
     )
+
+
+@respx.mock
+async def test_the_lead_search_never_asks_brave(db_settings):
+    """The lead is a URL we store, and the query carries a person's name.
+    Brave's terms forbid storing its results, so the lead search is
+    SearXNG's alone, key or no key: when SearXNG fails, it fails."""
+    keyed = db_settings.model_copy(
+        update={"brave_search_api_key": SecretStr("brave-test-key"), "search_gap_s": 0}
+    )
+    respx.get("http://searxng:8080/search").mock(return_value=httpx.Response(503))
+    brave = respx.get("https://api.search.brave.com/res/v1/web/search").mock(
+        return_value=httpx.Response(
+            200,
+            json={"web": {"results": [{"url": ANNA_IN.url, "title": ANNA_IN.title}]}},
+        )
+    )
+    with pytest.raises(SearchError):
+        await find_contact(
+            state([Person(name="Anna Muster")], {SITE: "Anna Muster"}),
+            settings=keyed,
+            shab=Shab(),
+        )
+    assert not brave.called
 
 
 async def test_the_lead_is_recorded(db_settings):

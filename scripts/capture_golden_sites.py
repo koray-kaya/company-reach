@@ -32,6 +32,7 @@ from company_reach.nodes.find_site import (
     choose_candidates,
     read_candidates,
     search_results,
+    storable,
 )
 from company_reach.settings import get_settings
 from company_reach.tools.db import company_by_uid, connect
@@ -79,7 +80,9 @@ async def capture(row: dict, *, settings, fetcher: Fetcher, reread: bool) -> dic
         results = [Result(**item) for item in saved]
     else:
         results = await search_results(record, settings=settings)
-    candidates = choose_candidates(results)
+    # Only what a free provider found is read and written down: Brave's terms
+    # forbid storing its results, candidates included.
+    candidates = storable(choose_candidates(results), results)
     read = await read_candidates(candidates, fetcher=fetcher)
 
     # Brave's terms forbid storing its results; only the free ones are kept.

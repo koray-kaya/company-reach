@@ -1219,3 +1219,37 @@ async def test_brave_answering_the_narrowing_query_does_not_confirm(armed, monke
     asked = [c.request.url.params["q"] for c in brave.calls]
     assert asked == [narrowing, name]
     assert out["site"].url == f"{SITE}/"
+
+
+# --- Brave's results are never stored (final review) ------------------------
+
+
+def test_only_candidates_a_free_provider_found_are_storable():
+    """One rule for every place that writes candidates down: the record, an
+    error message, the golden capture."""
+    results = [
+        Result(f"{SITE}/kontakt", "", "", "duckduckgo"),
+        Result("https://muster-neu.ch/", "", "", "guess", provider="guess"),
+        Result(f"{SITE}/", "", "", "brave-api", provider="brave"),
+        Result("https://nur-bei-brave.ch/", "", "", "brave-api", provider="brave"),
+    ]
+    candidates = [f"{SITE}/", "https://muster-neu.ch/", "https://nur-bei-brave.ch/"]
+    assert node.storable(candidates, results) == [
+        f"{SITE}/",
+        "https://muster-neu.ch/",
+    ]
+
+
+@respx.mock
+async def test_a_refusal_names_no_candidate_only_brave_found(armed):
+    """The error text lands in the results table. Every candidate here came
+    from Brave, so none of them may be named in it."""
+    searxng_says(DIRECTORY)
+    brave_says("https://nur-bei-brave.ch/", "https://auch-bei-brave.ch/")
+    respx.get(host="nur-bei-brave.ch").mock(return_value=httpx.Response(403))
+    respx.get(host="auch-bei-brave.ch").mock(return_value=httpx.Response(403))
+
+    with pytest.raises(FetchError) as caught:
+        await find_site(state(), settings=armed, fetcher=quick(armed))
+    assert "HTTP 403" in str(caught.value)
+    assert "bei-brave" not in str(caught.value)

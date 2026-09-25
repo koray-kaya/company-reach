@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from urllib.parse import urljoin, urlsplit
 
 from company_reach.errors import FetchError
-from company_reach.tools.fetcher import Fetcher
+from company_reach.tools.fetcher import Fetcher, Page
 from company_reach.tools.textify import textify
 
 # Tried in this order, so an Impressum link beats a Kontakt link, and both
@@ -166,6 +166,17 @@ def read_schema_org(html: str) -> str:
     return "\n".join(lines)
 
 
+class Refused(FetchError):
+    """A candidate's home page would not let us look. `reason` is short and
+    names no URL: it can end up in a result row, and the candidate may be
+    one only Brave produced, whose results may not be stored."""
+
+    def __init__(self, url: str, home: Page) -> None:
+        self.url = url
+        self.reason = f"HTTP {home.status}" if home.status else "unreachable"
+        super().__init__(f"{url} ({home.error})")
+
+
 async def _first_with_text(urls: list[str], fetcher: Fetcher) -> str:
     """One after another, stopping at the first page that says anything.
     Same site, so they cannot run together without breaking the delay."""
@@ -188,7 +199,7 @@ async def read_candidate(url: str, *, fetcher: Fetcher) -> CandidatePages | None
     as "no website"."""
     home = await fetcher.get(url)
     if home.unreachable or (home.status is not None and home.status >= 400):
-        raise FetchError(f"{url} ({home.error})")
+        raise Refused(url, home)
     if not home.html:
         return None
     # Links are read where the home page landed: `muster.ch` answering from

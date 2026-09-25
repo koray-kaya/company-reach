@@ -23,10 +23,12 @@ contact as an alternative, so the reviewer can see who else was named.
 
 When the tool saw no address — it constructed info@, or found nothing at
 all — one web search restricted to LinkedIn profiles looks for a lead: the
-person's name and the company, or the company alone. A result counts only
-if its title carries the company (and the surname, when there is one),
-because a name alone matches namesakes elsewhere. The lead is a URL for a
-human to check; it is never an address and LinkedIn itself is never asked.
+person's name and the company, or the company alone. It goes to SearXNG
+only, never to Brave: the lead is stored, and Brave's results may not be.
+A result counts only if its title carries the company (and the surname,
+when there is one), because a name alone matches namesakes elsewhere. The
+lead is a URL for a human to check; it is never an address and LinkedIn
+itself is never asked.
 
 An address on another domain is never promoted to an invitation. It is kept
 as `third_party`, which `recommend` holds, because that is how a hostile page
@@ -282,7 +284,7 @@ async def find_contact(
     *,
     settings: Settings,
     shab: Shab = shab_tool.persons,
-    search: Search = search_tool.search,
+    search: Search = search_tool.search_free,
 ) -> dict:
     """`shab` and `search` are passed in for the reason `enrich_company`
     takes `child`: a test can hand in a double and see whether it was asked

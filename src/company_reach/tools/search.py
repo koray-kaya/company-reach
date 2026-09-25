@@ -239,3 +239,11 @@ def results_of(asked: list[Asked]) -> list[Result]:
 async def search(query: str, *, settings: Settings, limit: int = 10) -> list[Result]:
     """One query's results, for a caller that does not keep a search log."""
     return results_of(await search_outcome(query, settings=settings, limit=limit))
+
+
+async def search_free(
+    query: str, *, settings: Settings, limit: int = 10
+) -> list[Result]:
+    """SearXNG alone, never Brave: for a caller that stores what it finds,
+    which Brave's terms forbid for its results."""
+    return results_of([await ask_searxng(query, settings=settings, limit=limit)])

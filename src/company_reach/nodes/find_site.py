@@ -54,7 +54,11 @@ from company_reach.models import CompanyRecord
 from company_reach.settings import Settings
 from company_reach.tools import llm
 from company_reach.tools.blocklist import is_blocked
-from company_reach.tools.candidate_pages import CandidatePages, read_candidate
+from company_reach.tools.candidate_pages import (
+    CandidatePages,
+    Refused,
+    read_candidate,
+)
 from company_reach.tools.db import connect, record_searches, record_site
 from company_reach.tools.fetcher import Fetcher, resolve_host
 from company_reach.tools.search import (
@@ -428,16 +432,18 @@ async def read_candidates(
     did. They are different sites, so this does not touch the per-host
     delay; one site's pages are still read one after the other."""
 
-    async def attempt(url: str) -> CandidatePages | FetchError | None:
+    async def attempt(url: str) -> CandidatePages | Refused | None:
         try:
             return await read_candidate(url, fetcher=fetcher)
-        except FetchError as error:
-            return error
+        except Refused as refused:
+            return refused
 
     read = await asyncio.gather(*[attempt(url) for url in candidates])
-    failed = [str(r) for r in read if isinstance(r, FetchError)]
+    failed = [r.reason for r in read if isinstance(r, Refused)]
     if candidates and len(failed) == len(candidates):
-        raise FetchError(f"no candidate site could be read: {'; '.join(failed)}")
+        # Reasons, not URLs: the text is stored, and a candidate may be one
+        # only Brave produced.
+        raise FetchError(f"no candidate site could be read ({', '.join(failed)})")
     return {
         _where(url, pages): pages
         for url, pages in zip(candidates, read, strict=True)
@@ -513,7 +519,7 @@ async def _find(
     else:
         decided = {"site": site, "recommendation": None, "reason": None}
 
-    _record(state, record, site, _storable(candidates, results), settings=settings)
+    _record(state, record, site, storable(candidates, results), settings=settings)
     if site is not None:
         decided["page_urls"] = await list_pages(
             site.url, fetcher=fetcher, limit=settings.max_page_urls
@@ -537,9 +543,10 @@ async def _choose(
     return _decide(record, texts, answer)
 
 
-def _storable(candidates: list[str], results: list[Result]) -> list[str]:
-    """The candidates the record may keep: those some provider other than
-    Brave also produced. Brave's terms forbid storing its results."""
+def storable(candidates: list[str], results: list[Result]) -> list[str]:
+    """The candidates that may be written down anywhere — the site record,
+    the golden capture: those some provider other than Brave also produced.
+    Brave's terms forbid storing its results."""
     free = {registered_domain(r.url) for r in results if r.provider != "brave"}
     return [url for url in candidates if registered_domain(url) in free]
 
