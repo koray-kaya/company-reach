@@ -178,6 +178,7 @@ class ChildState(TypedDict, total=False):
     uid: str
     goal: str
     about_me: str
+    previous_error: str | None
     company: CompanyRecord | None
     site: SiteChoice | None
     page_urls: list[str]

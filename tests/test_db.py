@@ -5,11 +5,14 @@ from pathlib import Path
 from company_reach.models import CompanyProfile, CompanyRecord, Person
 from company_reach.tools.db import (
     connect,
+    errored_uids,
     init_db,
     profile_by_uid,
+    record_decision,
     record_page,
     record_searches,
     search_log,
+    suppress,
     upsert_companies,
     upsert_profile,
 )
@@ -292,3 +295,19 @@ def test_an_older_searches_table_gains_count_and_error(tmp_path: Path):
     columns = {row[1] for row in conn.execute("pragma table_info(searches)")}
     conn.close()
     assert {"result_count", "error"} <= columns
+
+
+def test_errored_uids_skips_decided_and_suppressed_companies(tmp_path: Path):
+    """`retry` must not collect data again about a company a reviewer
+    decided about or that asked never to be contacted."""
+    db = tmp_path / "t.db"
+    with connect(db) as conn:
+        for uid in ("CHE000000001", "CHE000000002", "CHE000000003"):
+            conn.execute(
+                "insert into results (run_id, uid, error_kind, error_text,"
+                " finished_at) values ('r1', ?, 'fetch', 'x', 't')",
+                (uid,),
+            )
+        suppress(conn, "CHE000000002", reason="forgotten on request")
+        record_decision(conn, "CHE000000003", "skipped")
+        assert errored_uids(conn, "r1") == ["CHE000000001"]

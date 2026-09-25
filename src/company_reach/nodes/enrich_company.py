@@ -70,6 +70,9 @@ async def enrich_company(
                 "uid": uid,
                 "goal": state["goal"],
                 "about_me": state["about_me"],
+                # how the last attempt failed, so a refusal that repeats can
+                # be told from one that happened once (find_site)
+                "previous_error": done.error_text if done and done.error_kind else None,
             }
         )
         result = CompanyResult(

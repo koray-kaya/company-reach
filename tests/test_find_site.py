@@ -10,6 +10,7 @@ does not take is measuring nothing.
 
 import asyncio
 import json
+import socket
 
 import httpx
 import pytest
@@ -957,7 +958,7 @@ async def test_every_candidate_refused_is_an_error(settings: Settings, monkeypat
     respx.get(host="muster-metallbau.ch").mock(return_value=httpx.Response(403))
     respx.get(host="muster-stahl.ch").mock(return_value=httpx.Response(403))
 
-    with pytest.raises(FetchError, match="no candidate site could be read"):
+    with pytest.raises(FetchError, match="every candidate refused us"):
         await find_site(state(), settings=settings, fetcher=quick(settings))
     with connect(settings.db_path) as conn:
         assert site_record(conn, "r1", UID) is None
@@ -1253,3 +1254,60 @@ async def test_a_refusal_names_no_candidate_only_brave_found(armed):
         await find_site(state(), settings=armed, fetcher=quick(armed))
     assert "HTTP 403" in str(caught.value)
     assert "bei-brave" not in str(caught.value)
+
+
+# --- a refusal that lasts (final review) -------------------------------------
+# A 403 or a name that does not exist is retried once — the first time, it
+# may be a bot wall having a bad day. The same refusal again is the site's
+# answer, and the company is skipped for it: not "no website", which
+# `retry --no-site` would redo for ever.
+
+
+@respx.mock
+async def test_the_same_lasting_refusal_twice_is_a_skip(
+    settings: Settings, monkeypatch
+):
+    two_candidates(monkeypatch)
+    respx.get(host="muster-metallbau.ch").mock(return_value=httpx.Response(403))
+    respx.get(host="muster-stahl.ch").mock(return_value=httpx.Response(404))
+
+    with pytest.raises(FetchError) as first:
+        await find_site(state(), settings=settings, fetcher=quick(settings))
+
+    again = state(previous_error=str(first.value))
+    out = await find_site(again, settings=settings, fetcher=quick(settings))
+    assert out["site"] is None
+    assert out["recommendation"] == "skip"
+    assert out["reason"].startswith("every candidate refused us (")
+    assert "HTTP 403" in out["reason"] and "HTTP 404" in out["reason"]
+
+
+@respx.mock
+async def test_a_transient_refusal_twice_stays_an_error(
+    settings: Settings, monkeypatch
+):
+    two_candidates(monkeypatch)
+    respx.get(host="muster-metallbau.ch").mock(return_value=httpx.Response(503))
+    respx.get(host="muster-stahl.ch").mock(return_value=httpx.Response(429))
+
+    with pytest.raises(FetchError) as first:
+        await find_site(state(), settings=settings, fetcher=quick(settings))
+    assert "no candidate site could be read" in str(first.value)
+
+    again = state(previous_error=str(first.value))
+    with pytest.raises(FetchError, match="no candidate site could be read"):
+        await find_site(again, settings=settings, fetcher=quick(settings))
+
+
+async def test_a_name_that_does_not_exist_is_a_lasting_refusal(
+    settings: Settings, monkeypatch
+):
+    two_candidates(monkeypatch)
+
+    async def nxdomain(host):
+        raise socket.gaierror(socket.EAI_NONAME, "nodename nor servname provided")
+
+    monkeypatch.setattr("company_reach.tools.fetcher.resolve_host", nxdomain)
+    with pytest.raises(FetchError, match="every candidate refused us") as caught:
+        await find_site(state(), settings=settings, fetcher=quick(settings))
+    assert "no such host" in str(caught.value)

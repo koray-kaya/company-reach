@@ -55,7 +55,9 @@ from company_reach.settings import Settings
 from company_reach.tools import llm
 from company_reach.tools.blocklist import is_blocked
 from company_reach.tools.candidate_pages import (
+    EVERY_CANDIDATE_REFUSED,
     CandidatePages,
+    EveryCandidateRefused,
     Refused,
     read_candidate,
 )
@@ -439,11 +441,14 @@ async def read_candidates(
             return refused
 
     read = await asyncio.gather(*[attempt(url) for url in candidates])
-    failed = [r.reason for r in read if isinstance(r, Refused)]
+    failed = [r for r in read if isinstance(r, Refused)]
     if candidates and len(failed) == len(candidates):
         # Reasons, not URLs: the text is stored, and a candidate may be one
         # only Brave produced.
-        raise FetchError(f"no candidate site could be read ({', '.join(failed)})")
+        reasons = ", ".join(r.reason for r in failed)
+        if all(r.lasting for r in failed):
+            raise EveryCandidateRefused(f"{EVERY_CANDIDATE_REFUSED} ({reasons})")
+        raise FetchError(f"no candidate site could be read ({reasons})")
     return {
         _where(url, pages): pages
         for url, pages in zip(candidates, read, strict=True)
@@ -491,6 +496,31 @@ async def _find(
     candidates = choose_candidates(results)
 
     fetcher = fetcher or Fetcher(settings)
+    try:
+        return await _decide_among(
+            state, record, candidates, results, log, settings=settings, fetcher=fetcher
+        )
+    except EveryCandidateRefused as refused:
+        # The first time, a lasting refusal is still an error: a bot wall can
+        # have a bad day. The same again is the sites' answer. It is a skip
+        # with its own reason — not "no website", which `retry --no-site`
+        # would redo for ever.
+        if not (state.get("previous_error") or "").startswith(EVERY_CANDIDATE_REFUSED):
+            raise
+        _record(state, record, None, storable(candidates, results), settings=settings)
+        return {"site": None, "recommendation": "skip", "reason": str(refused)}
+
+
+async def _decide_among(
+    state: dict[str, Any],
+    record: CompanyRecord,
+    candidates: list[str],
+    results: list[Result],
+    log: list[Asked],
+    *,
+    settings: Settings,
+    fetcher: Fetcher,
+) -> dict:
     site = await _choose(record, candidates, settings=settings, fetcher=fetcher)
 
     # "No website" needs a provider that answered and found no candidate.

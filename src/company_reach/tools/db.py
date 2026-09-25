@@ -537,12 +537,17 @@ def no_site_uids(conn: sqlite3.Connection, run_id: str) -> list[str]:
 
 
 def errored_uids(conn: sqlite3.Connection, run_id: str) -> list[str]:
-    """The companies of a run whose result is an error: what `retry` redoes."""
+    """The companies of a run whose result is an error: what `retry` redoes.
+    Not one a reviewer decided about or that is on the never-again list —
+    retrying it would collect data about it for nothing."""
     return [
         r["uid"]
         for r in conn.execute(
-            "select uid from results where run_id = ? and error_kind is not null "
-            "order by uid",
+            """select uid from results
+                where run_id = ? and error_kind is not null
+                  and uid not in (select uid from ledger)
+                  and uid not in (select key from suppression)
+                order by uid""",
             (run_id,),
         )
     ]

@@ -5,6 +5,8 @@ Both protect against the same shape of problem — a URL we did not choose,
 arriving from a search engine, pointed somewhere we never meant to go.
 """
 
+import socket
+
 import httpx
 import pytest
 import respx
@@ -143,6 +145,26 @@ async def test_a_name_that_does_not_resolve_is_unreachable(f: Fetcher, monkeypat
     monkeypatch.setattr(fetcher_module, "resolve_host", fails)
     page = await f.get(HOME)
     assert page.unreachable
+
+
+async def test_a_name_that_does_not_exist_says_so(f: Fetcher, monkeypatch):
+    """NXDOMAIN is the one DNS answer that will not change tomorrow."""
+
+    async def nxdomain(host: str) -> list[str]:
+        raise socket.gaierror(socket.EAI_NONAME, "nodename nor servname provided")
+
+    monkeypatch.setattr(fetcher_module, "resolve_host", nxdomain)
+    page = await f.get(HOME)
+    assert page.unreachable and page.no_such_host
+
+
+async def test_a_resolver_hiccup_is_not_a_missing_host(f: Fetcher, monkeypatch):
+    async def fails(host: str) -> list[str]:
+        raise socket.gaierror(socket.EAI_AGAIN, "temporary failure")
+
+    monkeypatch.setattr(fetcher_module, "resolve_host", fails)
+    page = await f.get(HOME)
+    assert page.unreachable and not page.no_such_host
 
 
 async def test_our_own_refusal_is_not_unreachable(f: Fetcher, monkeypatch):

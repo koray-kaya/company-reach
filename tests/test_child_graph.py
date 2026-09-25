@@ -285,3 +285,34 @@ async def test_until_contact_stops_before_the_model_drafts(seeded: Settings):
     ).ainvoke({"run_id": "r1", "uid": UID, "goal": "g", "about_me": "a"})
     assert out["recommendation"] == "send"
     assert out.get("draft") is None
+
+
+async def test_the_child_carries_the_previous_error_to_find_site(
+    settings: Settings, monkeypatch
+):
+    """A key missing from ChildState is dropped by LangGraph without a word,
+    and find_site would never learn that a refusal repeats."""
+    import company_reach.graph as graph_module
+
+    seen: dict = {}
+
+    async def load(state, *, settings):
+        return {}
+
+    async def find(state, *, settings, fetcher):
+        seen["previous_error"] = state.get("previous_error")
+        return {"site": None, "recommendation": "skip", "reason": "x"}
+
+    monkeypatch.setattr(graph_module, "load_company", load)
+    monkeypatch.setattr(graph_module, "find_site", find)
+    child = build_child(settings=settings, until="site")
+    await child.ainvoke(
+        {
+            "run_id": "r1",
+            "uid": UID,
+            "goal": "g",
+            "about_me": "a",
+            "previous_error": "every candidate refused us (HTTP 403)",
+        }
+    )
+    assert seen["previous_error"] == "every candidate refused us (HTTP 403)"

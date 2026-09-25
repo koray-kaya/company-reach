@@ -166,15 +166,35 @@ def read_schema_org(html: str) -> str:
     return "\n".join(lines)
 
 
+# The answers a site gives the same way tomorrow. A 429, a 5xx or a timeout
+# may pass; these will not.
+_LASTING = {401, 403, 404, 410}
+
+
 class Refused(FetchError):
     """A candidate's home page would not let us look. `reason` is short and
     names no URL: it can end up in a result row, and the candidate may be
-    one only Brave produced, whose results may not be stored."""
+    one only Brave produced, whose results may not be stored. `lasting`
+    marks a refusal that will not change on another day."""
 
     def __init__(self, url: str, home: Page) -> None:
         self.url = url
-        self.reason = f"HTTP {home.status}" if home.status else "unreachable"
+        if home.no_such_host:
+            self.reason = "no such host"
+        elif home.status:
+            self.reason = f"HTTP {home.status}"
+        else:
+            self.reason = "unreachable"
+        self.lasting = home.no_such_host or home.status in _LASTING
         super().__init__(f"{url} ({home.error})")
+
+
+EVERY_CANDIDATE_REFUSED = "every candidate refused us"
+
+
+class EveryCandidateRefused(FetchError):
+    """Every candidate refused us, each in a way that lasts. Still an error
+    the first time; the same again is the sites' answer (find_site)."""
 
 
 async def _first_with_text(urls: list[str], fetcher: Fetcher) -> str:

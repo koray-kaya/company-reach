@@ -57,6 +57,9 @@ class Page:
     private address, robots.txt, size) never will, and a caller deciding
     whether it "looked" needs to tell the two apart.
 
+    `no_such_host` marks the one DNS answer that will not change tomorrow:
+    the name does not exist.
+
     `url` is always the URL asked for; `final_url` is where redirects led,
     and None when there were none."""
 
@@ -65,6 +68,7 @@ class Page:
     html: str = ""
     error: str | None = None
     unreachable: bool = False
+    no_such_host: bool = False
     final_url: str | None = None
 
 
@@ -197,6 +201,8 @@ class Fetcher:
                 url=url,
                 error=f"could not resolve {parts.hostname}: {error}",
                 unreachable=True,
+                no_such_host=isinstance(error, socket.gaierror)
+                and error.errno == socket.EAI_NONAME,
             )
         if not addresses:
             return Page(
