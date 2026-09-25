@@ -9,6 +9,7 @@ through every superstep.
 
 import asyncio
 import operator
+from collections.abc import Callable
 from functools import partial
 from typing import Annotated, Literal, TypedDict
 
@@ -348,13 +349,36 @@ def build_graph(*, settings: Settings, child, dry: bool = False) -> CompiledStat
 
 
 async def run_graph(
-    state: ReachState, *, settings: Settings, child, dry: bool = False
+    state: ReachState,
+    *,
+    settings: Settings,
+    child,
+    dry: bool = False,
+    on_result: Callable[[CompanyResult], None] | None = None,
 ) -> ReachState:
-    """`recursion_limit` is passed here rather than left to the default of
+    """Streams rather than waiting for the end. "values" carries the whole
+    state after each superstep, and the last one is what `ainvoke` would have
+    returned; "updates" carries each node's output as it lands, which is how
+    a finished company reaches `on_result` while its siblings still run.
+
+    `recursion_limit` is passed here rather than left to the default of
     1000: an unset limit is not a defence, and a routing bug should fail in
     forty supersteps, not a thousand."""
     graph = build_graph(settings=settings, child=child, dry=dry)
-    return await graph.ainvoke(state, config={"recursion_limit": RECURSION_LIMIT})
+    final = state
+    async for mode, chunk in graph.astream(
+        state,
+        config={"recursion_limit": RECURSION_LIMIT},
+        stream_mode=["updates", "values"],
+    ):
+        if mode == "values":
+            final = chunk
+        elif on_result is not None:
+            for node, update in chunk.items():
+                if node == "enrich_company" and update:
+                    for result in update.get("results", []):
+                        on_result(result)
+    return final
 
 
 async def retry_errors(

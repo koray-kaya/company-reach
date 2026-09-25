@@ -19,6 +19,7 @@ from company_reach.graph import (
 )
 from company_reach.import_v0 import import_v0
 from company_reach.manifest import finish_manifest, manifest_path, start_manifest
+from company_reach.models import CompanyResult
 from company_reach.nodes.load_pool import load_pool
 from company_reach.nodes.score_pool import score_pool
 from company_reach.nodes.screen_pool import screen_pool
@@ -177,9 +178,12 @@ def run(
         seed=seed,
     )
 
+    typer.echo(f"run {rid} — if it stops, run it again with --run-id {rid}")
     try:
         child = build_stub_child() if dry else build_child(settings=s)
-        out = asyncio.run(run_graph(state, settings=s, child=child, dry=dry))
+        out = asyncio.run(
+            run_graph(state, settings=s, child=child, dry=dry, on_result=_echo_result)
+        )
     except Exception as error:
         reason = f"{type(error).__name__}: {error}"
         finish_manifest(rid, settings=s, status="failed", counts={}, reason=reason)
@@ -412,6 +416,16 @@ def enrich(
             f"\nSubject: {finished.subject}   ({len(finished.body)} chars, {fits})"
         )
         typer.echo(finished.body)
+
+
+def _echo_result(result: CompanyResult) -> None:
+    """One line per company, the moment its child returns."""
+    outcome = (
+        f"{result.error_kind} error: {result.error_text}"
+        if result.error_kind
+        else f"{result.recommendation}: {result.reason}"
+    )
+    typer.echo(f"  {result.uid}  {outcome}")
 
 
 def _echo_contact(contact) -> None:

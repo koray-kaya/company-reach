@@ -397,3 +397,17 @@ def test_run_with_a_goal_keeps_about_me(settings, monkeypatch):
 
     assert r.exit_code == 0, r.output
     assert captured["about_me"] == "Eine Studentin der Beispiel-Hochschule."
+
+
+def test_run_names_its_id_before_it_starts(settings, monkeypatch):
+    """A run that is stopped halfway can be resumed only with its id, so the
+    id is printed before anything else happens."""
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    _seed_scored_pool(settings, {"CHE000000001": 9})
+    r = runner.invoke(
+        cli.app, ["run", "--dry", "--goal", "make and sell", "--run-id", "r7"]
+    )
+    assert r.exit_code == 0, r.output
+    first = r.output.splitlines()[0]
+    assert "r7" in first and "--run-id r7" in first
+    assert "CHE000000001" in r.output  # the company line, as it finished

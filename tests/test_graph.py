@@ -260,9 +260,9 @@ async def test_run_graph_passes_the_recursion_limit(settings, monkeypatch):
     captured: dict = {}
 
     class Spy:
-        async def ainvoke(self, state, config=None):
+        async def astream(self, state, config=None, stream_mode=None):
             captured.update(config or {})
-            return state
+            yield ("values", state)
 
     monkeypatch.setattr("company_reach.graph.build_graph", lambda **kw: Spy())
     await run_graph(_start(settings), settings=settings, dry=True, child=ChildByUid({}))
@@ -389,3 +389,20 @@ async def test_a_finished_run_leaves_nothing_interrupted(settings):
             "select count(*) from results where error_kind = 'interrupted'"
         ).fetchone()[0]
     assert n == 0
+
+
+async def test_each_company_is_reported_as_it_finishes(settings):
+    """The run was silent for minutes; each company now reaches the caller
+    the moment its child returns."""
+    _seed(settings, {"CHE000000001": 9, "CHE000000002": 7})
+    child = ChildByUid({"CHE000000001": "skip", "CHE000000002": "send"})
+    reported: list = []
+    out = await run_graph(
+        _start(settings),
+        settings=settings,
+        dry=True,
+        child=child,
+        on_result=reported.append,
+    )
+    assert sorted(r.uid for r in reported) == ["CHE000000001", "CHE000000002"]
+    assert len(out["results"]) == 2
