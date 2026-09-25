@@ -1,9 +1,11 @@
 """The review page: FastAPI serving one company per page from SQLite.
 
 Design in `docs/design/ux/review-page-ux.md`, decisions in the M7 plan. It
-reads what a run left behind (`review/cards.py`) and writes only the ledger
-and the suppression list; the tool still sends nothing — Send records the
-decision and hands the draft to the reviewer's own mail client.
+reads what a run left behind (`review/cards.py`) and writes the ledger, the
+suppression list, and one more thing: the reviewer's Frau / Herr / ohne,
+with the draft rebuilt by code around the same sentence. The tool still
+sends nothing — Send records the decision and hands the draft to the
+reviewer's own mail client.
 
 Every card is its own URL, `/review/{run}/{n}`, and every action is a form
 POST, so the page works without its small script. Jinja2 autoescapes the
@@ -19,19 +21,25 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from company_reach.models import Draft
+from company_reach.nodes.check_draft import problems
 from company_reach.profile import load_profile
 from company_reach.review.cards import Card, first_undecided, load_cards
 from company_reach.settings import Settings
 from company_reach.tools.db import (
     connect,
     record_decision,
+    rewrite_draft,
     sent_this_month,
+    set_salutation,
     suppress,
 )
+from company_reach.tools.invitation import assemble, subject
 from company_reach.tools.mailto import build
 
 HERE = Path(__file__).parent
 SKIP_REASONS = ("Not a fit", "No address", "Foreign group", "Distributor")
+SALUTATIONS = ("Frau", "Herr", "ohne")
 # A navigation this page started, or one the reviewer typed. Anything else is
 # another site in the same browser — the company's own site, one click away
 # on the card — and must not be able to decide anything (audit:242).
@@ -123,6 +131,19 @@ def create_app(settings: Settings) -> FastAPI:
 
         if action == "send":
             return send(request, run_id, card, str(form.get("to", "")), n)
+        if action.startswith("salutation:"):
+            choice = action.removeprefix("salutation:")
+            if choice not in SALUTATIONS:
+                raise HTTPException(400, f"no salutation {choice!r}")
+            if card.decision is not None:
+                raise HTTPException(409, f"already decided: {card.decision}")
+            if not card.can_choose_salutation:
+                raise HTTPException(409, "no current draft to a named person here")
+            resalute(run_id, card, choice)
+            return RedirectResponse(
+                f"/review/{run_id}/{n}?done={quote(f'Anrede: {choice}')}",
+                status_code=303,
+            )
         if action.startswith("skip:"):
             reason = action.removeprefix("skip:")
             if reason not in SKIP_REASONS:
@@ -164,9 +185,14 @@ def create_app(settings: Settings) -> FastAPI:
         the ledger, so it must not depend on a link being followed."""
         if card.send_block:
             raise HTTPException(409, card.send_block)
-        offered = [a.email for a in card.contact.addresses] if card.contact else []
+        offered = (
+            {a.email: a.kind for a in card.contact.addresses} if card.contact else {}
+        )
         if to not in offered:
             raise HTTPException(400, "send only to an address the card offered")
+        if offered[to] == "third_party":
+            # the way a hostile page plants a contact: shown, never sent to
+            raise HTTPException(409, "an address on another domain is never sent to")
         draft = card.draft
         with connect(settings.db_path) as conn:
             record_decision(
@@ -188,5 +214,48 @@ def create_app(settings: Settings) -> FastAPI:
                 "next_url": next_url(run_id, n),
             },
         )
+
+    def resalute(run_id: str, card: Card, choice: str) -> None:
+        """The reviewer's Frau / Herr / ohne: stored on the contact, and the
+        mail rebuilt by code around the same sentence — no model call, so
+        the text the reviewer already read stays word for word. The rebuilt
+        draft is checked again, and the card sends it only if it passes."""
+        profile = load_profile(settings.profile_path)
+        if gaps := profile.drafting_gaps():
+            raise HTTPException(
+                409, f"profile.toml lacks {', '.join(gaps)}; cannot rebuild the mail"
+            )
+        view = card.draft
+        if view is None or view.link is None or card.contact is None:
+            raise HTTPException(409, "no current draft to rebuild")
+        contact = card.contact.model_copy(update={"salutation": choice})
+        title = subject(contact, profile.sender, profile.invitation)
+        body = assemble(
+            contact,
+            view.model_text or "",
+            link=view.link,
+            sender=profile.sender,
+            inv=profile.invitation,
+            short=view.arm == "kurz",
+        )
+        rebuilt = Draft(
+            subject=title,
+            body=body,
+            model_text=view.model_text or "",
+            link=view.link,
+            mailto_fits=build(contact.email or "", title, body).fits,
+            frame_version=view.frame_version or "",
+            arm=view.arm or "voll",
+        )
+        with connect(settings.db_path) as conn:
+            set_salutation(conn, run_id, card.uid, choice)
+            rewrite_draft(
+                conn,
+                view.id,
+                subject=rebuilt.subject,
+                body=rebuilt.body,
+                mailto_fits=rebuilt.mailto_fits,
+                found=problems(rebuilt, contact, profile),
+            )
 
     return app

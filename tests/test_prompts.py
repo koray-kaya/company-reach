@@ -392,7 +392,8 @@ def _draft_inputs(settings: Settings) -> list[dict]:
     with connect(settings.db_path) as conn:
         for uid in uids:
             row = conn.execute(
-                """select p.profile, c.name, c.role, c.email, c.email_kind, c.source
+                """select p.profile, c.name, c.role, c.email, c.email_kind, c.source,
+                          c.salutation
                      from profiles p
                      join contacts c on c.run_id = p.run_id and c.uid = p.uid
                     where p.uid = ? and c.email is not null
@@ -414,6 +415,7 @@ def _draft_inputs(settings: Settings) -> list[dict]:
                         email=row["email"],
                         email_kind=row["email_kind"],
                         source=row["source"],
+                        salutation=row["salutation"],
                     ),
                     "contact_id": None,
                     "about_me": load_profile(settings.profile_path).about_me,

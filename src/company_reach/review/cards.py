@@ -31,7 +31,12 @@ from company_reach.tools.db import (
     is_suppressed,
     search_log,
 )
-from company_reach.tools.invitation import FRAME_VERSION
+from company_reach.tools.invitation import (
+    FRAME_VERSION,
+    falls_back,
+    salutation,
+    split_name,
+)
 from company_reach.tools.mailto import build
 
 _LEGAL_FORMS = {"0106": "AG", "0107": "GmbH"}
@@ -84,6 +89,12 @@ class Card:
     link_length: int
     decision: str | None
     send_block: str | None
+    # the greeting's Frau / Herr, or None when it uses the full name
+    salutation: str | None = None
+    # the greeting fell back to the full name: "Anrede prüfen"
+    check_salutation: bool = False
+    # a named person with a surname, and a current draft to rebuild
+    can_choose_salutation: bool = False
 
 
 def safe_url(url: str | None) -> str | None:
@@ -129,6 +140,7 @@ def _contact(conn: sqlite3.Connection, run_id: str, uid: str) -> Contact | None:
         linkedin_lead=row["linkedin_lead"],
         alternatives=json.loads(row["alternatives"] or "[]"),
         addresses=addresses,
+        salutation=row["salutation"],
     )
 
 
@@ -235,6 +247,14 @@ def load_cards(
             f"{r['error_kind']} error: {r['error_text']}" if r["error_kind"] else ""
         )
         to = contact.email if contact and contact.email else ""
+        # the toggle rebuilds a current draft around its own sentence, so it
+        # needs one, and a surname for "Frau Muster" to be written at all
+        rebuildable = (
+            draft is not None
+            and draft.frame_version == FRAME_VERSION
+            and bool(draft.model_text)
+        )
+        surname = bool(contact and contact.name and split_name(contact.name).surname)
         cards.append(
             Card(
                 uid=uid,
@@ -268,6 +288,9 @@ def load_cards(
                     survey_url=survey_url,
                     sending_approved=sending_approved,
                 ),
+                salutation=salutation(contact)[0] if contact else None,
+                check_salutation=bool(contact and draft and falls_back(contact)),
+                can_choose_salutation=rebuildable and surname and decision is None,
             )
         )
     return cards

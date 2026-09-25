@@ -154,3 +154,30 @@ def test_a_draft_of_an_older_frame_is_not_sendable(db: Path):
     with connect(db) as conn:
         conn.execute("update drafts set frame_version = null where uid = ?", (SEND,))
     assert "older frame" in by_uid(db)[SEND].send_block
+
+
+def test_fallback_greeting_is_flagged(tmp_path: Path):
+    # a masculine role on a site proposes no salutation, so the greeting is
+    # the full name and the reviewer is asked to check it
+    path = tmp_path / "g.db"
+    seed(path, role="Gründer")
+    with connect(path) as conn:
+        [card] = [
+            c
+            for c in load_cards(conn, RUN, survey_url=SURVEY, sending_approved=True)
+            if c.uid == SEND
+        ]
+    assert card.check_salutation
+    assert card.salutation is None
+    assert card.can_choose_salutation
+
+
+def test_a_salutation_from_the_role_is_not_flagged(db: Path):
+    card = by_uid(db)[SEND]  # "Inhaberin"
+    assert not card.check_salutation
+    assert card.salutation == "Frau"
+    assert card.can_choose_salutation  # the reviewer may still change it
+
+
+def test_nobody_named_offers_no_salutation(db: Path):
+    assert not by_uid(db)[HOLD].can_choose_salutation

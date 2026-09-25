@@ -25,10 +25,12 @@ CREATE TABLE IF NOT EXISTS pages (
   url TEXT PRIMARY KEY, fetched_at TEXT, status INTEGER, text TEXT, raw_path TEXT);
 CREATE TABLE IF NOT EXISTS profiles (
   run_id TEXT NOT NULL, uid TEXT NOT NULL, profile TEXT NOT NULL, PRIMARY KEY (run_id, uid));
+-- salutation: "Frau"/"Herr" as the page wrote it or the reviewer chose it,
+-- "ohne" when the reviewer chose none; null when nobody stated one.
 CREATE TABLE IF NOT EXISTS contacts (
   id INTEGER PRIMARY KEY, run_id TEXT, uid TEXT, name TEXT, role TEXT, email TEXT,
   email_kind TEXT, source TEXT, source_url TEXT, source_date TEXT, linkedin_lead TEXT,
-  alternatives TEXT, addresses TEXT);
+  alternatives TEXT, addresses TEXT, salutation TEXT);
 -- model_text: the model's one sentence, from which the card rebuilds the
 -- mail. frame_version and arm: which frame built the body (frame@1).
 -- problems: check_draft's outcome; null = never checked, '' = passed. The

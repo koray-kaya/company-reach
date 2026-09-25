@@ -58,9 +58,11 @@ def _result(conn: sqlite3.Connection, uid: str, rec: str, reason: str) -> None:
     )
 
 
-def seed(path: Path, *, link: str | None = None) -> None:
+def seed(path: Path, *, link: str | None = None, role: str = "Inhaberin") -> None:
     """`link` overrides the survey link in the sendable draft, to test the
-    placeholder gate."""
+    placeholder gate. `role` is the named contact's: "Inhaberin" proposes
+    Frau; a masculine role on a site proposes nothing, so the greeting falls
+    back to the full name."""
     init_db(path)
     with connect(path) as conn:
         upsert_companies(
@@ -99,7 +101,7 @@ def seed(path: Path, *, link: str | None = None) -> None:
         )
         contact = Contact(
             name="Anna Muster",
-            role="Inhaberin",
+            role=role,
             email="info@muster-metallbau.ch",
             email_kind="generic",
             source="site",

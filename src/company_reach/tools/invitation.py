@@ -194,8 +194,9 @@ def address(contact: Contact, case: Literal["nom", "acc"] = "nom") -> str | None
 
 def falls_back(contact: Contact) -> bool:
     """The greeting uses the full name because no salutation is known: the
-    card asks the reviewer to check it ("Anrede prüfen")."""
-    if not named(contact):
+    card asks the reviewer to check it ("Anrede prüfen"). A reviewer who
+    chose "ohne" has checked it."""
+    if not named(contact) or contact.salutation == "ohne":
         return False
     word, _ = salutation(contact)
     return not (word and split_name(contact.name or "").surname)

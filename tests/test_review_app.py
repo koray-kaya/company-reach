@@ -7,7 +7,8 @@ which kind of request it is on purpose.
 
 import pytest
 from fastapi.testclient import TestClient
-from review_seed import HOLD, RUN, SEND, SKIP, SURVEY, seed
+from fictional_profile import profile_text
+from review_seed import HOLD, RUN, SEND, SENTENCE, SKIP, SURVEY, seed
 
 from company_reach.review.app import create_app
 from company_reach.settings import Settings
@@ -19,9 +20,7 @@ SAME = {"Sec-Fetch-Site": "same-origin"}
 @pytest.fixture
 def review(settings: Settings) -> Settings:
     seed(settings.db_path)
-    settings.profile_path.write_text(
-        f'goal = "Firms that make things."\nsurvey_url = "{SURVEY}"\n'
-    )
+    settings.profile_path.write_text(profile_text(SURVEY))
     return settings.model_copy(update={"sending_approved": True})
 
 
@@ -252,3 +251,113 @@ def test_an_unknown_action_is_refused(client, review):
 def test_the_front_page_lists_the_runs_to_review(client):
     html = client.get("/").text
     assert f'href="/review/{RUN}"' in html
+
+
+# --- frame@1 on the card -----------------------------------------------------
+
+
+@pytest.fixture
+def fallback(settings: Settings, monkeypatch) -> Settings:
+    """A contact whose greeting fell back to the full name ("Gründer" on a
+    site proposes nothing), and a model that must not be asked."""
+
+    async def no_model(*args, **kwargs):
+        raise AssertionError("the salutation toggle asked the model")
+
+    monkeypatch.setattr("company_reach.tools.llm.ask", no_model)
+    seed(settings.db_path, role="Gründer")
+    settings.profile_path.write_text(profile_text(SURVEY))
+    return settings.model_copy(update={"sending_approved": True})
+
+
+def stored_draft(settings: Settings):
+    with connect(settings.db_path) as conn:
+        draft = conn.execute(
+            "select subject, body, problems from drafts where uid = ?", (SEND,)
+        ).fetchone()
+        salutation = conn.execute(
+            "select salutation from contacts where uid = ?", (SEND,)
+        ).fetchone()[0]
+    return draft, salutation
+
+
+def test_choosing_herr_reassembles_without_a_model_call(fallback):
+    client = TestClient(create_app(fallback), follow_redirects=False)
+    before = client.get(f"/review/{RUN}/0").text
+    assert "Anrede prüfen" in before
+    assert "Guten Tag Anna Muster" in before
+
+    r = client.post(
+        f"/decide/{RUN}/{SEND}?n=0", data={"action": "salutation:Herr"}, headers=SAME
+    )
+    assert r.status_code == 303
+    assert r.headers["location"].startswith(f"/review/{RUN}/0?")
+
+    draft, salutation = stored_draft(fallback)
+    assert salutation == "Herr"
+    assert draft["subject"] == "Für Herrn Muster: Masterarbeit an der OST"
+    assert draft["body"].startswith(
+        "Zuhanden Herrn Muster – besten Dank fürs Weiterleiten\n\n"
+        "Guten Tag Herr Muster\n\n"
+    )
+    assert SENTENCE in draft["body"]
+    assert draft["problems"] == ""  # checked again, and it passed
+    after = client.get(f"/review/{RUN}/0").text
+    assert "Anrede prüfen" not in after
+    assert 'value="send" disabled' not in after
+
+
+def test_the_salutation_toggle_rebuilds_the_mail(review, client):
+    # "ohne" takes back the Frau a feminine role proposed
+    r = client.post(
+        f"/decide/{RUN}/{SEND}?n=0", data={"action": "salutation:ohne"}, headers=SAME
+    )
+    assert r.status_code == 303
+    draft, salutation = stored_draft(review)
+    assert salutation == "ohne"
+    assert "\n\nGuten Tag Anna Muster\n\n" in draft["body"]
+    assert draft["subject"] == "Für Anna Muster: Masterarbeit an der OST"
+
+
+def test_an_unknown_salutation_is_refused(client, review):
+    r = client.post(
+        f"/decide/{RUN}/{SEND}?n=0", data={"action": "salutation:Dr"}, headers=SAME
+    )
+    assert r.status_code == 400
+
+
+def test_a_decided_card_keeps_its_salutation(client, review):
+    client.post(
+        f"/decide/{RUN}/{SEND}?n=0",
+        data={"action": "send", "to": "info@muster-metallbau.ch"},
+        headers=SAME,
+    )
+    r = client.post(
+        f"/decide/{RUN}/{SEND}?n=0", data={"action": "salutation:Herr"}, headers=SAME
+    )
+    assert r.status_code == 409
+
+
+def test_a_third_party_row_cannot_be_sent(client, review):
+    html = client.get(f"/review/{RUN}/0").text
+    assert 'value="studio@agentur.example" disabled' in html
+    r = client.post(
+        f"/decide/{RUN}/{SEND}?n=0",
+        data={"action": "send", "to": "studio@agentur.example"},
+        headers=SAME,
+    )
+    assert r.status_code == 409
+    assert ledger_rows(review) == 0
+
+
+def test_the_kind_hint_follows_each_row(client):
+    html = client.get(f"/review/{RUN}/0").text
+    # one hint per address row; the page shows the selected row's
+    assert html.count('class="rowhint"') == 2
+    assert "The inbox the site publishes." in html
+    assert "On another domain than the verified site" in html
+
+
+def test_the_card_shows_frame_and_arm(client):
+    html = client.get(f"/review/{RUN}/0").text
+    assert "frame@1 · voll" in html

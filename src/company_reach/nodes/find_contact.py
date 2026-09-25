@@ -35,6 +35,11 @@ as `third_party`, which `recommend` holds, because that is how a hostile page
 plants a contact (`audit-2026-09-19.md:177`). The addresses on the pages are
 read with a regex, not by the model: every one of them is a string the page
 really carries.
+
+A salutation is set only when a page writes it before the person's surname
+("Frau Muster", "Herrn Dr. Muster"). A role noun on a site says nothing —
+sites write "Inhaber" for a woman too — and a SHAB role travels unchanged,
+so `tools/invitation.salutation` can read its gender itself.
 """
 
 import re
@@ -55,6 +60,7 @@ from company_reach.tools import search as search_tool
 from company_reach.tools import shab as shab_tool
 from company_reach.tools.checks import appears_in, is_noise
 from company_reach.tools.db import connect, record_contact
+from company_reach.tools.invitation import split_name
 from company_reach.tools.search import Result
 from company_reach.tools.textify import normalise
 from company_reach.tools.urls import email_domain, registered_domain
@@ -149,6 +155,26 @@ def _inbox(
     return None
 
 
+def stated_salutation(name: str, texts: dict[str, str]) -> str | None:
+    """The salutation the pages write before this person's surname, with or
+    without a title and the given names: "Frau" or "Herr". None when they
+    never do, or write both (two people of one surname)."""
+    parts = split_name(name)
+    if not parts.surname:
+        return None
+    given = "".join(rf"{re.escape(g)}\s+" for g in parts.given)
+    pattern = re.compile(
+        rf"\b(Frau|Herrn?)\s+(?:(?:Prof|Dr)\.\s*)*(?:{given})?"
+        rf"{re.escape(parts.surname)}\b"
+    )
+    said = {
+        "Frau" if match.group(1) == "Frau" else "Herr"
+        for text in texts.values()
+        for match in pattern.finditer(text)
+    }
+    return said.pop() if len(said) == 1 else None
+
+
 def _from_site(
     person: Person,
     *,
@@ -158,7 +184,12 @@ def _from_site(
     site_url: str,
 ) -> Contact:
     found_at = _page_with(person.name, texts, site_url)
-    base = {"name": person.name, "role": person.role, "source": "site"}
+    base = {
+        "name": person.name,
+        "role": person.role,
+        "source": "site",
+        "salutation": stated_salutation(person.name, texts),
+    }
     if person.email and not person.email_offsite:
         url = _page_with(person.email, texts, found_at)
         return Contact(**base, email=person.email, email_kind="seen", source_url=url)

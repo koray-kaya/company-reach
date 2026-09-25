@@ -201,6 +201,12 @@ def test_the_reviewers_choice_wins_over_the_role():
     assert greeting(none) == "Guten Tag Anna Muster"
 
 
+def test_a_reviewers_ohne_is_no_longer_a_fallback():
+    # the full name stays, but someone looked: the card stops asking
+    assert falls_back(person("Marco Vorlage", "Gründer"))
+    assert not falls_back(person("Marco Vorlage", "Gründer", salutation="ohne"))
+
+
 def test_herr_becomes_herrn_in_subject_and_routing():
     c = person("Urs Probe", "Präsident des Verwaltungsrates", source="shab")
     assert greeting(c) == "Guten Tag Herr Probe"

@@ -51,6 +51,9 @@ _ADDED_COLUMNS = {
     ("contacts", "addresses"): "TEXT",
     ("searches", "result_count"): "INTEGER",
     ("searches", "error"): "TEXT",
+
+
+    ("contacts", "salutation"): "TEXT",
     # frame@1: a draft of the M6/M7 shape has none of these, so it can
     # never pass for a current one
     ("drafts", "model_text"): "TEXT",
@@ -468,8 +471,8 @@ def record_contact(
     cur = conn.execute(
         """INSERT INTO contacts (run_id, uid, name, role, email, email_kind,
              source, source_url, source_date, linkedin_lead, alternatives,
-             addresses)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+             addresses, salutation)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             run_id,
             uid,
@@ -483,9 +486,21 @@ def record_contact(
             contact.linkedin_lead,
             json.dumps(contact.alternatives, ensure_ascii=False),
             json.dumps([a.model_dump(exclude_none=True) for a in contact.addresses]),
+            contact.salutation,
         ),
     )
     return cur.lastrowid
+
+
+def set_salutation(
+    conn: sqlite3.Connection, run_id: str, uid: str, salutation: str
+) -> None:
+    """The reviewer's choice on the card, on the company's latest contact."""
+    conn.execute(
+        """update contacts set salutation = ?
+            where id = (select max(id) from contacts where run_id = ? and uid = ?)""",
+        (salutation, run_id, uid),
+    )
 
 
 def record_draft(
@@ -518,6 +533,24 @@ def record_draft(
             draft.frame_version,
             draft.arm,
         ),
+    )
+
+
+def rewrite_draft(
+    conn: sqlite3.Connection,
+    draft_id: int,
+    *,
+    subject: str,
+    body: str,
+    mailto_fits: bool,
+    found: list[str],
+) -> None:
+    """The same draft rebuilt by code around the same sentence (the card's
+    salutation toggle), with the outcome of checking it again."""
+    conn.execute(
+        """update drafts set subject = ?, body = ?, mailto_fits = ?, problems = ?
+            where id = ?""",
+        (subject, body, int(mailto_fits), "; ".join(found), draft_id),
     )
 
 

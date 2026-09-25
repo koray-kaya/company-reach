@@ -193,6 +193,49 @@ async def test_a_name_without_an_address_goes_to_the_general_inbox(db_settings):
     )
 
 
+@pytest.mark.parametrize(
+    ("page", "expected"),
+    [
+        ("Ihre Ansprechpartnerin: Frau Anna Muster, Inhaber", "Frau"),
+        ("Fragen beantwortet Herr Dr. Muster gern.", "Herr"),
+        ("Bitte wenden Sie sich an Herrn Muster.", "Herr"),
+    ],
+)
+async def test_frau_before_the_name_sets_the_salutation(db_settings, page, expected):
+    # the page itself says it: the one source a site gives that is not a
+    # generic masculine role noun
+    out = await run(
+        state([Person(name="Anna Muster", role="Inhaber")], {SITE: page}),
+        db_settings,
+    )
+    assert out["contact"].salutation == expected
+    [row] = contact_rows(db_settings)
+    assert row["salutation"] == expected
+
+
+async def test_a_bare_role_sets_nothing(db_settings):
+    # "Inhaber" on a site says nothing about who holds it
+    out = await run(
+        state(
+            [Person(name="Anna Muster", role="Inhaber")],
+            {SITE: "Anna Muster, Inhaber. Herr Beispiel, Werkstatt."},
+        ),
+        db_settings,
+    )
+    assert out["contact"].salutation is None
+
+
+async def test_two_salutations_for_one_name_set_nothing(db_settings):
+    out = await run(
+        state(
+            [Person(name="Anna Muster", role="Inhaber")],
+            {SITE: "Frau Muster (Büro), Herr Muster (Werkstatt)"},
+        ),
+        db_settings,
+    )
+    assert out["contact"].salutation is None
+
+
 async def test_with_no_address_at_all_info_is_constructed_and_marked(db_settings):
     shab = Shab()
     out = await run(

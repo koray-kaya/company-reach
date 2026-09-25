@@ -205,6 +205,13 @@ def test_an_old_database_gains_the_new_columns(tmp_path: Path):
              subject TEXT, body TEXT, mailto_fits INTEGER, prompt_version TEXT,
              model TEXT, created_at TEXT)"""
     )
+    conn.execute(
+        """CREATE TABLE contacts (
+             id INTEGER PRIMARY KEY, run_id TEXT, uid TEXT, name TEXT, role TEXT,
+             email TEXT, email_kind TEXT, source TEXT, source_url TEXT,
+             source_date TEXT, linkedin_lead TEXT, alternatives TEXT,
+             addresses TEXT)"""
+    )
     conn.close()
 
     init_db(path)
@@ -212,10 +219,13 @@ def test_an_old_database_gains_the_new_columns(tmp_path: Path):
 
     conn = sqlite3.connect(path)
     drafts = {row[1] for row in conn.execute("pragma table_info(drafts)")}
+    contacts = {row[1] for row in conn.execute("pragma table_info(contacts)")}
     conn.close()
     assert {"model_text", "frame_version", "arm"} <= drafts
     # the outcome of check_draft: null = never checked, "" = passed
     assert "problems" in drafts
+    # Frau / Herr as the page wrote it or the reviewer chose it
+    assert "salutation" in contacts
 
 
 def test_any_connection_brings_an_older_database_up_to_date(tmp_path: Path):
