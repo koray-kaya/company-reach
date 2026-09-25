@@ -101,11 +101,27 @@ def create_app(settings: Settings, *, jobs: Jobs | None = None) -> FastAPI:
                           max(r.finished_at) as finished
                      from results r group by r.run_id order by finished desc"""
             ).fetchall()
+            # the send cards nobody has decided yet, per run: the way in
+            waiting = {
+                run["run_id"]: sum(
+                    decision_for(conn, uid) is None
+                    for (uid,) in conn.execute(
+                        """select uid from results
+                            where run_id = ? and recommendation = 'send'""",
+                        (run["run_id"],),
+                    )
+                )
+                for run in rows
+            }
         job = jobs.current
+        first_waiting = next((r["run_id"] for r in rows if waiting[r["run_id"]]), None)
         return templates.TemplateResponse(
             request,
             "home.html",
             {
+                "waiting": waiting,
+                "waiting_total": sum(waiting.values()),
+                "first_waiting": first_waiting,
                 "status": status,
                 "columns": COLUMNS,
                 "profile_problem": problem,
