@@ -139,6 +139,26 @@ async def test_the_model_never_sees_the_survey_link(db_settings, shown):
     assert not any("survey.example" in str(v) for v in shown.values())
 
 
+@pytest.mark.parametrize(
+    ("city", "seat"),
+    [
+        ("Buchs AG", "Buchs"),
+        ("Wohlen (AG)", "Wohlen"),
+        ("Buchs SG", "Buchs"),
+        ("St. Gallen", "St. Gallen"),
+        ("Musterstadt", "Musterstadt"),
+    ],
+)
+async def test_the_seat_reaches_the_prompt_without_its_canton(
+    db_settings, shown, city, seat
+):
+    # "in Buchs AG" in the sentence reads as a legal form, and the rule that
+    # keeps legal forms out of it would send a correct sentence back
+    company = COMPANY.model_copy(update={"city": city})
+    await draft(state() | {"company": company}, settings=db_settings)
+    assert shown["seat"] == seat
+
+
 # --- what code adds ----------------------------------------------------------
 
 

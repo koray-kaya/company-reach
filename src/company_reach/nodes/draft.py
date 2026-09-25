@@ -17,6 +17,7 @@ sender comes from the profile's `[sender]`, not from the mail client: the
 mail must say who writes even when the client adds no signature.
 """
 
+import re
 from typing import Any
 
 from company_reach.errors import ProfileError
@@ -40,6 +41,18 @@ from company_reach.tools.invitation import (
 )
 from company_reach.tools.mailto import build
 from company_reach.tools.untrusted import as_data
+
+_CANTONS = (
+    "AG|AI|AR|BE|BL|BS|FR|GE|GL|GR|JU|LU|NE|NW|OW|SG|SH|SO|SZ|TG|TI|UR|VD|VS|ZG|ZH"
+)
+# "Buchs AG", "Wohlen (AG)": the register tells places apart by canton. In
+# the sentence, "in Buchs AG" reads as a legal form and fails that rule.
+_CANTON = re.compile(rf"\s+(?:\((?:{_CANTONS})\)|(?:{_CANTONS}))$")
+
+
+def seat(record: CompanyRecord) -> str:
+    """Where the company sits, as a person would write it in a sentence."""
+    return _CANTON.sub("", record.city or record.municipality).strip()
 
 
 async def draft(state: dict[str, Any], *, settings: Settings) -> dict:
@@ -74,7 +87,7 @@ async def draft(state: dict[str, Any], *, settings: Settings) -> dict:
         settings=settings,
         about_me=state.get("about_me") or "",
         company_name=record.name,
-        seat=record.city or record.municipality,
+        seat=seat(record),
         role=as_data(contact.role, label="ROLE") if contact.role else "not known",
         profile=as_data(profile.description, label="PROFILE"),
         feedback=feedback,
