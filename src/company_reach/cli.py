@@ -13,6 +13,7 @@ from typing import Annotated
 import typer
 import uvicorn
 
+from company_reach.campaign import COLUMNS, campaign_status
 from company_reach.errors import CompanyReachError, ProfileError
 from company_reach.graph import (
     build_child,
@@ -50,7 +51,6 @@ from company_reach.tools.db import (
     record_run,
     score_run_criteria,
     scratch_copy,
-    status_by_municipality,
     store_criteria,
 )
 from company_reach.tools.doctor import run_checks
@@ -466,9 +466,6 @@ def screen(
     typer.echo(f"kept {kept}, dropped {dropped}")
 
 
-_STATUS_COLUMNS = ("pooled", "kept", "scored", "drawable", "drawn", "sent", "undecided")
-
-
 @app.command()
 def status(goal: str | None = None) -> None:
     """Where the campaign stands, per municipality: companies pooled, kept by
@@ -476,38 +473,25 @@ def status(goal: str | None = None) -> None:
     and send cards waiting for a decision."""
     s = get_settings()
     text = _resolve_goal(goal)
-    version, _ = llm.load_prompt("score")
-    key = goal_hash(text)
     with connect(s.db_path) as conn:
-        criteria = current_criteria_hash(conn, key)
-        rows = status_by_municipality(
-            conn,
-            goal_hash=key,
-            prompt_version=version,
-            model=s.llm_model,
-            criteria_hash=criteria,
-            min_score=s.draw_min_score,
-        )
+        st = campaign_status(conn, s, text)
+    rows = st.rows
     typer.echo(
-        f"goal {key} · score@{version} · {s.llm_model} · "
-        f"criteria {criteria or 'none stored'} · drawable at score >= "
-        f"{s.draw_min_score}"
+        f"goal {st.goal_hash} · score@{st.score_version} · {st.model} · "
+        f"criteria {st.criteria_hash or 'none stored'} · drawable at score >= "
+        f"{st.min_score}"
     )
     if not rows:
         typer.echo("No company is pooled yet; run `pool`.")
         return
     typer.echo("")
-    typer.echo(f"{'municipality':<13}" + "".join(f"{c:>10}" for c in _STATUS_COLUMNS))
+    typer.echo(f"{'municipality':<13}" + "".join(f"{c:>10}" for c in COLUMNS))
     for row in rows:
         typer.echo(
-            f"{row['municipality']:<13}"
-            + "".join(f"{row[c]:>10}" for c in _STATUS_COLUMNS)
+            f"{row['municipality']:<13}" + "".join(f"{row[c]:>10}" for c in COLUMNS)
         )
     if len(rows) > 1:
-        typer.echo(
-            f"{'all':<13}"
-            + "".join(f"{sum(r[c] for r in rows):>10}" for c in _STATUS_COLUMNS)
-        )
+        typer.echo(f"{'all':<13}" + "".join(f"{v:>10}" for v in st.totals().values()))
     typer.echo("")
     typer.echo(
         "scored: under this goal, score prompt, model and criteria · "

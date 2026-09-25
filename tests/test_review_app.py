@@ -28,10 +28,20 @@ def review(settings: Settings) -> Settings:
 
 @pytest.fixture
 def client(review: Settings) -> TestClient:
-    return TestClient(create_app(review), follow_redirects=False)
+    return TestClient(
+        create_app(review), base_url="http://127.0.0.1", follow_redirects=False
+    )
 
 
 # --- reading -----------------------------------------------------------------
+
+
+def test_a_card_asked_for_by_another_host_is_refused(client):
+    # DNS rebinding would otherwise let a site read the cards and contacts
+    assert (
+        client.get(f"/review/{RUN}/0", headers={"host": "evil.example"}).status_code
+        == 400
+    )
 
 
 def test_the_run_opens_at_the_first_undecided_company(client):
@@ -83,7 +93,9 @@ def test_page_text_is_escaped(client, review):
 def test_the_locked_gate_is_explained(settings):
     seed(settings.db_path)
     settings.profile_path.write_text(profile_text(SURVEY))
-    locked = TestClient(create_app(settings))  # sending_approved defaults to False
+    locked = TestClient(
+        create_app(settings), base_url="http://127.0.0.1"
+    )  # sending_approved defaults to False
     assert "SENDING_APPROVED" in locked.get(f"/review/{RUN}/0").text
 
 
@@ -201,7 +213,9 @@ def test_send_is_refused_on_the_server_when_the_gate_is_closed(settings):
     # a disabled button is a hint, not a control: the server checks again
     seed(settings.db_path)
     settings.profile_path.write_text(profile_text(SURVEY))
-    locked = TestClient(create_app(settings), follow_redirects=False)
+    locked = TestClient(
+        create_app(settings), base_url="http://127.0.0.1", follow_redirects=False
+    )
     r = locked.post(
         f"/decide/{RUN}/{SEND}?n=0",
         data={"action": "send", "to": "info@muster-metallbau.ch"},
@@ -337,7 +351,9 @@ def stored_draft(settings: Settings):
 
 
 def test_choosing_herr_reassembles_without_a_model_call(fallback):
-    client = TestClient(create_app(fallback), follow_redirects=False)
+    client = TestClient(
+        create_app(fallback), base_url="http://127.0.0.1", follow_redirects=False
+    )
     before = client.get(f"/review/{RUN}/0").text
     assert "Anrede prüfen" in before
     assert "Guten Tag Anna Muster" in before
@@ -469,7 +485,9 @@ def test_another_seen_row_rebuilds_the_mail_for_its_owner(two_seen):
     """Review: picking another row sent Anna's mail — her greeting, "Ihre
     Adresse" — to Beat's address. The mail is rebuilt for the row chosen,
     and when the row is another named person's own address, for them."""
-    client = TestClient(create_app(two_seen), follow_redirects=False)
+    client = TestClient(
+        create_app(two_seen), base_url="http://127.0.0.1", follow_redirects=False
+    )
     assert f'value="address:{BEAT}"' in client.get(f"/review/{RUN}/0").text
 
     assert choose(client, BEAT).status_code == 303
@@ -489,7 +507,9 @@ def test_another_seen_row_rebuilds_the_mail_for_its_owner(two_seen):
 
 
 def test_the_inbox_row_gets_the_inbox_frame(two_seen):
-    client = TestClient(create_app(two_seen), follow_redirects=False)
+    client = TestClient(
+        create_app(two_seen), base_url="http://127.0.0.1", follow_redirects=False
+    )
     choose(client, INBOX)
     with connect(two_seen.db_path) as conn:
         body, subject = conn.execute("select body, subject from drafts").fetchone()
@@ -503,7 +523,9 @@ def test_the_inbox_row_gets_the_inbox_frame(two_seen):
 
 
 def test_send_to_a_row_the_mail_was_not_written_for_is_refused(two_seen):
-    client = TestClient(create_app(two_seen), follow_redirects=False)
+    client = TestClient(
+        create_app(two_seen), base_url="http://127.0.0.1", follow_redirects=False
+    )
     r = post_send(client, BEAT)
     assert r.status_code == 409
     assert "written for" in r.text

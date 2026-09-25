@@ -56,7 +56,23 @@ SearXNG is the only thing that runs in Docker. Every command, the review
 page included, runs with `uv run` on your machine and reaches it at
 `http://127.0.0.1:8080` (`SEARXNG_URL`, the default).
 
-Then, for one town:
+**One click, no terminal.** On a Mac, build a Desktop app once:
+
+```bash
+scripts/make-desktop-app.sh     # ~/Desktop/Company Reach.app
+```
+
+A double-click starts SearXNG and the review page if they are not running
+and opens `http://127.0.0.1:8000/`. The front page shows where the campaign
+stands (the `status` table) and whether Send is locked, and its buttons run
+the everyday commands in the background, one at a time, with their output on
+the page: **New round** (`run --target 10`), **Score 200 more companies**,
+**Add municipality** (`pool`), **Health check** (`doctor`), and per run
+**Retry errors** and **Redraft stale mails**. `scripts/start.sh` does the
+same from a terminal; `scripts/stop.sh` stops the page, which you do after
+pulling new code so the next start runs it.
+
+From a terminal, for one town:
 
 ```bash
 uv run company-reach pool --municipality 3203   # the register's companies, screened

@@ -120,3 +120,28 @@ form.app{margin:0}
 .btn.on{border-color:var(--blue);color:var(--blue);font-weight:700}
 .addr .rowhint{display:block;grid-column:2 / -1;font-size:13px;color:var(--muted);white-space:normal}
 .addr:has(input:disabled){cursor:not-allowed}
+
+/* front page (issue #44) */
+body.home{overflow:auto}
+.home main{max-width:760px;margin:40px auto;padding:0 16px;display:flex;flex-direction:column;gap:32px}
+.home h1{font-size:24px;font-weight:900;color:var(--ink)}
+.home table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums;font-size:14px}
+.home th,.home td{padding:6px 8px;border-bottom:1px solid var(--line);text-align:right}
+.home th:first-child,.home td:first-child{text-align:left}
+.home th{font-weight:700;color:var(--muted);font-size:12.5px}
+.home .hint{margin-top:8px;font-size:13px;color:var(--muted)}
+.home .gate{margin-top:12px;padding:10px 12px;border-radius:8px;background:var(--warn);color:var(--warn-ink);font-size:14px}
+.home .gate.open{background:var(--good);color:var(--good-ink)}
+.home .actions{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+.home .actions form.inline{display:flex;gap:6px}
+.home input{font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--ink);min-width:0;width:220px;max-width:100%}
+.home button{font:inherit;font-weight:700;padding:8px 14px;border-radius:8px;border:1px solid var(--line);background:var(--surface);color:var(--ink);cursor:pointer}
+.home button.primary{background:var(--blue);border-color:var(--blue);color:var(--on-blue)}
+.home button.primary:hover{background:var(--blue-hover)}
+.home button.small{padding:4px 10px;font-size:13px}
+.home button:disabled{opacity:.45;cursor:not-allowed}
+.home .state{font-size:14px;color:var(--text);margin-bottom:8px}
+.home .log{margin:0;padding:12px;border-radius:8px;background:var(--card);border:1px solid var(--line);font-size:12.5px;line-height:1.45;white-space:pre-wrap;overflow-wrap:anywhere}
+.home .run{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--line)}
+.home .run .src{font-size:13px;color:var(--muted);flex:1;min-width:200px}
+.home .blocked{color:var(--warn-ink)}

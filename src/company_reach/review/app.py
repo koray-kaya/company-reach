@@ -22,14 +22,18 @@ from pathlib import Path
 from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from company_reach.campaign import COLUMNS, campaign_status
+from company_reach.errors import ProfileError
 from company_reach.models import Contact
 from company_reach.nodes.check_draft import reassemble
 from company_reach.profile import load_profile
 from company_reach.review.cards import Card, first_undecided, load_cards
+from company_reach.review.jobs import JobBusy, Jobs
 from company_reach.settings import Settings
 from company_reach.tools.db import (
     connect,
@@ -55,9 +59,14 @@ SALUTATIONS = ("Frau", "Herr", "ohne")
 _SAME_ORIGIN = ("same-origin", "none")
 
 
-def create_app(settings: Settings) -> FastAPI:
+def create_app(settings: Settings, *, jobs: Jobs | None = None) -> FastAPI:
     # No /docs, no /openapi.json: a local page for one person, not an API.
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+    # DNS rebinding: a site whose name turns into 127.0.0.1 is the same origin
+    # to the browser, and could read the cards and press the buttons. Only
+    # the Host header it sends tells it apart.
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost"])
+    jobs = jobs or Jobs(settings.data_dir)
     app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
     templates = Jinja2Templates(directory=HERE / "templates")
 
@@ -76,16 +85,51 @@ def create_app(settings: Settings) -> FastAPI:
         return cards
 
     @app.get("/", response_class=HTMLResponse)
-    def runs(request: Request) -> HTMLResponse:
-        """Every run with results, newest first, with how many are left."""
+    def home(request: Request) -> HTMLResponse:
+        """Where the campaign stands, the buttons for a round, the command
+        that runs or ran last, and every run with results, newest first."""
+        try:
+            goal, problem = load_profile(settings.profile_path).goal, None
+        except ProfileError as error:
+            goal, problem = None, str(error)
         with connect(settings.db_path) as conn:
+            status = campaign_status(conn, settings, goal) if goal else None
             rows = conn.execute(
                 """select r.run_id, count(*) as companies,
                           sum(r.recommendation = 'send') as to_send,
+                          sum(r.error_kind is not null) as errors,
                           max(r.finished_at) as finished
                      from results r group by r.run_id order by finished desc"""
             ).fetchall()
-        return templates.TemplateResponse(request, "runs.html", {"runs": rows})
+        job = jobs.current
+        return templates.TemplateResponse(
+            request,
+            "home.html",
+            {
+                "status": status,
+                "columns": COLUMNS,
+                "profile_problem": problem,
+                "sending_approved": settings.sending_approved,
+                "runs": rows,
+                "job": job,
+                "job_tail": job.tail() if job else "",
+            },
+        )
+
+    @app.post("/jobs/{action}", response_model=None)
+    async def start_job(request: Request, action: str) -> RedirectResponse:
+        """One button: its command starts in the background and the page
+        follows its output. Same gate as a decision: only this page."""
+        if request.headers.get("sec-fetch-site") not in _SAME_ORIGIN:
+            raise HTTPException(403, "commands are started from this page only")
+        form = await request.form()
+        try:
+            jobs.start(action, str(form.get("value", "")))
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from error
+        except JobBusy as error:
+            raise HTTPException(409, str(error)) from error
+        return RedirectResponse("/#job", status_code=303)
 
     @app.get("/review/{run_id}")
     def open_run(run_id: str) -> RedirectResponse:

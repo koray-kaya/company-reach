@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+{% if job and job.running %}<meta http-equiv="refresh" content="3">{% endif %}
+<title>company-reach</title>
+<link rel="stylesheet" href="/static/review.css">
+</head>
+<body class="home">
+<main>
+  <h1>company-reach</h1>
+
+  <section>
+    <p class="label">Where the campaign stands</p>
+    {% if profile_problem %}
+    <p class="blocked">{{ profile_problem }} — fill in profile.toml, then reload this page.</p>
+    {% elif not status or not status.rows %}
+    <p class="empty">No company is pooled yet. Add a municipality below.</p>
+    {% else %}
+    <table>
+      <tr><th>municipality</th>{% for c in columns %}<th>{{ c }}</th>{% endfor %}</tr>
+      {% for row in status.rows %}
+      <tr><td>{{ row.municipality }}</td>{% for c in columns %}<td>{{ row[c] }}</td>{% endfor %}</tr>
+      {% endfor %}
+    </table>
+    <p class="hint">Drawable: scored at {{ status.min_score }} or more and not drawn yet. When it runs low, score more companies.</p>
+    {% endif %}
+    {% if sending_approved %}
+    <p class="gate open">Send is open.</p>
+    {% else %}
+    <p class="gate">Send is locked until ethics approval is recorded: set <code>SENDING_APPROVED=true</code> in <code>.env</code> and start the page again.</p>
+    {% endif %}
+  </section>
+
+  <section>
+    <p class="label">Do</p>
+    <div class="actions">
+      <form method="post" action="/jobs/round"><button class="primary" {% if job and job.running %}disabled{% endif %}>New round: find ten to send</button></form>
+      <form method="post" action="/jobs/score"><button {% if job and job.running %}disabled{% endif %}>Score 200 more companies</button></form>
+      <form method="post" action="/jobs/doctor"><button {% if job and job.running %}disabled{% endif %}>Health check</button></form>
+      <form method="post" action="/jobs/pool" class="inline">
+        <input name="value" inputmode="numeric" placeholder="Municipality no., e.g. 3203" aria-label="Municipality numbers" required>
+        <button {% if job and job.running %}disabled{% endif %}>Add municipality</button>
+      </form>
+    </div>
+    <p class="hint">One command at a time. A round takes several minutes; this page follows it.</p>
+  </section>
+
+  {% if job %}
+  <section id="job">
+    <p class="label">{% if job.running %}running{% elif job.returncode is none %}ended{% elif job.returncode == 0 %}finished{% else %}failed (exit {{ job.returncode }}){% endif %} · started {{ job.started.strftime("%H:%M") }}</p>
+    {% if job.running %}<p class="state">This page refreshes by itself until the command ends.</p>{% endif %}
+    <pre class="log">{{ job_tail }}</pre>
+  </section>
+  {% endif %}
+
+  <section>
+    <p class="label">Runs to review</p>
+    {% for run in runs %}
+    <div class="run">
+      <a href="/review/{{ run.run_id }}">{{ run.run_id }}</a>
+      <span class="src">{{ run.companies }} companies · {{ run.to_send or 0 }} to send{% if run.errors %} · {{ run.errors }} errors{% endif %} · {{ (run.finished or "")[:10] }}</span>
+      {% if run.errors %}
+      <form method="post" action="/jobs/retry"><input type="hidden" name="value" value="{{ run.run_id }}"><button class="small" {% if job and job.running %}disabled{% endif %}>Retry errors</button></form>
+      {% endif %}
+      <form method="post" action="/jobs/redraft"><input type="hidden" name="value" value="{{ run.run_id }}"><button class="small" {% if job and job.running %}disabled{% endif %}>Redraft stale mails</button></form>
+    </div>
+    {% else %}
+    <p class="empty">No run has results yet. Start a new round above.</p>
+    {% endfor %}
+  </section>
+</main>
+</body>
+</html>
