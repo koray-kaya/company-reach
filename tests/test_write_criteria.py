@@ -62,3 +62,25 @@ def test_cli_falls_back_to_profile_toml(settings, monkeypatch):
     assert result.exit_code == 0, result.output
     sent = json.loads(route.calls[0].request.content)
     assert "from the profile file" in sent["messages"][0]["content"]
+
+
+@respx.mock
+def test_cli_shows_the_stored_criteria_the_second_time(settings, monkeypatch):
+    """Audit H10: the preview printed one set and `score` used another. Now
+    the first preview stores its set, and what it shows is what scores."""
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    route = respx.post(URL).mock(return_value=answer(CRITERIA))
+
+    first = runner.invoke(cli.app, ["criteria", "--goal", "make windows"])
+    again = runner.invoke(cli.app, ["criteria", "--goal", "make windows"])
+
+    assert again.exit_code == 0, again.output
+    assert route.call_count == 1
+    assert "written now" in first.output and "stored" in again.output
+    assert "Herstellung" in again.output
+
+    fresh = runner.invoke(
+        cli.app, ["criteria", "--goal", "make windows", "--new-criteria"]
+    )
+    assert fresh.exit_code == 0, fresh.output
+    assert route.call_count == 2

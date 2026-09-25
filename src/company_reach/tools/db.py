@@ -8,6 +8,7 @@ import json
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from importlib.resources import files
 from pathlib import Path
@@ -21,7 +22,9 @@ from company_reach.models import (
     Draft,
     Score,
     SelectionCriteria,
+    StoredCriteria,
 )
+from company_reach.screen import screen_reason
 
 if TYPE_CHECKING:  # avoids pulling langchain into every db import
     from company_reach.tools.llm import Provenance
@@ -62,6 +65,7 @@ _ADDED_COLUMNS = {
     ("ledger", "frame_version"): "TEXT",
     ("ledger", "arm"): "TEXT",
     ("ledger", "contact_kind"): "TEXT",
+    ("scores", "criteria_hash"): "TEXT",
 }
 
 
@@ -116,6 +120,18 @@ def connect(path: Path) -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
+def copy_database(source: Path, target: Path) -> None:
+    """A consistent copy of a live database, through SQLite's backup API: a
+    plain file copy would miss what still sits in the WAL file."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    src, dst = sqlite3.connect(source), sqlite3.connect(target)
+    try:
+        src.backup(dst)
+    finally:
+        src.close()
+        dst.close()
+
+
 def now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
@@ -123,6 +139,10 @@ def now() -> str:
 def upsert_companies(
     conn: sqlite3.Connection, records: list[CompanyRecord], run_id: str
 ) -> int:
+    """Store companies, screened as they are stored. Screening used to be a
+    command of its own, keyed by the import's run id: a mistyped or stale id
+    screened nothing, and an unscreened company read as kept. Now every
+    insert and every update carries the rules' verdict, so NULL means kept."""
     rows = [
         (
             r.uid,
@@ -134,6 +154,7 @@ def upsert_companies(
             r.city,
             r.purpose,
             r.purpose_head,
+            screen_reason(r),
             now(),
             run_id,
         )
@@ -141,11 +162,14 @@ def upsert_companies(
     ]
     conn.executemany(
         """INSERT INTO companies (uid, name, legal_form, municipality, street,
-             postal_code, city, purpose, purpose_head, imported_at, import_run_id)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?)
+             postal_code, city, purpose, purpose_head, screen_reason,
+             imported_at, import_run_id)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(uid) DO UPDATE SET name=excluded.name, purpose=excluded.purpose,
              purpose_head=excluded.purpose_head, street=excluded.street,
              postal_code=excluded.postal_code, city=excluded.city,
+             municipality=excluded.municipality, legal_form=excluded.legal_form,
+             screen_reason=excluded.screen_reason,
              imported_at=excluded.imported_at, import_run_id=excluded.import_run_id""",
         rows,
     )
@@ -153,12 +177,19 @@ def upsert_companies(
 
 
 def unscored_companies(
-    conn: sqlite3.Connection, goal_hash: str, prompt_version: str, model: str
+    conn: sqlite3.Connection,
+    goal_hash: str,
+    prompt_version: str,
+    model: str,
+    criteria_hash: str | None,
 ) -> list[CompanyRecord]:
-    """Companies the rules kept and this (goal, prompt, model) has not scored.
+    """Companies the rules kept and this (goal, prompt, model, criteria) has
+    not scored.
 
     The left join is the score cache: rerunning after an interrupted pass, or
-    with a longer --limit, costs nothing for work already done."""
+    with a longer --limit, costs nothing for work already done. `is` rather
+    than `=` for the criteria, because it also matches NULL to NULL: a score
+    made before criteria were stored, while its goal has none stored yet."""
     rows = conn.execute(
         """select c.uid, c.name, c.legal_form, c.municipality, c.street,
                   c.postal_code, c.city, c.purpose, c.purpose_head
@@ -166,20 +197,25 @@ def unscored_companies(
              left join scores s
                on s.uid = c.uid and s.goal_hash = ?
               and s.prompt_version = ? and s.model = ?
+              and s.criteria_hash is ?
             where c.screen_reason is null and s.uid is null
             order by c.uid""",
-        (goal_hash, prompt_version, model),
+        (goal_hash, prompt_version, model, criteria_hash),
     ).fetchall()
     return [CompanyRecord(**dict(row)) for row in rows]
 
 
 def count_scored(
-    conn: sqlite3.Connection, goal_hash: str, prompt_version: str, model: str
+    conn: sqlite3.Connection,
+    goal_hash: str,
+    prompt_version: str,
+    model: str,
+    criteria_hash: str | None,
 ) -> int:
     return conn.execute(
         "select count(*) from scores where goal_hash = ? and prompt_version = ? "
-        "and model = ?",
-        (goal_hash, prompt_version, model),
+        "and model = ? and criteria_hash is ?",
+        (goal_hash, prompt_version, model, criteria_hash),
     ).fetchone()[0]
 
 
@@ -190,28 +226,130 @@ def upsert_scores(
     goal_hash: str,
     prompt_version: str,
     model: str,
+    criteria_hash: str | None,
 ) -> int:
+    """A company keeps one score per (goal, prompt, model). A rescore under
+    new criteria replaces it, and the row then names the new criteria."""
     conn.executemany(
         """INSERT INTO scores (uid, goal_hash, prompt_version, model, score,
-             reason, scored_at)
-           VALUES (?,?,?,?,?,?,?)
+             reason, scored_at, criteria_hash)
+           VALUES (?,?,?,?,?,?,?,?)
            ON CONFLICT(uid, goal_hash, prompt_version, model) DO UPDATE SET
              score=excluded.score, reason=excluded.reason,
-             scored_at=excluded.scored_at""",
+             scored_at=excluded.scored_at, criteria_hash=excluded.criteria_hash""",
         [
-            (s.uid, goal_hash, prompt_version, model, s.score, s.reason, now())
+            (
+                s.uid,
+                goal_hash,
+                prompt_version,
+                model,
+                s.score,
+                s.reason,
+                now(),
+                criteria_hash,
+            )
             for s in scores
         ],
     )
     return len(scores)
 
 
+# --- criteria: one set per goal (audit H10) -----------------------------------
+
+
+def load_criteria(conn: sqlite3.Connection, goal_hash: str) -> StoredCriteria | None:
+    row = conn.execute(
+        "select * from criteria where goal_hash = ?", (goal_hash,)
+    ).fetchone()
+    if row is None:
+        return None
+    return StoredCriteria(
+        criteria=SelectionCriteria.model_validate_json(row["criteria"]),
+        criteria_hash=row["criteria_hash"],
+        model=row["model"],
+        prompt_version=row["prompt_version"],
+        created_at=row["created_at"],
+    )
+
+
+def score_run_criteria(conn: sqlite3.Connection, goal_hash: str) -> list[sqlite3.Row]:
+    """The criteria earlier `score` commands recorded for this goal, oldest
+    first. Before the criteria table, every `score` wrote its own set and
+    kept it only on its `runs` row."""
+    return conn.execute(
+        """select id, criteria, model, prompt_versions from runs
+            where goal_hash = ? and criteria is not null
+            order by started_at, rowid""",
+        (goal_hash,),
+    ).fetchall()
+
+
+def current_criteria_hash(conn: sqlite3.Connection, goal_hash: str) -> str | None:
+    """The hash a score must carry to count for this goal. None while the
+    goal has no criteria stored; then the scores made before criteria were
+    stored, which carry NULL, are the ones that count."""
+    stored = load_criteria(conn, goal_hash)
+    return stored.criteria_hash if stored else None
+
+
+def store_criteria(
+    conn: sqlite3.Connection,
+    goal_hash: str,
+    criteria: SelectionCriteria,
+    *,
+    criteria_hash: str,
+    model: str | None,
+    prompt_version: str | None,
+    adopt_unlinked: bool,
+) -> int:
+    """Store the goal's criteria, replacing any set stored before.
+
+    The first time a goal gets criteria, its scores made before criteria
+    were stored take their hash (`adopt_unlinked`). They are the baseline
+    the owner has; without this, a database from before the table would
+    lose every score at once. Not when new criteria were asked for, since
+    the point then is to score again. Returns how many scores took it.
+
+    A set that is replaced moves to `criteria_history`, so the rules the
+    pool was scored against can still be read, and put back by hand."""
+    first = load_criteria(conn, goal_hash) is None
+    conn.execute(
+        """INSERT INTO criteria_history (goal_hash, criteria, criteria_hash,
+             model, prompt_version, created_at, replaced_at)
+           SELECT goal_hash, criteria, criteria_hash, model, prompt_version,
+                  created_at, ? FROM criteria WHERE goal_hash = ?""",
+        (now(), goal_hash),
+    )
+    conn.execute(
+        """INSERT INTO criteria (goal_hash, criteria, criteria_hash, model,
+             prompt_version, created_at) VALUES (?,?,?,?,?,?)
+           ON CONFLICT(goal_hash) DO UPDATE SET criteria=excluded.criteria,
+             criteria_hash=excluded.criteria_hash, model=excluded.model,
+             prompt_version=excluded.prompt_version,
+             created_at=excluded.created_at""",
+        (
+            goal_hash,
+            criteria.model_dump_json(),
+            criteria_hash,
+            model,
+            prompt_version,
+            now(),
+        ),
+    )
+    if not (first and adopt_unlinked):
+        return 0
+    return conn.execute(
+        "update scores set criteria_hash = ? "
+        "where goal_hash = ? and criteria_hash is null",
+        (criteria_hash, goal_hash),
+    ).rowcount
+
+
 def record_run(
     path: Path,
     run_id: str,
     goal: str,
-    criteria: SelectionCriteria,
-    provenance: "Provenance",
+    criteria: StoredCriteria,
     *,
     seed: int,
 ) -> None:
@@ -235,13 +373,45 @@ def record_run(
                 goal_hash(goal),
                 seed,
                 None,
-                provenance.model,
-                json.dumps({provenance.prompt: provenance.prompt_version}),
-                criteria.model_dump_json(),
+                criteria.model,
+                json.dumps({"criteria": criteria.prompt_version}),
+                criteria.criteria.model_dump_json(),
                 now(),
                 "scoring",
             ),
         )
+
+
+# What a run may draw, written once. `draw_batch`, the guard in `run` and
+# `status` all read this text, so they cannot disagree about it: the guard
+# used to count any score, and passed a pool nothing could be drawn from.
+_DRAWABLE = """
+             from companies c
+             join scores s
+               on s.uid = c.uid and s.goal_hash = :goal_hash
+              and s.prompt_version = :prompt_version and s.model = :model
+              and s.criteria_hash is :criteria_hash
+            where c.screen_reason is null
+              and s.score >= :min_score
+              -- not already drawn in THIS run, or the loop would redraw it
+              and c.uid not in (select uid from seen where run_id = :run_id)
+              -- a reviewer decided about it, or it may never be contacted
+              and c.uid not in (select uid from ledger)
+              and c.uid not in (select key from suppression)
+              -- never drawn at all, or drawn only by earlier runs that failed
+              -- on it: an errored company was never contacted and has no
+              -- draft, so there is nothing to protect it from. "Only" is the
+              -- point — a company another run finished after an error keeps
+              -- that old error row, and may already have been written to.
+              and (c.uid not in (select uid from seen)
+                   or (c.uid in (select uid from results
+                                  where error_kind is not null
+                                    -- still in flight elsewhere, or crashed:
+                                    -- its own run id finishes it, not ours
+                                    and error_kind <> 'interrupted'
+                                    and run_id <> :run_id)
+                       and c.uid not in (select uid from results
+                                          where error_kind is null)))"""
 
 
 def draw_batch(
@@ -252,6 +422,7 @@ def draw_batch(
     goal_hash: str,
     prompt_version: str,
     model: str,
+    criteria_hash: str | None,
     min_score: int,
     limit: int,
 ) -> list[str]:
@@ -279,37 +450,166 @@ def draw_batch(
         return recorded
 
     rows = conn.execute(
-        """select c.uid
-             from companies c
-             join scores s
-               on s.uid = c.uid and s.goal_hash = ?
-              and s.prompt_version = ? and s.model = ?
-            where c.screen_reason is null
-              and s.score >= ?
-              -- not already drawn in THIS run, or the loop would redraw it
-              and c.uid not in (select uid from seen where run_id = ?)
-              -- never drawn at all, or drawn only by earlier runs that failed
-              -- on it: an errored company was never contacted and has no
-              -- draft, so there is nothing to protect it from. "Only" is the
-              -- point — a company another run finished after an error keeps
-              -- that old error row, and may already have been written to.
-              -- a reviewer decided about it, or it may never be contacted
-              and c.uid not in (select uid from ledger)
-              and c.uid not in (select key from suppression)
-              and (c.uid not in (select uid from seen)
-                   or (c.uid in (select uid from results
-                                  where error_kind is not null
-                                    -- still in flight elsewhere, or crashed:
-                                    -- its own run id finishes it, not ours
-                                    and error_kind <> 'interrupted'
-                                    and run_id <> ?)
-                       and c.uid not in (select uid from results
-                                          where error_kind is null)))
-            order by s.score desc
-            limit ?""",
-        (goal_hash, prompt_version, model, min_score, run_id, run_id, limit),
+        f"select c.uid {_DRAWABLE} order by s.score desc limit :limit",
+        {
+            "run_id": run_id,
+            "goal_hash": goal_hash,
+            "prompt_version": prompt_version,
+            "model": model,
+            "criteria_hash": criteria_hash,
+            "min_score": min_score,
+            "limit": limit,
+        },
     ).fetchall()
     return [r["uid"] for r in rows]
+
+
+@dataclass(frozen=True)
+class Standing:
+    """How the pool stands against one score key: what `run` could draw,
+    and if nothing, why not. Each kept company counts once, under the first
+    of current, earlier_criteria, other_prompt, other_model, unscored."""
+
+    pooled: int
+    kept: int
+    current: int  # scored under this goal, prompt version, model, criteria
+    best: int | None  # the highest current score
+    clear: int  # current scores at or above the bar
+    drawable: int  # of those, what this run may still draw
+    earlier_criteria: int
+    other_prompt: int
+    other_prompt_versions: list[str]
+    other_model: int
+    unscored: int
+
+
+def pool_standing(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    goal_hash: str,
+    prompt_version: str,
+    model: str,
+    criteria_hash: str | None,
+    min_score: int,
+) -> Standing:
+    key = {
+        "run_id": run_id,
+        "goal_hash": goal_hash,
+        "prompt_version": prompt_version,
+        "model": model,
+        "criteria_hash": criteria_hash,
+        "min_score": min_score,
+    }
+    kinds = {
+        r["kind"]: r["n"]
+        for r in conn.execute(
+            """select case
+                 when exists (select 1 from scores s where s.uid = c.uid
+                                and s.goal_hash = :goal_hash
+                                and s.prompt_version = :prompt_version
+                                and s.model = :model
+                                and s.criteria_hash is :criteria_hash)
+                   then 'current'
+                 when exists (select 1 from scores s where s.uid = c.uid
+                                and s.goal_hash = :goal_hash
+                                and s.prompt_version = :prompt_version
+                                and s.model = :model)
+                   then 'earlier_criteria'
+                 when exists (select 1 from scores s where s.uid = c.uid
+                                and s.goal_hash = :goal_hash and s.model = :model)
+                   then 'other_prompt'
+                 when exists (select 1 from scores s where s.uid = c.uid
+                                and s.goal_hash = :goal_hash)
+                   then 'other_model'
+                 else 'unscored' end as kind,
+                 count(*) as n
+                 from companies c where c.screen_reason is null group by kind""",
+            key,
+        )
+    }
+    best, clear = conn.execute(
+        """select max(s.score), count(*) filter (where s.score >= :min_score)
+             from scores s join companies c on c.uid = s.uid
+            where c.screen_reason is null and s.goal_hash = :goal_hash
+              and s.prompt_version = :prompt_version and s.model = :model
+              and s.criteria_hash is :criteria_hash""",
+        key,
+    ).fetchone()
+    versions = [
+        r[0]
+        for r in conn.execute(
+            """select distinct prompt_version from scores
+                where goal_hash = :goal_hash and model = :model
+                  and prompt_version <> :prompt_version
+                order by prompt_version""",
+            key,
+        )
+    ]
+    return Standing(
+        pooled=conn.execute("select count(*) from companies").fetchone()[0],
+        kept=sum(kinds.values()),
+        current=kinds.get("current", 0),
+        best=best,
+        clear=clear,
+        drawable=conn.execute(f"select count(*) {_DRAWABLE}", key).fetchone()[0],
+        earlier_criteria=kinds.get("earlier_criteria", 0),
+        other_prompt=kinds.get("other_prompt", 0),
+        other_prompt_versions=versions,
+        other_model=kinds.get("other_model", 0),
+        unscored=kinds.get("unscored", 0),
+    )
+
+
+def status_by_municipality(
+    conn: sqlite3.Connection,
+    *,
+    goal_hash: str,
+    prompt_version: str,
+    model: str,
+    criteria_hash: str | None,
+    min_score: int,
+) -> list[sqlite3.Row]:
+    """One row per municipality: companies pooled, kept by the rules, scored
+    under the current key, drawable by a new run, drawn, sent, and send
+    cards nobody has decided yet. Drawable is `_DRAWABLE` for a run that has
+    drawn nothing (run id ""), so it says what the next `run` could take."""
+    return conn.execute(
+        f"""with drawable as (select c.uid {_DRAWABLE}),
+                 current as (
+                   select uid from scores
+                    where goal_hash = :goal_hash
+                      and prompt_version = :prompt_version and model = :model
+                      and criteria_hash is :criteria_hash),
+                 -- a company's decision is its latest ledger row, unless undone
+                 decided as (
+                   select l.uid from ledger l
+                    where l.id = (select max(id) from ledger where uid = l.uid)
+                      and l.status <> 'undone')
+            select c.municipality,
+                   count(*) as pooled,
+                   sum(c.screen_reason is null) as kept,
+                   sum(c.screen_reason is null
+                       and c.uid in (select uid from current)) as scored,
+                   sum(c.uid in (select uid from drawable)) as drawable,
+                   sum(c.uid in (select uid from seen)) as drawn,
+                   sum(c.uid in (select uid from ledger where status = 'sent'))
+                     as sent,
+                   sum(c.uid in (select uid from results
+                                  where recommendation = 'send')
+                       and c.uid not in (select uid from decided)) as undecided
+              from companies c
+             group by c.municipality
+             order by c.municipality""",
+        {
+            "run_id": "",
+            "goal_hash": goal_hash,
+            "prompt_version": prompt_version,
+            "model": model,
+            "criteria_hash": criteria_hash,
+            "min_score": min_score,
+        },
+    ).fetchall()
 
 
 def record_seen(

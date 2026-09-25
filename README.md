@@ -58,23 +58,35 @@ When running with `uv run`, set `SEARXNG_URL=http://127.0.0.1:8080` in
 Then, for one town:
 
 ```bash
-uv run company-reach pool --municipality 3203   # the register's companies
-uv run company-reach screen --run-id <run>      # the rule-based exclusions
+uv run company-reach pool --municipality 3203   # the register's companies, screened
 uv run company-reach criteria                   # what your goal means, first
 uv run company-reach score --limit 200          # rank them against the goal
 uv run company-reach run                        # enrich a batch of ten
 uv run company-reach review <run>               # decide, one company at a time
 ```
 
-`3203` is the federal id of a municipality (that one is St. Gallen). Every
+`3203` is the federal id of a municipality (that one is St. Gallen); `pool`
+takes several (`--municipality 3203 --municipality 3443`, or `3203,3443`),
+and `company-reach status` shows per municipality how many companies are
+pooled, kept, scored, drawable, drawn, sent and waiting for a decision. `pool`
+applies the rule-based exclusions as it stores each company; after the rules
+change, `company-reach screen` applies them again to every company. Every
 command is safe to run again: nothing already done is repeated, and scoring
-is incremental. `run` finds each company's site, reads it, chooses who to
-write to and drafts an invitation; a company whose search or site failed is
-recorded as an error, not as "no website", and `company-reach retry <run>`
-does it again. Every search query is logged, and a "no website" card on the
-review page lists them; if they show search was throttled,
-`company-reach retry <run> --no-site` redoes those companies too. To look at
-one company on its own:
+is incremental. The criteria are written once per goal and stored, so every
+`score` pass ranks against the rules `criteria` showed you;
+`score --new-criteria` writes a fresh set and scores the pool again. It says
+first how many scores stop counting and asks (`--yes` answers for a script);
+the set it replaces is kept in the database's `criteria_history`.
+
+`run` finds each company's site, reads it, chooses who to write to and
+drafts an invitation; a company whose search or site failed is recorded as
+an error, not as "no website", and `company-reach retry <run>` does it
+again. Every search query is logged, and a "no website" card on the review
+page lists them; if they show search was throttled,
+`company-reach retry <run> --no-site` redoes those companies too. A run
+stops at its first batch with a sendable company; `run --target 10` draws on
+until ten are sendable, the pool runs dry, or `MAX_BATCHES_PER_RUN` batches
+(default 3) are drawn. To look at one company on its own:
 `uv run company-reach enrich --uid CHE123456789 --until draft`.
 
 `review` opens the page on `http://127.0.0.1:8000/`. It shows one company

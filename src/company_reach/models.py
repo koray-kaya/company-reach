@@ -50,6 +50,17 @@ class SelectionCriteria(BaseModel):
     positive_signals: list[str] = Field(description="raise the score when present")
 
 
+class StoredCriteria(BaseModel):
+    """A goal's criteria as the database keeps them: one set per goal, named
+    by a hash that every score made against them carries."""
+
+    criteria: SelectionCriteria
+    criteria_hash: str
+    model: str | None = None  # what wrote them, for "why did it score 8?"
+    prompt_version: str | None = None
+    created_at: str
+
+
 class RawScore(BaseModel):
     """What the model returns, deliberately unconstrained.
 

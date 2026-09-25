@@ -2,16 +2,23 @@ import json
 import sqlite3
 from pathlib import Path
 
-from company_reach.models import CompanyProfile, CompanyRecord, Person
+from company_reach.models import (
+    CompanyProfile,
+    CompanyRecord,
+    Person,
+    SelectionCriteria,
+)
 from company_reach.tools.db import (
     connect,
     errored_uids,
     init_db,
+    load_criteria,
     profile_by_uid,
     record_decision,
     record_page,
     record_searches,
     search_log,
+    store_criteria,
     suppress,
     upsert_companies,
     upsert_profile,
@@ -58,6 +65,22 @@ def test_upsert_is_idempotent(tmp_path: Path):
         assert upsert_companies(conn, two, "r1") == 2
         assert upsert_companies(conn, [rec("CHE000000001")], "r2") == 1
         assert conn.execute("select count(*) from companies").fetchone()[0] == 2
+
+
+def test_a_reimport_moves_a_company_to_its_new_municipality(tmp_path: Path):
+    """Audit: a re-import kept the old municipality and legal form, so a
+    company that moved counted in the wrong town and a converted GmbH still
+    showed as one."""
+    db = tmp_path / "t.db"
+    init_db(db)
+    moved = rec("CHE000000001").model_copy(
+        update={"municipality": "3443", "legal_form": "0107"}
+    )
+    with connect(db) as conn:
+        upsert_companies(conn, [rec("CHE000000001")], "r1")
+        upsert_companies(conn, [moved], "r2")
+        row = conn.execute("select municipality, legal_form from companies").fetchone()
+    assert tuple(row) == ("3443", "0107")
 
 
 def test_connection_rolls_back_on_error(tmp_path: Path):
@@ -363,3 +386,99 @@ def test_errored_uids_skips_decided_and_suppressed_companies(tmp_path: Path):
         suppress(conn, "CHE000000002", reason="forgotten on request")
         record_decision(conn, "CHE000000003", "skipped")
         assert errored_uids(conn, "r1") == ["CHE000000001"]
+
+
+# --- criteria (audit H10) -------------------------------------------------------
+
+
+def test_legacy_scores_adopt_the_first_stored_criteria(tmp_path: Path):
+    """Scores made before criteria were stored name no criteria. The first
+    set stored for their goal is the baseline the owner has, so they take
+    its hash; a later set takes nothing over, and other goals keep theirs."""
+    path = tmp_path / "old.db"
+    conn = sqlite3.connect(path)
+    conn.execute(
+        """CREATE TABLE scores (
+             uid TEXT NOT NULL, goal_hash TEXT NOT NULL,
+             prompt_version TEXT NOT NULL, model TEXT NOT NULL,
+             score INTEGER NOT NULL, reason TEXT, scored_at TEXT NOT NULL,
+             PRIMARY KEY (uid, goal_hash, prompt_version, model))"""
+    )
+    conn.executemany(
+        "insert into scores values (?, ?, '1', 'm1', 8, 'x', '2026-09-20')",
+        [("CHE000000001", "g1"), ("CHE000000002", "g2"), ("CHE000000003", "g3")],
+    )
+    conn.commit()
+    conn.close()
+
+    first = SelectionCriteria(must=["makes"], must_not=[], positive_signals=[])
+    later = SelectionCriteria(must=["sells"], must_not=[], positive_signals=[])
+    with connect(path) as c:
+        adopted = store_criteria(
+            c,
+            "g1",
+            first,
+            criteria_hash="h1",
+            model="m1",
+            prompt_version="1",
+            adopt_unlinked=True,
+        )
+        store_criteria(
+            c,
+            "g1",
+            later,
+            criteria_hash="h2",
+            model="m1",
+            prompt_version="1",
+            adopt_unlinked=True,
+        )
+        # `--new-criteria` asked for a fresh set: nothing is adopted
+        store_criteria(
+            c,
+            "g3",
+            later,
+            criteria_hash="h3",
+            model="m1",
+            prompt_version="1",
+            adopt_unlinked=False,
+        )
+    with connect(path) as c:
+        rows = dict(c.execute("select uid, criteria_hash from scores").fetchall())
+        kept = load_criteria(c, "g1")
+
+    assert adopted == 1
+    assert rows == {"CHE000000001": "h1", "CHE000000002": None, "CHE000000003": None}
+    assert kept is not None and kept.criteria == later and kept.criteria_hash == "h2"
+
+
+def test_replaced_criteria_are_kept_in_history(tmp_path: Path):
+    """Review of Phase F: `--new-criteria` overwrote the only copy of the set
+    the pool had been scored against. The set it replaces is kept."""
+    db = tmp_path / "t.db"
+    init_db(db)
+    sets = [
+        SelectionCriteria(must=[must], must_not=[], positive_signals=[])
+        for must in ("makes", "sells", "repairs")
+    ]
+    with connect(db) as conn:
+        for n, rules in enumerate(sets, start=1):
+            store_criteria(
+                conn,
+                "g1",
+                rules,
+                criteria_hash=f"h{n}",
+                model="m1",
+                prompt_version="1",
+                adopt_unlinked=True,
+            )
+    with connect(db) as conn:
+        kept = conn.execute(
+            "select goal_hash, criteria, criteria_hash, replaced_at"
+            " from criteria_history order by id"
+        ).fetchall()
+        current = load_criteria(conn, "g1")
+
+    assert [row["criteria_hash"] for row in kept] == ["h1", "h2"]
+    assert SelectionCriteria.model_validate_json(kept[0]["criteria"]) == sets[0]
+    assert all(row["goal_hash"] == "g1" and row["replaced_at"] for row in kept)
+    assert current is not None and current.criteria_hash == "h3"

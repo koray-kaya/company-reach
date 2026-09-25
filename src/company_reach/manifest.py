@@ -16,6 +16,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from company_reach.models import StoredCriteria
 from company_reach.profile import goal_hash
 from company_reach.settings import Settings
 from company_reach.tools.db import now
@@ -90,18 +91,33 @@ def _write(run_id: str, *, settings: Settings, fields: dict[str, Any]) -> Path:
 
 
 def start_manifest(
-    run_id: str, *, settings: Settings, goal: str, seed: int, about_me: str = ""
+    run_id: str,
+    *,
+    settings: Settings,
+    goal: str,
+    seed: int,
+    about_me: str = "",
+    criteria: StoredCriteria | None = None,
+    dry: bool = False,
 ) -> Path:
+    """`criteria` are the goal's stored ones, the rules the drawn companies
+    were scored against; None for a goal whose scores predate stored
+    criteria, which the file then says rather than leaves out. `dry` says
+    the run worked on a copy of the database, which is why it left no trace
+    there."""
     return _write(
         run_id,
         settings=settings,
         fields={
             "run_id": run_id,
             "status": "running",
+            "dry": dry,
             "started_at": now(),
             "goal": goal,
             "goal_hash": goal_hash(goal),
             "about_me": about_me,
+            "criteria": criteria.criteria.model_dump() if criteria else None,
+            "criteria_hash": criteria.criteria_hash if criteria else None,
             "seed": seed,
             "git_commit": _git_commit(),
             "prompts": _prompt_versions(),

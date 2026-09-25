@@ -2,15 +2,39 @@ import json
 
 import httpx
 import respx
+from typer.testing import CliRunner
 
-from company_reach.models import CompanyRecord, SelectionCriteria
+from company_reach import cli
+from company_reach.models import (
+    CompanyRecord,
+    RawScore,
+    Score,
+    ScoreBatch,
+    SelectionCriteria,
+    StoredCriteria,
+)
 from company_reach.nodes.score_pool import score_pool
-from company_reach.tools.db import connect, init_db, upsert_companies
+from company_reach.profile import goal_hash
+from company_reach.tools import llm
+from company_reach.tools.db import (
+    connect,
+    current_criteria_hash,
+    draw_batch,
+    init_db,
+    load_criteria,
+    store_criteria,
+    upsert_companies,
+    upsert_scores,
+)
 
 URL = "https://api.openai.com/v1/chat/completions"
 
-CRITERIA = SelectionCriteria(
-    must=["makes"], must_not=["holds"], positive_signals=["Montage"]
+CRITERIA = StoredCriteria(
+    criteria=SelectionCriteria(
+        must=["makes"], must_not=["holds"], positive_signals=["Montage"]
+    ),
+    criteria_hash="c1",
+    created_at="2026-09-25T00:00:00+00:00",
 )
 
 
@@ -181,3 +205,240 @@ async def test_one_failing_batch_does_not_stop_the_others(settings, monkeypatch)
     report = await score_pool("run1", "goal", CRITERIA, settings=settings)
     assert report.failed_batches == 1
     assert report.scored == 2  # the other batch went through
+
+
+# --- one set of criteria per goal (audit H10) ---------------------------------
+
+runner = CliRunner()
+
+
+def _provenance(prompt: str) -> llm.Provenance:
+    return llm.Provenance(
+        model="test-model",
+        prompt=prompt,
+        prompt_version="1",
+        reasoning_effort="low",
+        prompt_tokens=0,
+        completion_tokens=0,
+        finish_reason="stop",
+        seconds=0.0,
+    )
+
+
+def fake_model(monkeypatch, *musts: str) -> dict[str, int]:
+    """`llm.ask` without an endpoint. The criteria prompt answers with the
+    next of `musts` each time it is asked; the score prompt gives every
+    company it was sent a 7. Returns how often each prompt was asked."""
+    calls = {"criteria": 0, "score": 0}
+
+    async def ask(prompt_name, output_model, /, *, settings, **variables):
+        calls[prompt_name] += 1
+        if prompt_name == "criteria":
+            answer = SelectionCriteria(
+                must=[musts[calls["criteria"] - 1]],
+                must_not=["holds"],
+                positive_signals=[],
+            )
+        else:
+            sent = json.loads(variables["companies"])
+            answer = ScoreBatch(
+                scores=[RawScore(uid=c["uid"], score=7, reason="ok") for c in sent]
+            )
+        return answer, _provenance(prompt_name)
+
+    monkeypatch.setattr(llm, "ask", ask)
+    return calls
+
+
+def criteria_hashes(settings) -> set[str | None]:
+    with connect(settings.db_path) as conn:
+        return {r[0] for r in conn.execute("select criteria_hash from scores")}
+
+
+def test_two_score_passes_use_one_criteria(settings, monkeypatch):
+    """Audit H10: every `score` wrote fresh criteria, so two passes over one
+    pool were ranked against two rule sets and the cache could not tell."""
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    seed(settings, 4)
+    calls = fake_model(monkeypatch, "makes things", "sells software")
+
+    for _ in range(2):
+        r = runner.invoke(cli.app, ["score", "--goal", "goal", "--limit", "2"])
+        assert r.exit_code == 0, r.output
+
+    assert calls["criteria"] == 1
+    assert len(stored(settings)) == 4
+    hashes = criteria_hashes(settings)
+    assert len(hashes) == 1 and None not in hashes
+    assert "makes things" in r.output  # the second pass shows the stored rules
+
+
+def test_a_new_criteria_rescores(settings, monkeypatch):
+    """`--new-criteria` writes a fresh set, and every score made under the
+    old one stops counting: the whole pool is scored again. `--yes` answers
+    the question for a script."""
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    seed(settings, 3)
+    calls = fake_model(monkeypatch, "makes things", "sells software")
+    runner.invoke(cli.app, ["score", "--goal", "goal"])
+    before = criteria_hashes(settings)
+
+    r = runner.invoke(cli.app, ["score", "--goal", "goal", "--new-criteria", "--yes"])
+
+    assert r.exit_code == 0, r.output
+    assert "[y/N]" not in r.output  # not asked
+    assert calls["criteria"] == 2
+    assert "3 newly scored" in r.output
+    assert "sells software" in r.output
+    after = criteria_hashes(settings)
+    assert len(after) == 1 and after != before
+
+
+def history(settings) -> list[str]:
+    with connect(settings.db_path) as conn:
+        return [
+            r[0]
+            for r in conn.execute(
+                "select criteria_hash from criteria_history order by id"
+            )
+        ]
+
+
+def test_new_criteria_says_what_stops_counting_and_asks(settings, monkeypatch):
+    """Review of Phase F: `--new-criteria` dropped every current score from
+    the draw without a word about how many, or what rescoring them costs,
+    and the set it replaced was gone."""
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    seed(settings, 3)
+    calls = fake_model(monkeypatch, "makes things", "sells software")
+    runner.invoke(cli.app, ["score", "--goal", "goal"])
+    before = criteria_hashes(settings)
+
+    no = runner.invoke(
+        cli.app, ["score", "--goal", "goal", "--new-criteria"], input="n\n"
+    )
+
+    assert no.exit_code == 1
+    assert "3 current scores stop counting" in no.output
+    assert "500 a pass (SCORE_LIMIT), 1 pass" in no.output
+    assert calls["criteria"] == 1  # declined before a new set was paid for
+    assert criteria_hashes(settings) == before and history(settings) == []
+
+    yes = runner.invoke(
+        cli.app, ["score", "--goal", "goal", "--new-criteria"], input="y\n"
+    )
+
+    assert yes.exit_code == 0, yes.output
+    assert "3 newly scored" in yes.output
+    assert history(settings) == list(before)  # the replaced set is kept
+
+
+def test_the_same_criteria_again_change_nothing(settings, monkeypatch):
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    seed(settings, 3)
+    fake_model(monkeypatch, "makes things", "makes things")
+    runner.invoke(cli.app, ["score", "--goal", "goal"])
+    before = criteria_hashes(settings)
+
+    r = runner.invoke(cli.app, ["score", "--goal", "goal", "--new-criteria", "--yes"])
+
+    assert r.exit_code == 0, r.output
+    assert "reads the same as the stored set; nothing changes" in r.output
+    assert "0 newly scored" in r.output
+    assert criteria_hashes(settings) == before and history(settings) == []
+
+
+def test_scores_carry_the_stored_hash(settings, monkeypatch):
+    """Review of Phase F: score_pool recomputed the hash from the formatted
+    text while the draw read the stored one, so a change to the formatting
+    alone re-scored the pool under a hash nothing draws, and stranded it."""
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    seed(settings, 2)
+    fake_model(monkeypatch, "makes things")
+    rules = SelectionCriteria(
+        must=["makes things"], must_not=["holds"], positive_signals=[]
+    )
+    key = goal_hash("goal")
+    with connect(settings.db_path) as conn:
+        store_criteria(
+            conn,
+            key,
+            rules,
+            criteria_hash="by-older-code",  # not what criteria_hash() gives now
+            model="test-model",
+            prompt_version="1",
+            adopt_unlinked=True,
+        )
+
+    r = runner.invoke(cli.app, ["score", "--goal", "goal"])
+
+    assert r.exit_code == 0, r.output
+    assert criteria_hashes(settings) == {"by-older-code"}
+    with connect(settings.db_path) as conn:
+        drawn = draw_batch(
+            conn,
+            run_id="r1",
+            batch_no=1,
+            goal_hash=key,
+            prompt_version=llm.load_prompt("score")[0],
+            model=settings.llm_model,
+            criteria_hash=current_criteria_hash(conn, key),
+            min_score=7,
+            limit=10,
+        )
+    assert len(drawn) == 2
+
+
+def test_the_first_store_adopts_the_latest_score_runs_criteria(settings, monkeypatch):
+    """Review of Phase F: before the criteria table every `score` wrote its
+    own set and kept it only on its `runs` row. Adopting a freshly written
+    set labelled those scores with rules none of them saw; the latest set a
+    score run used is the nearest truth, and costs no model call."""
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    uids = seed(settings, 3)
+    calls = fake_model(monkeypatch, "never asked")
+    key = goal_hash("goal")
+    older = SelectionCriteria(
+        must=["makes furniture"], must_not=[], positive_signals=[]
+    )
+    latest = SelectionCriteria(must=["makes things"], must_not=[], positive_signals=[])
+    with connect(settings.db_path) as conn:
+        for run_id, rules, at in (
+            ("s1", older, "2026-09-20T10:00:00+00:00"),
+            ("s2", latest, "2026-09-21T10:00:00+00:00"),
+        ):
+            conn.execute(
+                "insert into runs (id, goal, goal_hash, seed, model,"
+                " prompt_versions, criteria, started_at, status)"
+                " values (?, 'goal', ?, 0, 'test-model', ?, ?, ?, 'scoring')",
+                (
+                    run_id,
+                    key,
+                    json.dumps({"criteria": "1"}),
+                    rules.model_dump_json(),
+                    at,
+                ),
+            )
+        upsert_scores(
+            conn,
+            [Score(uid=uid, score=8, reason="x") for uid in uids[:2]],
+            goal_hash=key,
+            prompt_version=llm.load_prompt("score")[0],
+            model=settings.llm_model,
+            criteria_hash=None,  # made before criteria were stored
+        )
+
+    r = runner.invoke(cli.app, ["score", "--goal", "goal"])
+
+    assert r.exit_code == 0, r.output
+    assert calls["criteria"] == 0
+    assert (
+        "2 scores were made across 2 criteria sets (score runs s1, s2); "
+        "adopting the latest; `score --new-criteria` ranks the pool against "
+        "one set." in r.output
+    )
+    with connect(settings.db_path) as conn:
+        kept = load_criteria(conn, key)
+    assert kept is not None and kept.criteria == latest
+    assert criteria_hashes(settings) == {kept.criteria_hash}
+    assert "1 newly scored" in r.output  # the two adopted cost nothing

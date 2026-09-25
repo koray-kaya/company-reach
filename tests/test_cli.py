@@ -8,12 +8,21 @@ from typer.testing import CliRunner
 
 from company_reach import cli
 from company_reach.errors import SearchError
-from company_reach.manifest import manifest_path
-from company_reach.models import CompanyRecord, RawPerson, Score
+from company_reach.graph import build_stub_child
+from company_reach.manifest import manifest_path, start_manifest
+from company_reach.models import CompanyRecord, RawPerson, Score, SelectionCriteria
 from company_reach.nodes import find_site as find_site_node
 from company_reach.profile import goal_hash
 from company_reach.tools import llm
-from company_reach.tools.db import connect, init_db, upsert_companies, upsert_scores
+from company_reach.tools.db import (
+    connect,
+    init_db,
+    record_decision,
+    record_seen,
+    store_criteria,
+    upsert_companies,
+    upsert_scores,
+)
 from company_reach.tools.search import Result
 
 PAGE = json.loads((Path(__file__).parent / "fixtures/lindas_page.json").read_text())
@@ -32,11 +41,161 @@ def test_pool_then_screen(settings, monkeypatch):
     r = runner.invoke(cli.app, ["screen", "--run-id", "r1"])
     assert r.exit_code == 0, r.output
     assert "kept 2" in r.output and "dropped 1" in r.output
+    # every import is screened now; the old option still works, and says so
+    assert "--run-id is no longer needed" in r.output
 
 
-def _seed_scored_pool(settings, scores: dict[str, int]) -> None:
+def test_screen_over_an_empty_database_fails(settings, monkeypatch):
+    """Audit: `screen` that matched nothing printed "kept 0, dropped 0" and
+    exited 0, which reads as done."""
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    init_db(settings.db_path)
+    r = runner.invoke(cli.app, ["screen"])
+    assert r.exit_code == 1
+    assert "run `pool`" in r.output
+
+
+# --- several municipalities and `status` (audit K17) -------------------------
+
+
+def _binding(uid: str, name: str) -> dict:
+    return {
+        "uid": {"type": "literal", "value": uid},
+        "name": {"type": "literal", "value": name},
+        "lf": {"type": "literal", "value": "0106"},
+        "desc": {"type": "literal", "value": "Herstellung von Fenstern."},
+    }
+
+
+def _municipalities(settings) -> dict[str, int]:
+    with connect(settings.db_path) as conn:
+        return {
+            r[0]: r[1]
+            for r in conn.execute(
+                "select municipality, count(*) from companies group by municipality"
+            )
+        }
+
+
+@respx.mock
+def test_pool_accepts_several_municipalities(settings, monkeypatch):
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    other = {
+        "head": PAGE["head"],
+        "results": {
+            "bindings": [
+                _binding("CHE000000011", "Beispiel Fenster AG"),
+                _binding("CHE000000012", "Muster Glas GmbH"),
+            ]
+        },
+    }
+
+    def by_municipality(request):
+        asked = request.content.decode()
+        return httpx.Response(200, json=other if "3443" in asked else PAGE)
+
+    respx.post(settings.lindas_url).mock(side_effect=by_municipality)
+
+    r = runner.invoke(
+        cli.app, ["pool", "--municipality", "3203", "--municipality", "3443"]
+    )
+    assert r.exit_code == 0, r.output
+    assert "3 companies stored for municipality 3203" in r.output
+    assert "2 companies stored for municipality 3443" in r.output
+    assert _municipalities(settings) == {"3203": 3, "3443": 2}
+
+    r = runner.invoke(cli.app, ["pool", "--municipality", "3203, 3443"])
+    assert r.exit_code == 0, r.output
+    assert "2 companies stored for municipality 3443" in r.output
+
+    r = runner.invoke(cli.app, ["pool", "--municipality", "3203> ; drop"])
+    assert r.exit_code != 0  # goes into the query's IRI: digits only
+
+
+def test_status_counts_per_municipality(settings, monkeypatch):
+    """Audit: nothing said which towns were pooled, scored, drawn out or
+    waiting for review; steering a campaign took hand-written SQL."""
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
     init_db(settings.db_path)
     version, _ = llm.load_prompt("score")
+    current = dict(
+        goal_hash=goal_hash("make and sell"),
+        prompt_version=version,
+        model=settings.llm_model,
+        criteria_hash=None,
+    )
+
+    def company(uid: str, town: str, name: str = "Muster Fenster AG"):
+        return CompanyRecord(
+            uid=uid,
+            name=name,
+            legal_form="0106",
+            municipality=town,
+            purpose="Herstellung von Fenstern.",
+            purpose_head="Herstellung von Fenstern.",
+        )
+
+    with connect(settings.db_path) as conn:
+        upsert_companies(
+            conn,
+            [
+                company("CHE000000001", "3203"),  # drawn, a send card, undecided
+                company("CHE000000002", "3203"),  # drawn, sent
+                company("CHE000000003", "3203"),  # drawable
+                company("CHE000000004", "3203", "Muster AG in Liquidation"),
+                company("CHE000000005", "3203"),  # below the bar
+                company("CHE000000006", "3203"),  # kept, not scored
+                company("CHE000000011", "3443"),  # drawable
+                company("CHE000000012", "3443"),  # scored under an old prompt
+            ],
+            "import",
+        )
+        upsert_scores(
+            conn,
+            [
+                Score(uid=uid, score=n, reason="x")
+                for uid, n in (
+                    ("CHE000000001", 9),
+                    ("CHE000000002", 8),
+                    ("CHE000000003", 9),
+                    ("CHE000000005", 5),
+                    ("CHE000000011", 7),
+                )
+            ],
+            **current,
+        )
+        upsert_scores(
+            conn,
+            [Score(uid="CHE000000012", score=9, reason="x")],
+            **(current | {"prompt_version": "0"}),
+        )
+        record_seen(conn, ["CHE000000001", "CHE000000002"], run_id="r1", batch_no=1)
+        for uid in ("CHE000000001", "CHE000000002"):
+            conn.execute(
+                "insert into results (run_id, uid, recommendation, finished_at)"
+                " values ('r1', ?, 'send', '2026-09-25T00:00:00+00:00')",
+                (uid,),
+            )
+        record_decision(conn, "CHE000000002", "sent", address="a@b.example")
+
+    r = runner.invoke(cli.app, ["status", "--goal", "make and sell"])
+
+    assert r.exit_code == 0, r.output
+
+    def counts(town: str) -> list[int]:
+        line = next(x for x in r.output.splitlines() if x.startswith(town))
+        return [int(n) for n in line.split()[1:]]
+
+    # pooled, kept, scored, drawable, drawn, sent, undecided
+    assert counts("3203") == [6, 5, 4, 1, 2, 1, 1]
+    assert counts("3443") == [2, 2, 1, 1, 0, 0, 0]
+
+
+def _seed_scored_pool(
+    settings, scores: dict[str, int], *, prompt_version: str | None = None
+) -> None:
+    init_db(settings.db_path)
+    version = prompt_version or llm.load_prompt("score")[0]
     with connect(settings.db_path) as conn:
         upsert_companies(
             conn,
@@ -59,6 +218,7 @@ def _seed_scored_pool(settings, scores: dict[str, int]) -> None:
             goal_hash=goal_hash("make and sell"),
             prompt_version=version,
             model=settings.llm_model,
+            criteria_hash=None,  # scored before criteria were stored
         )
 
 
@@ -93,6 +253,34 @@ def test_run_dry_writes_a_finished_manifest(settings, monkeypatch):
     assert m["goal"] == "make and sell"
 
 
+def test_the_manifest_records_the_criteria(settings, monkeypatch):
+    """Audit H10: a run's companies were ranked against these rules, and the
+    file has to say which."""
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    _seed_scored_pool(settings, {"CHE000000001": 9})
+    rules = SelectionCriteria(must=["makes"], must_not=["holds"], positive_signals=[])
+    with connect(settings.db_path) as conn:
+        store_criteria(
+            conn,
+            goal_hash("make and sell"),
+            rules,
+            criteria_hash="c1",
+            model="test-model",
+            prompt_version="1",
+            adopt_unlinked=True,
+        )
+
+    r = runner.invoke(
+        cli.app, ["run", "--dry", "--goal", "make and sell", "--run-id", "r1"]
+    )
+
+    assert r.exit_code == 0, r.output
+    m = json.loads(manifest_path("r1", settings=settings).read_text())
+    assert m["criteria_hash"] == "c1"
+    assert m["criteria"]["must"] == ["makes"]
+    assert m["counts"]["results"] == 1  # the adopted score is drawn
+
+
 def test_run_dry_on_an_empty_database_says_what_to_run(settings, monkeypatch):
     """A zero-row report would look like a working run that found nothing."""
     monkeypatch.setattr(cli, "get_settings", lambda: settings)
@@ -103,7 +291,125 @@ def test_run_dry_on_an_empty_database_says_what_to_run(settings, monkeypatch):
     )
 
     assert r.exit_code != 0
-    assert "pool" in r.output and "screen" in r.output and "score" in r.output
+    # `pool` screens what it stores, so `screen` is no longer a step to name
+    assert "pool" in r.output and "score" in r.output
+
+
+def _dry_run(run_id: str = "r1"):
+    return runner.invoke(
+        cli.app, ["run", "--dry", "--goal", "make and sell", "--run-id", run_id]
+    )
+
+
+def test_a_prompt_bump_says_rescore(settings, monkeypatch):
+    """Audit: after a score.md version bump the guard still passed, and the
+    run said "pool exhausted" with exit 0 about a pool that only needed
+    scoring again."""
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    _seed_scored_pool(
+        settings, {"CHE000000001": 9, "CHE000000002": 8}, prompt_version="0"
+    )
+
+    r = _dry_run()
+
+    assert r.exit_code == 2
+    version, _ = llm.load_prompt("score")
+    assert f"0 companies clear score >= 7 for score@{version} / test-model" in r.output
+    assert "2 are scored under another prompt version (score@0)" in r.output
+    assert "run `score`" in r.output
+    assert "pool exhausted" not in r.output
+
+
+def test_nothing_above_the_threshold_says_so(settings, monkeypatch):
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    _seed_scored_pool(settings, {"CHE000000001": 6, "CHE000000002": 5})
+
+    r = _dry_run()
+
+    assert r.exit_code == 2
+    assert "0 companies clear score >= 7" in r.output
+    assert "2 are scored, the best 6" in r.output
+    assert "pool exhausted" not in r.output
+
+
+def test_a_drawn_out_pool_says_it_is_exhausted(settings, monkeypatch):
+    """Everything that clears the bar was drawn by earlier runs."""
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    _seed_scored_pool(settings, {"CHE000000001": 9})
+    with connect(settings.db_path) as conn:
+        record_seen(conn, ["CHE000000001"], run_id="r1", batch_no=1)
+
+    r = _dry_run("r2")
+
+    assert r.exit_code == 2
+    assert "(1) was drawn, decided or suppressed already" in r.output
+    assert "the pool is exhausted" in r.output
+    assert "pool another municipality" in r.output
+
+
+def test_a_dry_run_leaves_the_real_database_untouched(settings, monkeypatch):
+    """Phase A's final review: a dry run wrote `seen` and `results` into the
+    real database, so a demonstration took real companies out of every
+    later run."""
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    _seed_scored_pool(settings, {"CHE000000001": 9, "CHE000000002": 7})
+    with connect(settings.db_path) as conn:
+        before = list(conn.iterdump())
+
+    r = _dry_run("r1")
+
+    assert r.exit_code == 0, r.output
+    assert "2 companies" in r.output  # the loop ran, on a copy
+    with connect(settings.db_path) as conn:
+        assert list(conn.iterdump()) == before
+    m = json.loads(manifest_path("r1", settings=settings).read_text())
+    assert m["dry"] is True  # the record says why the database has no trace
+    assert _dry_run("r2").exit_code == 0  # both are still drawable
+
+
+def test_the_dry_copy_stays_under_the_data_directory(settings, monkeypatch):
+    """Review of Phase F: the copy, personal data like the database it
+    copies, went to the system temp directory, where a killed run left it
+    outside `data/` and its care."""
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    _seed_scored_pool(settings, {"CHE000000001": 9})
+    copies: list[Path] = []
+
+    async def look(state, *, settings, **kwargs):
+        copies.append(settings.db_path)
+        return state | {"pool_exhausted": True}
+
+    monkeypatch.setattr(cli, "run_graph", look)
+    r = _dry_run("d1")
+
+    assert r.exit_code == 0, r.output
+    (copy,) = copies
+    assert copy.parent.parent.resolve() == settings.data_dir.resolve()
+    assert copy.parent.name.startswith(".dry-")
+    assert not copy.parent.exists()  # and gone once the run is over
+
+
+def test_run_target_reaches_the_loop_and_the_resume_hint(settings, monkeypatch):
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    _seed_scored_pool(settings, {"CHE000000001": 9})
+    captured: dict = {}
+
+    async def stopped_at_the_cap(state, **kwargs):
+        captured.update(state)
+        return state | {"sendable_count": 1, "batches_drawn": 3}
+
+    monkeypatch.setattr(cli, "run_graph", stopped_at_the_cap)
+    _real_run_without_network(monkeypatch)  # a dry run has no resume hint
+    r = runner.invoke(
+        cli.app,
+        ["run", "--goal", "make and sell", "--run-id", "r1", "--target", "5"],
+    )
+
+    assert r.exit_code == 0, r.output
+    assert captured["target"] == 5
+    assert "--target 5" in r.output.splitlines()[0]
+    assert "1 of 5 sendable" in r.output
+    assert "batch cap" in r.output
 
 
 def _seed_one_company(settings) -> None:
@@ -467,14 +773,24 @@ def test_run_with_a_goal_keeps_about_me(settings, monkeypatch):
     assert captured["about_me"] == "Eine Studentin der Beispiel-Hochschule."
 
 
+def _real_run_without_network(monkeypatch) -> None:
+    """A run without --dry that still needs no network: the stub child, and
+    a search probe that answers."""
+
+    async def search_works(state, *, settings):
+        return {}
+
+    monkeypatch.setattr("company_reach.graph.probe_search", search_works)
+    monkeypatch.setattr(cli, "build_child", lambda settings: build_stub_child())
+
+
 def test_run_names_its_id_before_it_starts(settings, monkeypatch):
     """A run that is stopped halfway can be resumed only with its id, so the
     id is printed before anything else happens."""
     monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    _real_run_without_network(monkeypatch)
     _seed_scored_pool(settings, {"CHE000000001": 9})
-    r = runner.invoke(
-        cli.app, ["run", "--dry", "--goal", "make and sell", "--run-id", "r7"]
-    )
+    r = runner.invoke(cli.app, ["run", "--goal", "make and sell", "--run-id", "r7"])
     assert r.exit_code == 0, r.output
     first = r.output.splitlines()[0]
     assert "r7" in first and "--run-id r7" in first
@@ -482,15 +798,70 @@ def test_run_names_its_id_before_it_starts(settings, monkeypatch):
 
 
 def test_the_resume_hint_repeats_the_options_given(settings, monkeypatch):
-    """Final review of Phase A: following the hint after `run --dry --goal X`
-    would have started a real run with the profile's goal."""
+    """Final review of Phase A: following the hint after `run --goal X` must
+    not start a run with the profile's goal, or other options."""
     monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    _real_run_without_network(monkeypatch)
     _seed_scored_pool(settings, {"CHE000000001": 9})
     r = runner.invoke(
-        cli.app, ["run", "--dry", "--goal", "make and sell", "--run-id", "r8"]
+        cli.app,
+        [
+            "run",
+            "--goal",
+            "make and sell",
+            "--run-id",
+            "r8",
+            "--seed",
+            "3",
+            "--target",
+            "2",
+        ],
     )
     first = r.output.splitlines()[0]
-    assert "--dry" in first and '--goal "make and sell"' in first
+    assert '--goal "make and sell"' in first
+    assert "--seed 3" in first and "--target 2" in first
+
+
+def test_a_dry_run_promises_no_resume(settings, monkeypatch):
+    """Review of Phase F: a dry run keeps nothing, so "run it again with" and
+    "finish them with" promised what a rerun on a fresh copy cannot do."""
+    from company_reach.graph import draw_batch
+
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    _seed_scored_pool(settings, {"CHE000000001": 9})
+
+    async def drawn_then_stopped(state, *, settings, **kwargs):
+        draw_batch(state, settings=settings)  # on the copy, never finished
+        return state | {"pool_exhausted": True}
+
+    monkeypatch.setattr(cli, "run_graph", drawn_then_stopped)
+    r = _dry_run("d1")
+
+    assert r.exit_code == 0, r.output
+    first = r.output.splitlines()[0]
+    assert "d1" in first and "run it again" not in first
+    assert "1 errors" in r.output
+    assert "finish them with" not in r.output
+    assert "a dry run keeps nothing; its errors vanish with the copy" in r.output
+
+
+def test_a_dry_run_refuses_a_real_run_id(settings, monkeypatch):
+    """Review of Phase F: `run --dry --run-id <a real run>` overwrote that
+    run's manifest. A real run that stopped before drawing has a manifest
+    and nothing in the database; a dry run's own id may be used again."""
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    _seed_scored_pool(settings, {"CHE000000001": 9})
+    start_manifest("r5", settings=settings, goal="make and sell", seed=0)
+    before = manifest_path("r5", settings=settings).read_text()
+
+    r = _dry_run("r5")
+
+    assert r.exit_code == 2
+    assert "r5 is a real run; use another id" in r.output
+    assert manifest_path("r5", settings=settings).read_text() == before
+
+    assert _dry_run("d2").exit_code == 0
+    assert _dry_run("d2").exit_code == 0  # a dry id again is fine
 
 
 def test_a_leftover_unfinished_company_is_reported(settings, monkeypatch):
@@ -518,12 +889,15 @@ def test_a_leftover_unfinished_company_is_reported(settings, monkeypatch):
     assert "1 errors" in r.output
     assert "retry r9" in r.output
 
-    # after --dry the hint must not be `retry`, which runs the real child
+    # a dry run may not take a real run's id: it would overwrite its manifest
+    # and report the real run's errors as its own (review of Phase F)
     dry = runner.invoke(
         cli.app, ["run", "--dry", "--goal", "make and sell", "--run-id", "r9"]
     )
-    assert "company-reach retry" not in dry.output
-    assert "finish them with: company-reach run --run-id r9 --dry" in dry.output
+    assert dry.exit_code == 2
+    assert "r9 is a real run; use another id" in dry.output
+    manifest = json.loads(manifest_path("r9", settings=settings).read_text())
+    assert manifest["dry"] is False and manifest["counts"]["errors"] == 1
 
 
 # --- redraft (frame@1) --------------------------------------------------------

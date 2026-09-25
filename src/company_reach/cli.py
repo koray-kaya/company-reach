@@ -2,7 +2,12 @@
 --help; the wiring to the `company-reach` executable is [project.scripts]."""
 
 import asyncio
+import json
+import math
+import tempfile
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Annotated
 
@@ -19,21 +24,35 @@ from company_reach.graph import (
 )
 from company_reach.import_v0 import import_v0
 from company_reach.manifest import finish_manifest, manifest_path, start_manifest
-from company_reach.models import CompanyResult
+from company_reach.models import CompanyResult, SelectionCriteria, StoredCriteria
 from company_reach.nodes.load_pool import load_pool
 from company_reach.nodes.score_pool import score_pool
 from company_reach.nodes.screen_pool import screen_pool
-from company_reach.nodes.write_criteria import format_criteria, write_criteria
+from company_reach.nodes.write_criteria import (
+    criteria_hash,
+    format_criteria,
+    write_criteria,
+)
 from company_reach.profile import goal_hash, load_profile
-from company_reach.settings import get_settings
+from company_reach.settings import Settings, get_settings
+from company_reach.tools import llm
 from company_reach.tools.db import (
     connect,
+    copy_database,
     count_brave_queries,
+    count_scored,
+    current_criteria_hash,
     errored_uids,
     init_db,
+    load_criteria,
+    pool_standing,
     record_run,
+    score_run_criteria,
+    status_by_municipality,
+    store_criteria,
 )
 from company_reach.tools.doctor import run_checks
+from company_reach.tools.lindas import LindasError
 
 V0_DIR = Path("data/v0")
 
@@ -53,21 +72,117 @@ def _run_id(explicit: str | None) -> str:
     return explicit or f"r{uuid.uuid4().hex[:8]}"
 
 
-def _require_a_scored_pool(s, goal: str) -> None:
-    """A run over an empty database would print a row of zeros and look like
-    a working run that found nothing. Name the three commands instead."""
+@contextmanager
+def _work_database(s: Settings, *, dry: bool) -> Iterator[Settings]:
+    """The settings a run reads and writes the database through.
+
+    A real run gets `s` itself. A dry run gets settings whose data directory
+    is a throwaway copy of the real database: the loop writes `seen` and
+    `results`, and on the real database a demonstration marked real
+    companies as drawn, out of every later run (Phase A's final review).
+
+    The copy holds the same personal data as the database, so it is made
+    inside the data directory, never the system's temp directory: a run
+    killed before the cleanup leaves a `.dry-*` folder there, under the
+    same care as the rest of `data/`."""
+    if not dry:
+        yield s
+        return
+    s.data_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=s.data_dir, prefix=".dry-") as tmp:
+        work = s.model_copy(update={"data_dir": Path(tmp)})
+        if s.db_path.is_file():
+            copy_database(s.db_path, work.db_path)
+        yield work
+
+
+def _refuse_a_real_run_id(s: Settings, work: Settings, run_id: str) -> None:
+    """A dry run under a real run's id would overwrite that run's manifest
+    and count its errors as its own. A real id has rows in the database
+    (read here from the copy, which holds the same) or a manifest that is not
+    marked dry: a real run that stopped before drawing has only the latter.
+    A manifest from before dry runs were marked counts as real."""
+    path = manifest_path(run_id, settings=s)
+    real_manifest = (
+        path.is_file()
+        and json.loads(path.read_text(encoding="utf-8")).get("dry") is not True
+    )
+    with connect(work.db_path) as conn:
+        in_database = conn.execute(
+            "select 1 from seen where run_id = :id"
+            " union select 1 from results where run_id = :id",
+            {"id": run_id},
+        ).fetchone()
+    if real_manifest or in_database:
+        typer.echo(f"{run_id} is a real run; use another id for --dry.", err=True)
+        raise typer.Exit(2)
+
+
+def _require_a_scored_pool(s, goal: str, run_id: str) -> None:
+    """Stop before a run that can draw nothing, and say why.
+
+    A run that draws nothing prints a row of zeros and "pool exhausted",
+    which reads as "this town is done". The guard asks what `draw_batch`
+    asks, through the same SQL; it used to count any score for the goal, so
+    a prompt bump or a pool below the bar passed it. A resumed run passes:
+    it repeats the batches it drew."""
+    version, _ = llm.load_prompt("score")
+    key = goal_hash(goal)
     with connect(s.db_path) as conn:
-        scored = conn.execute(
-            "select count(*) from scores where goal_hash = ? and model = ?",
-            (goal_hash(goal), s.llm_model),
-        ).fetchone()[0]
-    if scored == 0:
+        if conn.execute("select 1 from seen where run_id = ?", (run_id,)).fetchone():
+            return
+        standing = pool_standing(
+            conn,
+            run_id=run_id,
+            goal_hash=key,
+            prompt_version=version,
+            model=s.llm_model,
+            criteria_hash=current_criteria_hash(conn, key),
+            min_score=s.draw_min_score,
+        )
+    if standing.drawable:
+        return
+    if standing.pooled == 0:
         typer.echo(
-            "No company is scored for this goal yet. Run `pool`, then `screen`,"
-            " then `score` before `run`.",
+            "No company is pooled yet. Run `pool`, then `score` before `run`.",
             err=True,
         )
         raise typer.Exit(2)
+
+    bar = f"score >= {s.draw_min_score} for score@{version} / {s.llm_model}"
+    if standing.clear:
+        head = (
+            f"everything that clears {bar} ({standing.clear}) was drawn, "
+            "decided or suppressed already: the pool is exhausted"
+        )
+    else:
+        head = f"0 companies clear {bar}"
+    reasons = []
+    if standing.current and not standing.clear:
+        reasons.append(f"{standing.current} are scored, the best {standing.best}")
+    if standing.earlier_criteria:
+        reasons.append(
+            f"{standing.earlier_criteria} are scored under earlier criteria"
+            " — run `score`"
+        )
+    if standing.other_prompt:
+        versions = ", ".join(f"score@{v}" for v in standing.other_prompt_versions)
+        reasons.append(
+            f"{standing.other_prompt} are scored under another prompt version "
+            f"({versions}) — run `score`"
+        )
+    if standing.other_model:
+        reasons.append(
+            f"{standing.other_model} are scored with another model — run `score`"
+        )
+    if standing.unscored:
+        reasons.append(
+            f"{standing.unscored} kept companies are not scored yet — run `score`"
+        )
+    if not (standing.earlier_criteria or standing.other_prompt or standing.unscored):
+        reasons.append("pool another municipality to go on")
+    typer.echo("; ".join([head, *reasons]), err=True)
+    raise typer.Exit(2)
 
 
 @app.command()
@@ -81,20 +196,153 @@ def doctor() -> None:
         raise typer.Exit(1)
 
 
+NewCriteria = Annotated[
+    bool,
+    typer.Option(
+        "--new-criteria",
+        help="Write a fresh set of criteria for the goal. Scores made under "
+        "the old set stop counting, so `score` scores the pool again.",
+    ),
+]
+Yes = Annotated[
+    bool,
+    typer.Option("--yes", "-y", help="Answer yes to the --new-criteria question."),
+]
+
+
+def _goal_criteria(s, goal: str, *, new: bool, yes: bool = False) -> StoredCriteria:
+    """The goal's one set of criteria (audit H10): the stored set; the first
+    time, the latest set an earlier `score` run recorded, if there is one;
+    otherwise, or with --new-criteria, a freshly written set. Whatever is
+    new is stored before anything is scored against it."""
+    key = goal_hash(goal)
+    if new:
+        return _replace_criteria(s, goal, key, yes=yes)
+    with connect(s.db_path) as conn:
+        stored = load_criteria(conn, key)
+        earlier = score_run_criteria(conn, key)
+    if stored is not None:
+        typer.echo(
+            f"criteria {stored.criteria_hash} · stored {stored.created_at} · "
+            "`--new-criteria` writes a fresh set"
+        )
+        return stored
+    if earlier:
+        return _adopt_the_latest_score_run(s, key, earlier)
+
+    written, prov = asyncio.run(write_criteria(goal, settings=s))
+    stored, adopted = _store(s, key, written, prov, adopt_unlinked=True)
+    if adopted:
+        typer.echo(f"{adopted} scores made before criteria were stored count under it")
+    return stored
+
+
+def _replace_criteria(s, goal: str, key: str, *, yes: bool) -> StoredCriteria:
+    """--new-criteria. Every current score stops counting, so first say how
+    many and what scoring them again costs, and ask before a new set is paid
+    for. The set replaced is kept in criteria_history; a new set that reads
+    the same as the stored one replaces nothing."""
+    version, _ = llm.load_prompt("score")
+    with connect(s.db_path) as conn:
+        old = load_criteria(conn, key)
+        current = count_scored(
+            conn, key, version, s.llm_model, old.criteria_hash if old else None
+        )
+    if current:
+        passes = math.ceil(current / s.score_limit)
+        typer.echo(
+            f"--new-criteria: {current} current scores stop counting; `score` "
+            f"scores them again, {s.score_limit} a pass (SCORE_LIMIT), {passes} "
+            f"pass{'es' if passes > 1 else ''}. The set replaced is kept in "
+            "criteria_history."
+        )
+        if not yes:
+            typer.confirm("Write a new set of criteria?", abort=True)
+
+    written, prov = asyncio.run(write_criteria(goal, settings=s))
+    if old is not None and criteria_hash(written) == old.criteria_hash:
+        typer.echo(
+            f"criteria {old.criteria_hash} · the new set reads the same as the "
+            "stored set; nothing changes"
+        )
+        return old
+    stored, _ = _store(s, key, written, prov, adopt_unlinked=False)
+    typer.echo("scores made under earlier criteria no longer count; run `score`")
+    return stored
+
+
+def _store(
+    s, key: str, written: SelectionCriteria, prov, *, adopt_unlinked: bool
+) -> tuple[StoredCriteria, int]:
+    """Store a set the model just wrote; the one place its hash is made."""
+    with connect(s.db_path) as conn:
+        adopted = store_criteria(
+            conn,
+            key,
+            written,
+            criteria_hash=criteria_hash(written),
+            model=prov.model,
+            prompt_version=prov.prompt_version,
+            adopt_unlinked=adopt_unlinked,
+        )
+        stored = load_criteria(conn, key)
+    typer.echo(
+        f"criteria {stored.criteria_hash} · written now by {prov.model} · "
+        f"{prov.prompt}@{prov.prompt_version} · {prov.seconds:.1f}s · stored"
+    )
+    return stored, adopted
+
+
+def _adopt_the_latest_score_run(s, key: str, earlier: list) -> StoredCriteria:
+    """A goal scored before the criteria table has its sets only on the
+    `runs` rows of its `score` commands, one set per command. The latest is
+    stored, with no model call, and the scores made before take its hash. A
+    fresh set would label them with rules none of them was scored against;
+    the latest is the nearest truth, and the message says how mixed it is."""
+    latest = earlier[-1]
+    rules = SelectionCriteria.model_validate_json(latest["criteria"])
+    versions = json.loads(latest["prompt_versions"] or "{}")
+    with connect(s.db_path) as conn:
+        adopted = store_criteria(
+            conn,
+            key,
+            rules,
+            criteria_hash=criteria_hash(rules),
+            model=latest["model"],
+            prompt_version=versions.get("criteria"),
+            adopt_unlinked=True,
+        )
+        stored = load_criteria(conn, key)
+    typer.echo(
+        f"criteria {stored.criteria_hash} · taken from score run {latest['id']} · "
+        "stored"
+    )
+    sets = len({row["criteria"] for row in earlier})
+    if sets > 1:
+        runs = ", ".join(row["id"] for row in earlier)
+        typer.echo(
+            f"{adopted} scores were made across {sets} criteria sets (score runs "
+            f"{runs}); adopting the latest; `score --new-criteria` ranks the "
+            "pool against one set."
+        )
+    elif adopted:
+        typer.echo(f"{adopted} scores made before criteria were stored count under it")
+    return stored
+
+
 @app.command()
-def criteria(goal: str | None = None) -> None:
-    """Show the selection criteria a goal produces, before scoring anything."""
+def criteria(
+    goal: str | None = None, new_criteria: NewCriteria = False, yes: Yes = False
+) -> None:
+    """Show the goal's selection criteria before scoring anything. The first
+    time they are written and stored; every `score` then uses that set."""
     s = get_settings()
     text = _resolve_goal(goal)
-    result, prov = asyncio.run(write_criteria(text, settings=s))
-    typer.echo(f"goal   {text}")
-    typer.echo(f"hash   {goal_hash(text)}")
-    typer.echo(
-        f"model  {prov.model} · {prov.prompt}@{prov.prompt_version} · "
-        f"{prov.seconds:.1f}s"
-    )
+    typer.echo(f"goal     {text}")
+    typer.echo(f"hash     {goal_hash(text)}")
+    stored = _goal_criteria(s, text, new=new_criteria, yes=yes)
     typer.echo("")
-    typer.echo(format_criteria(result))
+    typer.echo(format_criteria(stored.criteria))
 
 
 @app.command()
@@ -103,6 +351,8 @@ def score(
     limit: int | None = None,
     seed: int = 0,
     run_id: str | None = None,
+    new_criteria: NewCriteria = False,
+    yes: Yes = False,
 ) -> None:
     """Score screened companies against the goal. Incremental and resumable:
     already-scored companies cost nothing, so run it again to score more."""
@@ -110,13 +360,13 @@ def score(
     text = _resolve_goal(goal)
     rid = _run_id(run_id)
 
-    criteria_result, prov = asyncio.run(write_criteria(text, settings=s))
-    typer.echo(format_criteria(criteria_result))
+    stored = _goal_criteria(s, text, new=new_criteria, yes=yes)
+    typer.echo(format_criteria(stored.criteria))
     typer.echo("")
 
-    record_run(s.db_path, rid, text, criteria_result, prov, seed=seed)
+    record_run(s.db_path, rid, text, stored, seed=seed)
     report = asyncio.run(
-        score_pool(rid, text, criteria_result, settings=s, limit=limit, seed=seed)
+        score_pool(rid, text, stored, settings=s, limit=limit, seed=seed)
     )
     typer.echo(
         f"{report.scored} newly scored · {report.cached} already scored, skipped"
@@ -129,24 +379,119 @@ def score(
     )
 
 
+def _municipality_ids(values: list[str]) -> list[str]:
+    """`--municipality 3203 --municipality 3443` or `--municipality 3203,3443`,
+    each id once, in the order given. An id is the federal (FSO) number and
+    goes into the query's IRI, so anything but digits is refused here."""
+    ids: list[str] = []
+    for value in values:
+        for part in value.split(","):
+            municipality = part.strip()
+            if not municipality.isdigit():
+                raise typer.BadParameter(
+                    f"a municipality is its FSO number, like 3203, not {municipality!r}"
+                )
+            if municipality not in ids:
+                ids.append(municipality)
+    return ids
+
+
 @app.command()
-def pool(municipality: str = "3203", run_id: str | None = None) -> None:
-    """Fetch a municipality's AG+GmbH companies from LINDAS into the database."""
+def pool(
+    municipality: Annotated[
+        list[str] | None,
+        typer.Option(help="FSO number; repeat it, or give a comma list. [3203]"),
+    ] = None,
+    run_id: str | None = None,
+) -> None:
+    """Fetch municipalities' AG+GmbH companies from LINDAS into the database,
+    screened as they are stored."""
     s = get_settings()
+    ids = _municipality_ids(municipality or ["3203"])
     init_db(s.db_path)
     rid = _run_id(run_id)
-    n = load_pool(municipality, rid, settings=s)
-    typer.echo(f"{n} companies stored for municipality {municipality} (run {rid})")
+    failed = False
+    for one in ids:
+        try:
+            n = load_pool(one, rid, settings=s)
+        except LindasError as error:
+            # the others are still worth storing; the exit code tells
+            typer.echo(f"municipality {one}: {error}", err=True)
+            failed = True
+            continue
+        typer.echo(f"{n} companies stored for municipality {one} (run {rid})")
+    if failed:
+        raise typer.Exit(1)
 
 
 @app.command()
 def screen(
-    run_id: Annotated[str, typer.Option(help="The run whose companies to screen.")],
+    # Hidden and ignored: kept so a command written down before every import
+    # was screened still runs, and says what changed instead of failing.
+    run_id: Annotated[str | None, typer.Option(hidden=True)] = None,
 ) -> None:
-    """Apply the rule-based exclusions to the companies of a run."""
+    """Apply the rule-based exclusions again to every company. `pool`
+    already screens what it stores; this is for when the rules change."""
     s = get_settings()
-    kept, dropped = screen_pool(run_id, settings=s)
+    if run_id is not None:
+        typer.echo(
+            "--run-id is no longer needed: every import is screened as it is "
+            "stored, and `screen` covers every company."
+        )
+    kept, dropped = screen_pool(settings=s)
+    if kept + dropped == 0:
+        typer.echo("No company in the database to screen; run `pool` first.", err=True)
+        raise typer.Exit(1)
     typer.echo(f"kept {kept}, dropped {dropped}")
+
+
+_STATUS_COLUMNS = ("pooled", "kept", "scored", "drawable", "drawn", "sent", "undecided")
+
+
+@app.command()
+def status(goal: str | None = None) -> None:
+    """Where the campaign stands, per municipality: companies pooled, kept by
+    the rules, scored for this goal, drawable by the next run, drawn, sent,
+    and send cards waiting for a decision."""
+    s = get_settings()
+    text = _resolve_goal(goal)
+    version, _ = llm.load_prompt("score")
+    key = goal_hash(text)
+    with connect(s.db_path) as conn:
+        criteria = current_criteria_hash(conn, key)
+        rows = status_by_municipality(
+            conn,
+            goal_hash=key,
+            prompt_version=version,
+            model=s.llm_model,
+            criteria_hash=criteria,
+            min_score=s.draw_min_score,
+        )
+    typer.echo(
+        f"goal {key} · score@{version} · {s.llm_model} · "
+        f"criteria {criteria or 'none stored'} · drawable at score >= "
+        f"{s.draw_min_score}"
+    )
+    if not rows:
+        typer.echo("No company is pooled yet; run `pool`.")
+        return
+    typer.echo("")
+    typer.echo(f"{'municipality':<13}" + "".join(f"{c:>10}" for c in _STATUS_COLUMNS))
+    for row in rows:
+        typer.echo(
+            f"{row['municipality']:<13}"
+            + "".join(f"{row[c]:>10}" for c in _STATUS_COLUMNS)
+        )
+    if len(rows) > 1:
+        typer.echo(
+            f"{'all':<13}"
+            + "".join(f"{sum(r[c] for r in rows):>10}" for c in _STATUS_COLUMNS)
+        )
+    typer.echo("")
+    typer.echo(
+        "scored: under this goal, score prompt, model and criteria · "
+        "undecided: send cards nobody has decided yet"
+    )
 
 
 @app.command()
@@ -161,48 +506,71 @@ def run(
     goal: str | None = None,
     seed: int = 0,
     run_id: str | None = None,
+    target: Annotated[
+        int,
+        typer.Option(
+            min=1,
+            help="Draw batches until this many companies are sendable, the "
+            "pool runs dry, or MAX_BATCHES_PER_RUN batches are drawn.",
+        ),
+    ] = 1,
 ) -> None:
     """Draw batches of the best-scoring companies and work through them.
 
     The pool stages are separate commands, so this starts from a database that
-    `pool`, `screen` and `score` have already filled. That is what keeps
-    `--dry` offline and quick enough to demonstrate.
+    `pool` and `score` have already filled. That is what keeps `--dry` offline
+    and quick enough to demonstrate; `--dry` works on a copy of the database.
     """
     s = get_settings()
     text = _resolve_goal(goal)
     rid = _run_id(run_id)
-    _require_a_scored_pool(s, text)
 
-    start_manifest(rid, settings=s, goal=text, seed=seed)
-    state = initial_state(
-        run_id=rid,
-        goal=text,
-        # --goal overrides the goal only; the drafts still say who writes
-        about_me=load_profile(s.profile_path).about_me,
-        municipality="",
-        settings=s,
-        seed=seed,
-    )
+    # `work` holds the database the run reads and writes; `s` the real data
+    # directory, where the manifest goes whether the run is dry or not.
+    with _work_database(s, dry=dry) as work:
+        if dry:
+            _refuse_a_real_run_id(s, work, rid)
+        _require_a_scored_pool(work, text, rid)
 
-    typer.echo(
-        f"run {rid} — if it stops, run it again with: {_resume(rid, dry, goal, seed)}"
-    )
-    try:
-        child = build_stub_child() if dry else build_child(settings=s)
-        out = asyncio.run(
-            run_graph(state, settings=s, child=child, dry=dry, on_result=_echo_result)
+        with connect(work.db_path) as conn:
+            stored = load_criteria(conn, goal_hash(text))
+        start_manifest(rid, settings=s, goal=text, seed=seed, criteria=stored, dry=dry)
+        state = initial_state(
+            run_id=rid,
+            goal=text,
+            # --goal overrides the goal only; the drafts still say who writes
+            about_me=load_profile(s.profile_path).about_me,
+            municipality="",
+            settings=work,
+            seed=seed,
+            target=target,
         )
-    except Exception as error:
-        reason = f"{type(error).__name__}: {error}"
-        finish_manifest(rid, settings=s, status="failed", counts={}, reason=reason)
-        typer.echo(f"run {rid} failed — {reason}", err=True)
-        raise typer.Exit(1) from error
 
-    with connect(s.db_path) as conn:
-        # From the table, not this call's children: a company an earlier,
-        # crashed attempt left unfinished belongs in the count too.
-        errors = len(errored_uids(conn, rid))
-        brave = count_brave_queries(conn, rid)
+        if dry:
+            # nothing to resume: the copy, and all it did, is thrown away
+            typer.echo(f"run {rid} — dry, on a copy of the database")
+        else:
+            resume = _resume(rid, goal, seed, target)
+            typer.echo(f"run {rid} — if it stops, run it again with: {resume}")
+        try:
+            child = build_stub_child() if dry else build_child(settings=work)
+            out = asyncio.run(
+                run_graph(
+                    state, settings=work, child=child, dry=dry, on_result=_echo_result
+                )
+            )
+        except Exception as error:
+            reason = f"{type(error).__name__}: {error}"
+            finish_manifest(rid, settings=s, status="failed", counts={}, reason=reason)
+            typer.echo(f"run {rid} failed — {reason}", err=True)
+            raise typer.Exit(1) from error
+
+        with connect(work.db_path) as conn:
+            # From the table, not this call's children: a company an earlier,
+            # crashed attempt left unfinished belongs in the count too.
+            errors = len(errored_uids(conn, rid))
+            brave = count_brave_queries(conn, rid)
+
     counts = {
         "batches_drawn": out["batches_drawn"],
         "results": len(out["results"]),
@@ -212,20 +580,33 @@ def run(
     }
     finish_manifest(rid, settings=s, status="done", counts=counts)
 
+    wanted = f" of {target}" if target > 1 else ""
     typer.echo(
         f"{counts['batches_drawn']} batches · {counts['results']} companies · "
-        f"{counts['errors']} errors · {counts['sendable']} sendable · "
+        f"{counts['errors']} errors · {counts['sendable']}{wanted} sendable · "
         f"{brave} Brave queries"
         + ("  · pool exhausted" if out["pool_exhausted"] else "")
     )
+    if (
+        counts["sendable"] < target
+        and not out["pool_exhausted"]
+        and counts["batches_drawn"] >= s.max_batches_per_run
+    ):
+        typer.echo(
+            f"stopped at the batch cap ({s.max_batches_per_run}); run again, "
+            "or raise MAX_BATCHES_PER_RUN"
+        )
     typer.echo(f"manifest: {manifest_path(rid, settings=s)}")
     if counts["errors"] and dry:
-        # `retry` runs the real child; a dry run is finished by itself
-        typer.echo(f"finish them with: {_resume(rid, dry, goal, seed)}")
+        # not `retry`, which runs the real child against the real database
+        typer.echo("a dry run keeps nothing; its errors vanish with the copy")
     elif counts["errors"]:
         typer.echo(f"retry the errors with: company-reach retry {rid}")
     if dry:
-        typer.echo("--dry: every company was skipped by the M3 stub child.")
+        typer.echo(
+            "--dry: every company was skipped by the M3 stub child, on a copy "
+            "of the database; nothing was recorded."
+        )
 
 
 @app.command("import-v0")
@@ -541,16 +922,17 @@ def report(
     typer.echo(f"responses without a sent invitation: {unmatched}")
 
 
-def _resume(rid: str, dry: bool, goal: str | None, seed: int) -> str:
-    """The command that continues this run: the same options, or following
-    the hint after a --dry run would start a real one."""
+def _resume(rid: str, goal: str | None, seed: int, target: int) -> str:
+    """The command that continues this real run: the same options, or the
+    hint would start a different run under the same id. A dry run has none;
+    it keeps nothing to continue."""
     parts = ["company-reach run", f"--run-id {rid}"]
-    if dry:
-        parts.append("--dry")
     if goal:
         parts.append(f'--goal "{goal}"')
     if seed:
         parts.append(f"--seed {seed}")
+    if target > 1:
+        parts.append(f"--target {target}")
     return " ".join(parts)
 
 

@@ -44,6 +44,7 @@ from company_reach.tools import llm
 from company_reach.tools.db import (
     connect,
     count_sendable,
+    current_criteria_hash,
     errored_uids,
     no_site_uids,
     record_pending,
@@ -52,7 +53,21 @@ from company_reach.tools.db import (
 from company_reach.tools.db import draw_batch as db_draw_batch
 from company_reach.tools.fetcher import Fetcher
 
-RECURSION_LIMIT = 40
+# The child's longest path: load_company, find_site, pick_pages, read_pages,
+# extract, check_profile, find_contact, recommend, draft, check_draft.
+CHILD_LONGEST_PATH = 10
+
+
+def recursion_limit(max_batches: int) -> int:
+    """LangGraph's default limit is 1000; an unset limit is not a defence.
+    This one follows the batch cap, so a larger cap cannot hit it.
+
+    Three supersteps per batch (draw_batch, the enrich_company fan-out,
+    collect), plus three: the search probe, and a last draw that finds the
+    pool empty with its collect. The slack is the child's longest path: the
+    child runs inside enrich_company and inherits this limit (measured), so
+    a limit shorter than the child would fail every company."""
+    return 3 * max_batches + 3 + CHILD_LONGEST_PATH
 
 
 class ReachState(TypedDict):
@@ -71,6 +86,7 @@ class ReachState(TypedDict):
     municipality: str
     batch_size: int
     seed: int
+    target: int  # sendable candidates this run draws for
 
     pool_count: int
     kept_count: int
@@ -98,10 +114,11 @@ def collect(state: ReachState, *, settings: Settings) -> dict:
 
 
 def need_another_batch(state: ReachState, *, settings: Settings) -> str:
-    """The loop's only exit decision. Three ways out: a candidate was found,
-    the pool ran dry, or the batch budget is spent."""
+    """The loop's only exit decision. Three ways out: the run has the
+    `target` number of sendable candidates, the pool ran dry, or the batch
+    budget is spent. A target of one is the loop as M3 built it."""
     if (
-        state["sendable_count"] == 0
+        state["sendable_count"] < state["target"]
         and state["batches_drawn"] < settings.max_batches_per_run
         and not state["pool_exhausted"]
     ):
@@ -122,15 +139,17 @@ def draw_batch(state: ReachState, *, settings: Settings) -> dict:
     """
     batch_no = state["batches_drawn"] + 1
     prompt_version, _ = llm.load_prompt("score")
+    goal = goal_hash(state["goal"])
 
     with connect(settings.db_path) as conn:
         uids = db_draw_batch(
             conn,
             run_id=state["run_id"],
             batch_no=batch_no,
-            goal_hash=goal_hash(state["goal"]),
+            goal_hash=goal,
             prompt_version=prompt_version,
             model=settings.llm_model,
+            criteria_hash=current_criteria_hash(conn, goal),
             min_score=settings.draw_min_score,
             limit=state["batch_size"],
         )
@@ -292,6 +311,7 @@ def initial_state(
     municipality: str,
     settings: Settings,
     seed: int = 0,
+    target: int = 1,
 ) -> ReachState:
     """Every key present from the start. A TypedDict without `total=False`
     promises that, and LangGraph reads keys the first node never wrote."""
@@ -302,6 +322,7 @@ def initial_state(
         municipality=municipality,
         batch_size=settings.batch_size,
         seed=seed,
+        target=target,
         pool_count=0,
         kept_count=0,
         criteria=None,
@@ -364,13 +385,12 @@ async def run_graph(
     a finished company reaches `on_result` while its siblings still run.
 
     `recursion_limit` is passed here rather than left to the default of
-    1000: an unset limit is not a defence, and a routing bug should fail in
-    forty supersteps, not a thousand."""
+    1000, and follows the batch cap (`recursion_limit` above)."""
     graph = build_graph(settings=settings, child=child, dry=dry)
     final = state
     async for mode, chunk in graph.astream(
         state,
-        config={"recursion_limit": RECURSION_LIMIT},
+        config={"recursion_limit": recursion_limit(settings.max_batches_per_run)},
         stream_mode=["updates", "values"],
     ):
         if mode == "values":
