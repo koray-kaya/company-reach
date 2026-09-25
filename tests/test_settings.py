@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from company_reach.settings import Settings
 
 
@@ -24,3 +26,23 @@ def test_drawing_defaults(monkeypatch, tmp_path: Path):
     s = Settings(_env_file=None, data_dir=tmp_path)
     assert s.batch_size == 10
     assert s.draw_min_score == 7
+
+
+@pytest.mark.parametrize(
+    "raw", ["", "   ", "# optional, used only when SearXNG errors"]
+)
+def test_an_empty_or_commented_key_is_no_key(monkeypatch, tmp_path: Path, raw):
+    """Audit H11: python-dotenv keeps a trailing comment as the value, and
+    a key that is not None arms the paid fallback."""
+    monkeypatch.setenv("LLM_API_KEY", "abc")
+    monkeypatch.setenv("LLM_MODEL", "m")
+    monkeypatch.setenv("SERPER_API_KEY", raw)
+    assert Settings(_env_file=None, data_dir=tmp_path).serper_api_key is None
+
+
+def test_the_example_env_arms_no_fallback(monkeypatch, tmp_path: Path):
+    monkeypatch.delenv("SERPER_API_KEY", raising=False)
+    monkeypatch.delenv("PLAYWRIGHT_URL", raising=False)
+    s = Settings(_env_file=".env.example", data_dir=tmp_path)
+    assert s.serper_api_key is None
+    assert s.playwright_url is None

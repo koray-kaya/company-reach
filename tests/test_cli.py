@@ -6,6 +6,7 @@ import respx
 from typer.testing import CliRunner
 
 from company_reach import cli
+from company_reach.errors import SearchError
 from company_reach.manifest import manifest_path
 from company_reach.models import CompanyRecord, RawPerson, Score
 from company_reach.nodes import find_site as find_site_node
@@ -354,3 +355,104 @@ def test_purge_says_what_it_removed(settings, monkeypatch):
     r = runner.invoke(cli.app, ["purge", "--older-than", "365"])
     assert r.exit_code == 0, r.output
     assert "0 companies older than 365 days purged" in r.output
+
+
+def test_a_failed_run_says_why(settings, monkeypatch):
+    """Audit K1: `raise typer.Exit(1) from error` printed nothing at all."""
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    _seed_scored_pool(settings, {"CHE000000001": 9})
+
+    async def boom(*args, **kwargs):
+        raise SearchError("SearXNG unreachable: connection refused")
+
+    monkeypatch.setattr(cli, "run_graph", boom)
+    r = runner.invoke(cli.app, ["run", "--goal", "make and sell", "--run-id", "r1"])
+
+    assert r.exit_code == 1
+    assert "SearXNG unreachable" in r.output
+    manifest = json.loads(manifest_path("r1", settings=settings).read_text())
+    assert "SearXNG unreachable" in manifest["reason"]
+
+
+def test_run_with_a_goal_keeps_about_me(settings, monkeypatch):
+    """Audit H9: --goal blanked about_me, and the drafts said nothing about
+    who writes."""
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    settings.profile_path.write_text(
+        'goal = "Firms that make things."\n'
+        'about_me = "Eine Studentin der Beispiel-Hochschule."\n'
+        'survey_url = "https://survey.example/form"\n'
+    )
+    _seed_scored_pool(settings, {"CHE000000001": 9})
+    captured: dict = {}
+
+    async def fake_run_graph(state, **kwargs):
+        captured.update(state)
+        return state | {"pool_exhausted": True}
+
+    monkeypatch.setattr(cli, "run_graph", fake_run_graph)
+    r = runner.invoke(
+        cli.app, ["run", "--dry", "--goal", "make and sell", "--run-id", "r2"]
+    )
+
+    assert r.exit_code == 0, r.output
+    assert captured["about_me"] == "Eine Studentin der Beispiel-Hochschule."
+
+
+def test_run_names_its_id_before_it_starts(settings, monkeypatch):
+    """A run that is stopped halfway can be resumed only with its id, so the
+    id is printed before anything else happens."""
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    _seed_scored_pool(settings, {"CHE000000001": 9})
+    r = runner.invoke(
+        cli.app, ["run", "--dry", "--goal", "make and sell", "--run-id", "r7"]
+    )
+    assert r.exit_code == 0, r.output
+    first = r.output.splitlines()[0]
+    assert "r7" in first and "--run-id r7" in first
+    assert "CHE000000001" in r.output  # the company line, as it finished
+
+
+def test_the_resume_hint_repeats_the_options_given(settings, monkeypatch):
+    """Final review of Phase A: following the hint after `run --dry --goal X`
+    would have started a real run with the profile's goal."""
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    _seed_scored_pool(settings, {"CHE000000001": 9})
+    r = runner.invoke(
+        cli.app, ["run", "--dry", "--goal", "make and sell", "--run-id", "r8"]
+    )
+    first = r.output.splitlines()[0]
+    assert "--dry" in first and '--goal "make and sell"' in first
+
+
+def test_a_leftover_unfinished_company_is_reported(settings, monkeypatch):
+    """Final review of Phase A: the summary counted errors from this call's
+    children only, so a company left unfinished by an earlier crash went
+    unmentioned."""
+    from company_reach.graph import draw_batch, initial_state
+
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    _seed_scored_pool(settings, {"CHE000000001": 9})
+    state = initial_state(
+        run_id="r9",
+        goal="make and sell",
+        about_me="",
+        municipality="",
+        settings=settings,
+    )
+    draw_batch(state, settings=settings)  # drawn, then the process died
+
+    async def finish_nothing(state, **kwargs):
+        return state | {"pool_exhausted": True}
+
+    monkeypatch.setattr(cli, "run_graph", finish_nothing)
+    r = runner.invoke(cli.app, ["run", "--goal", "make and sell", "--run-id", "r9"])
+    assert "1 errors" in r.output
+    assert "retry r9" in r.output
+
+    # after --dry the hint must not be `retry`, which runs the real child
+    dry = runner.invoke(
+        cli.app, ["run", "--dry", "--goal", "make and sell", "--run-id", "r9"]
+    )
+    assert "company-reach retry" not in dry.output
+    assert "finish them with: company-reach run --run-id r9 --dry" in dry.output

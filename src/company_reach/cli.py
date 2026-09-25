@@ -19,13 +19,14 @@ from company_reach.graph import (
 )
 from company_reach.import_v0 import import_v0
 from company_reach.manifest import finish_manifest, manifest_path, start_manifest
+from company_reach.models import CompanyResult
 from company_reach.nodes.load_pool import load_pool
 from company_reach.nodes.score_pool import score_pool
 from company_reach.nodes.screen_pool import screen_pool
 from company_reach.nodes.write_criteria import format_criteria, write_criteria
 from company_reach.profile import goal_hash, load_profile
 from company_reach.settings import get_settings
-from company_reach.tools.db import connect, init_db, record_run
+from company_reach.tools.db import connect, errored_uids, init_db, record_run
 from company_reach.tools.doctor import run_checks
 
 V0_DIR = Path("data/v0")
@@ -170,24 +171,36 @@ def run(
     state = initial_state(
         run_id=rid,
         goal=text,
-        about_me=load_profile(s.profile_path).about_me if goal is None else "",
+        # --goal overrides the goal only; the drafts still say who writes
+        about_me=load_profile(s.profile_path).about_me,
         municipality="",
         settings=s,
         seed=seed,
     )
 
+    typer.echo(
+        f"run {rid} — if it stops, run it again with: {_resume(rid, dry, goal, seed)}"
+    )
     try:
         child = build_stub_child() if dry else build_child(settings=s)
-        out = asyncio.run(run_graph(state, settings=s, child=child, dry=dry))
+        out = asyncio.run(
+            run_graph(state, settings=s, child=child, dry=dry, on_result=_echo_result)
+        )
     except Exception as error:
-        finish_manifest(rid, settings=s, status="failed", counts={})
+        reason = f"{type(error).__name__}: {error}"
+        finish_manifest(rid, settings=s, status="failed", counts={}, reason=reason)
+        typer.echo(f"run {rid} failed — {reason}", err=True)
         raise typer.Exit(1) from error
 
+    with connect(s.db_path) as conn:
+        # From the table, not this call's children: a company an earlier,
+        # crashed attempt left unfinished belongs in the count too.
+        errors = len(errored_uids(conn, rid))
     counts = {
         "batches_drawn": out["batches_drawn"],
         "results": len(out["results"]),
         "sendable": out["sendable_count"],
-        "errors": sum(1 for r in out["results"] if r.error_kind),
+        "errors": errors,
     }
     finish_manifest(rid, settings=s, status="done", counts=counts)
 
@@ -197,7 +210,10 @@ def run(
         + ("  · pool exhausted" if out["pool_exhausted"] else "")
     )
     typer.echo(f"manifest: {manifest_path(rid, settings=s)}")
-    if counts["errors"] and not dry:
+    if counts["errors"] and dry:
+        # `retry` runs the real child; a dry run is finished by itself
+        typer.echo(f"finish them with: {_resume(rid, dry, goal, seed)}")
+    elif counts["errors"]:
         typer.echo(f"retry the errors with: company-reach retry {rid}")
     if dry:
         typer.echo("--dry: every company was skipped by the M3 stub child.")
@@ -409,6 +425,29 @@ def enrich(
             f"\nSubject: {finished.subject}   ({len(finished.body)} chars, {fits})"
         )
         typer.echo(finished.body)
+
+
+def _resume(rid: str, dry: bool, goal: str | None, seed: int) -> str:
+    """The command that continues this run: the same options, or following
+    the hint after a --dry run would start a real one."""
+    parts = ["company-reach run", f"--run-id {rid}"]
+    if dry:
+        parts.append("--dry")
+    if goal:
+        parts.append(f'--goal "{goal}"')
+    if seed:
+        parts.append(f"--seed {seed}")
+    return " ".join(parts)
+
+
+def _echo_result(result: CompanyResult) -> None:
+    """One line per company, the moment its child returns."""
+    outcome = (
+        f"{result.error_kind} error: {result.error_text}"
+        if result.error_kind
+        else f"{result.recommendation}: {result.reason}"
+    )
+    typer.echo(f"  {result.uid}  {outcome}")
 
 
 def _echo_contact(contact) -> None:

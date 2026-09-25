@@ -20,7 +20,13 @@ from company_reach.graph import (
 from company_reach.models import CompanyRecord, CompanyResult, Score
 from company_reach.profile import goal_hash
 from company_reach.tools import llm
-from company_reach.tools.db import connect, init_db, upsert_companies, upsert_scores
+from company_reach.tools.db import (
+    connect,
+    errored_uids,
+    init_db,
+    upsert_companies,
+    upsert_scores,
+)
 
 
 def test_results_carries_an_add_reducer():
@@ -254,9 +260,9 @@ async def test_run_graph_passes_the_recursion_limit(settings, monkeypatch):
     captured: dict = {}
 
     class Spy:
-        async def ainvoke(self, state, config=None):
+        async def astream(self, state, config=None, stream_mode=None):
             captured.update(config or {})
-            return state
+            yield ("values", state)
 
     monkeypatch.setattr("company_reach.graph.build_graph", lambda **kw: Spy())
     await run_graph(_start(settings), settings=settings, dry=True, child=ChildByUid({}))
@@ -363,3 +369,74 @@ async def test_retry_probes_search_before_touching_a_company(settings, monkeypat
     with pytest.raises(SearchError):
         await retry_errors("r1", settings=settings, child=child)
     assert child.seen == []
+
+
+def test_a_drawn_batch_is_retryable_before_any_child_finishes(settings):
+    """Audit H8: seen was written before any result row, so a crash in
+    between stranded the batch for good."""
+    _seed(settings, {"CHE000000001": 9, "CHE000000002": 8})
+    out = graph_module.draw_batch(_start(settings), settings=settings)
+    with connect(settings.db_path) as conn:
+        assert errored_uids(conn, "r1") == sorted(out["batch_uids"])
+
+
+async def test_a_finished_run_leaves_nothing_interrupted(settings):
+    _seed(settings, {"CHE000000001": 9, "CHE000000002": 7})
+    child = ChildByUid({"CHE000000001": "skip", "CHE000000002": "send"})
+    await run_graph(_start(settings), settings=settings, dry=True, child=child)
+    with connect(settings.db_path) as conn:
+        n = conn.execute(
+            "select count(*) from results where error_kind = 'interrupted'"
+        ).fetchone()[0]
+    assert n == 0
+
+
+async def test_each_company_is_reported_as_it_finishes(settings):
+    """The run was silent for minutes; each company now reaches the caller
+    the moment its child returns."""
+    _seed(settings, {"CHE000000001": 9, "CHE000000002": 7})
+    child = ChildByUid({"CHE000000001": "skip", "CHE000000002": "send"})
+    reported: list = []
+    out = await run_graph(
+        _start(settings),
+        settings=settings,
+        dry=True,
+        child=child,
+        on_result=reported.append,
+    )
+    assert sorted(r.uid for r in reported) == ["CHE000000001", "CHE000000002"]
+    assert len(out["results"]) == 2
+
+
+def test_another_run_does_not_draw_a_company_still_in_flight(settings):
+    """Final review of Phase A: an interrupted row exists from the moment a
+    company is drawn, and the cross-run clause read it as a failure a second
+    run could take over while the first was still working on it."""
+    _seed(settings, {"CHE000000001": 9, "CHE000000002": 8, "CHE000000003": 7})
+    first = graph_module.draw_batch(_start(settings, batch_size=2), settings=settings)
+    second = graph_module.draw_batch(
+        _start(settings, run_id="r2", batch_size=3), settings=settings
+    )
+    assert not set(first["batch_uids"]) & set(second["batch_uids"])
+
+
+async def test_a_crashed_batch_finishes_on_the_same_run_id(settings):
+    """Review focus 1: the process dies right after the draw; running the
+    same id again finishes every company."""
+    _seed(settings, {"CHE000000001": 9, "CHE000000002": 8})
+    graph_module.draw_batch(_start(settings), settings=settings)  # then "crash"
+    child = ChildByUid({"CHE000000001": "skip", "CHE000000002": "send"})
+    await run_graph(_start(settings), settings=settings, dry=True, child=child)
+    with connect(settings.db_path) as conn:
+        assert errored_uids(conn, "r1") == []
+    assert sorted(child.seen) == ["CHE000000001", "CHE000000002"]
+
+
+def test_the_pending_text_is_true_while_running_and_after_a_crash(settings):
+    """The review page shows this text while the run is still going; it must
+    not claim the run stopped."""
+    _seed(settings, {"CHE000000001": 9})
+    graph_module.draw_batch(_start(settings), settings=settings)
+    with connect(settings.db_path) as conn:
+        text = conn.execute("select error_text from results").fetchone()[0]
+    assert "not finished" in text and "retry" in text

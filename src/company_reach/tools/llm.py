@@ -18,7 +18,7 @@ from typing import Literal
 
 import httpx
 from langchain_openai import ChatOpenAI
-from openai import LengthFinishReasonError
+from openai import APIStatusError, LengthFinishReasonError
 from pydantic import BaseModel
 
 from company_reach.errors import LlmError, PromptError
@@ -101,6 +101,12 @@ def _get_semaphore(concurrency: int) -> asyncio.Semaphore:
     return gate("llm", concurrency)
 
 
+def _timeout(settings: Settings) -> httpx.Timeout:
+    """Long reads, short connects: a call measured 41-130 s, but a host that
+    does not answer the handshake within ten seconds will not answer at all."""
+    return httpx.Timeout(settings.llm_timeout_seconds, connect=10.0)
+
+
 def _client(
     settings: Settings, max_tokens: int, effort: Effort, http_client: httpx.AsyncClient
 ) -> ChatOpenAI:
@@ -117,6 +123,11 @@ def _client(
         max_tokens=max_tokens,
         reasoning_effort=effort,
         http_async_client=http_client,
+        # The SDK sends its own per-request timeout, and it overrides the
+        # injected client's: None hung a silent endpoint for good (audit H5),
+        # a plain float stretched connect to the read timeout. So the same
+        # Timeout object goes to both.
+        timeout=_timeout(settings),
         max_retries=0,  # retrying is this module's job, and it counts attempts
     )
 
@@ -144,21 +155,30 @@ async def ask[ModelT: BaseModel](
 
     last: Exception | str | None = None
     async with _get_semaphore(settings.llm_concurrency):
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(settings.llm_timeout_seconds, connect=10.0)
-        ) as http_client:
+        async with httpx.AsyncClient(timeout=_timeout(settings)) as http_client:
             chain = _client(
                 settings, budget, effort, http_client
             ).with_structured_output(
                 output_model, method=settings.llm_structured_method, include_raw=True
             )
-            for _ in range(2):
+            for attempt in range(2):
+                if attempt:
+                    await asyncio.sleep(settings.llm_retry_pause_s)
                 started = time.monotonic()
                 try:
                     answer = await chain.ainvoke(text)
                 except LengthFinishReasonError as e:
                     raise _truncated(prompt_name, budget, effort) from e
-                except Exception as e:  # transport, rate limit, endpoint error
+                except APIStatusError as e:
+                    # A 4xx other than a timeout or a rate limit says the
+                    # request itself is wrong; the same request fails again.
+                    if 400 <= e.status_code < 500 and e.status_code not in (408, 429):
+                        raise LlmError(
+                            f"{prompt_name}: the endpoint rejected the request: {e}"
+                        ) from e
+                    last = e
+                    continue
+                except Exception as e:  # transport, timeout, endpoint error
                     last = e
                     continue
                 seconds = time.monotonic() - started

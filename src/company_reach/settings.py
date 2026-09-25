@@ -9,7 +9,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import SecretStr
+from pydantic import SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -40,6 +40,9 @@ class Settings(BaseSettings):
     llm_max_tokens: int = 50000
     # A scoring call measured 41-130 s; httpx defaults to 5 s.
     llm_timeout_seconds: float = 600.0
+    # Between the two attempts of one model call. A transient overload
+    # rarely clears in the same second; tests set it to 0.
+    llm_retry_pause_s: float = 2.0
     # Ten concurrent requests timed out four of ten on the shared endpoint
     # without raising throughput.
     llm_concurrency: int = 3
@@ -86,6 +89,18 @@ class Settings(BaseSettings):
     draw_min_score: int = 7
     max_batches_per_run: int = 3
     langsmith_tracing: bool = False
+
+    @field_validator("serper_api_key", "playwright_url", mode="before")
+    @classmethod
+    def _blank_is_none(cls, value):
+        """An unset optional key is None, however the .env line was written.
+        `KEY=   # comment` reaches us as the comment, and an empty string is
+        still a string: either one would arm what the key switches on."""
+        if isinstance(value, str) and (
+            not value.strip() or value.strip().startswith("#")
+        ):
+            return None
+        return value
 
     @property
     def db_path(self) -> Path:

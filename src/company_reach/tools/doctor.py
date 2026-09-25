@@ -6,17 +6,31 @@ rather than one per attempt."""
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
+import httpx
 from pydantic import BaseModel
 
 from company_reach.errors import LlmError, ProfileError
+from company_reach.nodes.probe_search import PROBE_QUERY
 from company_reach.profile import load_profile
 from company_reach.settings import Settings
 from company_reach.tools import llm
 from company_reach.tools.db import connect, init_db
+from company_reach.tools.search import search
 
 MARKER = "COMPANY-REACH-OK"
-_PROMPTS = ("criteria", "score", "doctor")
+# Every prompt a run loads, so a broken header fails here rather than at the
+# first company that reaches that node.
+_PROMPTS = (
+    "criteria",
+    "score",
+    "doctor",
+    "pick_site",
+    "pick_pages",
+    "extract",
+    "draft",
+)
 
 
 class _Probe(BaseModel):
@@ -35,7 +49,9 @@ def _settings_check(settings: Settings) -> Check:
         "settings",
         True,
         f"model={settings.llm_model} effort={settings.llm_reasoning_effort} "
-        f"max_tokens={settings.llm_max_tokens} concurrency={settings.llm_concurrency}",
+        f"max_tokens={settings.llm_max_tokens} concurrency={settings.llm_concurrency} "
+        f"sending_approved={settings.sending_approved} "
+        f"paid_fallback={'serper' if settings.serper_api_key else 'none'}",
     )
 
 
@@ -120,7 +136,51 @@ def _profile_check(settings: Settings) -> Check:
             False,
             f"{settings.profile_path} has no survey_url; every draft links to it",
         )
+    host = urlsplit(profile.survey_url).hostname or ""
+    if host == "example" or host.endswith(".example"):
+        return Check(
+            "profile",
+            False,
+            f"survey_url is a placeholder ({host}); drafts would be unsendable",
+        )
     return Check("profile", True, f"goal set, survey_url={profile.survey_url}")
+
+
+async def _search_check(settings: Settings) -> Check:
+    """The query probe_search asks before every run. Nothing back means the
+    run would stop there, after scoring was already paid for."""
+    try:
+        results = await search(PROBE_QUERY, settings=settings, limit=3)
+    except Exception as e:  # a check reports; it never stops the others
+        return Check("search", False, f"{type(e).__name__}: {str(e)[:200]}")
+    if not results:
+        return Check(
+            "search",
+            False,
+            "the probe query returned nothing; engines may be suspended",
+        )
+    engines = sorted({r.engine for r in results if r.engine}) or ["unknown"]
+    return Check("search", True, f"{len(results)} results from {', '.join(engines)}")
+
+
+async def _engines_check(settings: Settings) -> Check:
+    """The engines the no-website guard relies on must exist and be enabled.
+    Round 1 found two of the three inactive in the pinned SearXNG image, so
+    the guard could never fire."""
+    url = f"{settings.searxng_url.rstrip('/')}/config"
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            config = (await client.get(url)).json()
+    except Exception as e:
+        return Check("engines", False, f"cannot read {url}: {type(e).__name__}")
+    enabled = {e["name"] for e in config.get("engines", []) if e.get("enabled")}
+    wanted = [n.strip() for n in settings.baseline_engines.split(",") if n.strip()]
+    missing = [n for n in wanted if n not in enabled]
+    if missing:
+        return Check(
+            "engines", False, f"baseline engines not enabled: {', '.join(missing)}"
+        )
+    return Check("engines", True, ", ".join(wanted))
 
 
 RETENTION_DAYS = 365
@@ -153,6 +213,8 @@ async def run_checks(settings: Settings) -> list[Check]:
         _database_check(settings),
         _profile_check(settings),
         _retention_check(settings),
+        await _search_check(settings),
+        await _engines_check(settings),
         await _endpoint_check(settings),
         await _budget_check(settings),
     ]

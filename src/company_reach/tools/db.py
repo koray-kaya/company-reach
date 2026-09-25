@@ -284,7 +284,11 @@ def draw_batch(
               and c.uid not in (select key from suppression)
               and (c.uid not in (select uid from seen)
                    or (c.uid in (select uid from results
-                                  where error_kind is not null and run_id <> ?)
+                                  where error_kind is not null
+                                    -- still in flight elsewhere, or crashed:
+                                    -- its own run id finishes it, not ours
+                                    and error_kind <> 'interrupted'
+                                    and run_id <> ?)
                        and c.uid not in (select uid from results
                                           where error_kind is null)))
             order by s.score desc
@@ -309,6 +313,31 @@ def record_seen(
         [(u, run_id, batch_no, now()) for u in uids],
     )
     return len(uids)
+
+
+def record_pending(conn: sqlite3.Connection, uids: list[str], *, run_id: str) -> None:
+    """A result row for every company of a batch, written with `seen` in one
+    transaction. It reads as an error until the child replaces it, so a crash
+    leaves the company retryable instead of drawn and forgotten (audit H8).
+    INSERT OR IGNORE: on a rerun, a company that already finished keeps its
+    row."""
+    conn.executemany(
+        """INSERT OR IGNORE INTO results (run_id, uid, recommendation, reason,
+             error_kind, error_text, finished_at) VALUES (?,?,?,?,?,?,?)""",
+        [
+            (
+                run_id,
+                uid,
+                None,
+                None,
+                "interrupted",
+                "not finished: still running, or the run stopped. "
+                f"`company-reach retry {run_id}` redoes it",
+                now(),
+            )
+            for uid in uids
+        ],
+    )
 
 
 def record_result(

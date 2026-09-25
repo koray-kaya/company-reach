@@ -240,7 +240,8 @@ class Draft(BaseModel):
 
 
 Recommendation = Literal["send", "hold", "skip"]
-ErrorKind = Literal["search", "fetch", "llm", "shab", "other"]
+# "interrupted": drawn, and the run stopped before the company finished.
+ErrorKind = Literal["search", "fetch", "llm", "shab", "interrupted", "other"]
 
 
 class CompanyResult(BaseModel):
