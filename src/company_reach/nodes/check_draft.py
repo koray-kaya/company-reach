@@ -247,8 +247,16 @@ def frame_problems(draft: Draft, contact: Contact, profile: Profile) -> list[str
     if _EMAIL.search(draft.subject) or _links(draft.subject):
         found.append(f"the subject contains a link or address ({draft.subject})")
 
-    # What the profile supplied: everything but the sentence and the link.
+    # What code wrote from the profile and the contact: everything but the
+    # sentence and the survey link. A name is read off a page, and reaches
+    # the greeting even where no subject or routing line carries it.
     frame = body.replace(draft.model_text, "").replace(draft.link, "")
+    if address := _EMAIL.search(frame):
+        found.append(
+            f"the mail carries an address outside the survey link ({address.group()})"
+        )
+    elif link := _links(frame):
+        found.append(f"the mail carries a link outside the survey link ({link})")
     if placeholder := _PLACEHOLDER.search(f"{draft.subject}\n{frame}"):
         found.append(
             f"the mail contains a placeholder ({placeholder.group()}); fill in "

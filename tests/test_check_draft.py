@@ -346,6 +346,17 @@ def test_an_eszett_in_the_topic_is_a_profile_problem():
     assert any("invitation.topic" in p and "ß" in p for p in found_)
 
 
+@pytest.mark.parametrize(
+    "name",
+    ["Anna Muster www.muster-angebot.example", "Anna Muster info@evil.example"],
+)
+def test_a_link_or_address_in_a_name_from_the_page_fails(name):
+    """Review: the name is read off the page and written into the greeting
+    of a `seen` mail, where no subject or routing check sees it."""
+    c = Contact(name=name, email="anna@muster.ch", email_kind="seen", source="site")
+    assert any("outside the survey link" in p for p in found(make(GOOD, c), c))
+
+
 def test_a_tampered_frame_fails():
     d = make(GOOD)
     no_routing = d.model_copy(update={"body": d.body.split("\n\n", 1)[1]})
