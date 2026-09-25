@@ -118,6 +118,5 @@ form.app{margin:0}
 .kind.warn{background:var(--warn);color:var(--warn-ink)}
 .btn.small{font-size:13px;padding:4px 10px}
 .btn.on{border-color:var(--blue);color:var(--blue);font-weight:700}
-.addr .rowhint{display:none;grid-column:2 / -1;font-size:13px;color:var(--muted);white-space:normal}
-.addr:has(input:checked) .rowhint{display:block}
+.addr .rowhint{display:block;grid-column:2 / -1;font-size:13px;color:var(--muted);white-space:normal}
 .addr:has(input:disabled){cursor:not-allowed}

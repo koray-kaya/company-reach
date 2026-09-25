@@ -396,3 +396,99 @@ def test_the_kind_hint_follows_each_row(client):
 def test_the_card_shows_frame_and_arm(client):
     html = client.get(f"/review/{RUN}/0").text
     assert "frame@1 · voll" in html
+
+
+# --- the address row the mail is written for --------------------------------
+
+ANNA, BEAT = "anna@muster-metallbau.ch", "beat@muster-metallbau.ch"
+INBOX = "info@muster-metallbau.ch"
+
+
+@pytest.fixture
+def two_seen(settings: Settings, monkeypatch) -> Settings:
+    """Two people's own addresses on the site, and the general inbox. The
+    mail is written for the first: Anna, at her own address."""
+    from company_reach.models import Contact, ContactAddress
+
+    async def no_model(*args, **kwargs):
+        raise AssertionError("choosing an address asked the model")
+
+    monkeypatch.setattr("company_reach.tools.llm.ask", no_model)
+    seed(
+        settings.db_path,
+        contact=Contact(
+            name="Anna Muster",
+            role="Inhaberin",
+            email=ANNA,
+            email_kind="seen",
+            source="site",
+            alternatives=[f"Beat Beispiel, Leiter Verkauf, {BEAT}"],
+            addresses=[
+                ContactAddress(email=ANNA, kind="seen"),
+                ContactAddress(email=BEAT, kind="seen"),
+                ContactAddress(email=INBOX, kind="generic"),
+            ],
+        ),
+    )
+    settings.profile_path.write_text(profile_text(SURVEY))
+    return settings.model_copy(update={"sending_approved": True})
+
+
+def choose(client, email):
+    return client.post(
+        f"/decide/{RUN}/{SEND}?n=0", data={"action": f"address:{email}"}, headers=SAME
+    )
+
+
+def test_another_seen_row_rebuilds_the_mail_for_its_owner(two_seen):
+    """Review: picking another row sent Anna's mail — her greeting, "Ihre
+    Adresse" — to Beat's address. The mail is rebuilt for the row chosen,
+    and when the row is another named person's own address, for them."""
+    client = TestClient(create_app(two_seen), follow_redirects=False)
+    assert f'value="address:{BEAT}"' in client.get(f"/review/{RUN}/0").text
+
+    assert choose(client, BEAT).status_code == 303
+    html = client.get(f"/review/{RUN}/0").text
+    assert f"&lt;{BEAT}&gt;" in html  # the letter's header
+    assert f'name="to" value="{BEAT}" checked' in html
+    with connect(two_seen.db_path) as conn:
+        body = conn.execute("select body from drafts").fetchone()[0]
+    assert body.startswith("Guten Tag Beat Beispiel\n\n")  # his own address
+    assert "Anna" not in body
+
+    r = client.post(
+        f"/decide/{RUN}/{SEND}?n=0", data={"action": "send", "to": BEAT}, headers=SAME
+    )
+    assert r.status_code == 200
+    with connect(two_seen.db_path) as conn:
+        row = conn.execute("select address, contact_kind from ledger").fetchone()
+    assert tuple(row) == (BEAT, "seen/site/named")
+
+
+def test_the_inbox_row_gets_the_inbox_frame(two_seen):
+    client = TestClient(create_app(two_seen), follow_redirects=False)
+    choose(client, INBOX)
+    with connect(two_seen.db_path) as conn:
+        body, subject = conn.execute("select body, subject from drafts").fetchone()
+    assert body.startswith("Zuhanden Frau Muster – besten Dank fürs Weiterleiten")
+    assert "Ihren Namen und diese Adresse habe ich von Ihrer Website" in body
+    assert subject == "Für Frau Muster: Masterarbeit an der OST"
+    client.post(
+        f"/decide/{RUN}/{SEND}?n=0", data={"action": "send", "to": INBOX}, headers=SAME
+    )
+    with connect(two_seen.db_path) as conn:
+        kind = conn.execute("select contact_kind from ledger").fetchone()[0]
+    assert kind == "generic/site/named"
+
+
+def test_send_to_a_row_the_mail_was_not_written_for_is_refused(two_seen):
+    client = TestClient(create_app(two_seen), follow_redirects=False)
+    r = client.post(
+        f"/decide/{RUN}/{SEND}?n=0", data={"action": "send", "to": BEAT}, headers=SAME
+    )
+    assert r.status_code == 409
+    assert ledger_rows(two_seen) == 0
+
+
+def test_a_third_party_row_cannot_be_chosen(client, review):
+    assert choose(client, "studio@agentur.example").status_code == 409

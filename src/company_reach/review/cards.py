@@ -124,6 +124,8 @@ class Card:
     check_salutation: bool = False
     # a named person with a surname, and a current draft to rebuild
     can_choose_salutation: bool = False
+    # an undecided current draft: another address rebuilds it for that row
+    can_readdress: bool = False
 
 
 def safe_url(url: str | None) -> str | None:
@@ -331,6 +333,7 @@ def load_cards(
                 salutation_origin=_ORIGINS[salutation(contact)[1]] if contact else None,
                 check_salutation=bool(contact and draft and needs_check(contact)),
                 can_choose_salutation=rebuildable and surname and decision is None,
+                can_readdress=rebuildable and decision is None,
             )
         )
     return cards

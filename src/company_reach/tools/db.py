@@ -526,6 +526,32 @@ def contact_for(
     )
 
 
+def readdress_contact(
+    conn: sqlite3.Connection, run_id: str, uid: str, contact: Contact
+) -> None:
+    """The reviewer chose another of the card's addresses: the company's
+    latest contact row now says who the mail is for and where it goes. The
+    row keeps its id, so the draft still points at it."""
+    conn.execute(
+        """update contacts set name = ?, role = ?, email = ?, email_kind = ?,
+             salutation = ?, salutation_origin = ?, alternatives = ?,
+             addresses = ?
+            where id = (select max(id) from contacts where run_id = ? and uid = ?)""",
+        (
+            contact.name,
+            contact.role,
+            contact.email,
+            contact.email_kind,
+            contact.salutation,
+            contact.salutation_origin,
+            json.dumps(contact.alternatives, ensure_ascii=False),
+            json.dumps([a.model_dump(exclude_none=True) for a in contact.addresses]),
+            run_id,
+            uid,
+        ),
+    )
+
+
 def set_salutation(
     conn: sqlite3.Connection, run_id: str, uid: str, salutation: str
 ) -> None:
