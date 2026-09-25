@@ -216,7 +216,9 @@ def stale_uids(conn: sqlite3.Connection, *, cutoff: str) -> list[str]:
                                where l.uid = s.uid and l.decided_at >= ?)
               and (exists (select 1 from contacts c where c.uid = s.uid)
                    or exists (select 1 from profiles p where p.uid = s.uid)
-                   or exists (select 1 from sites t where t.uid = s.uid))
+                   or exists (select 1 from sites t where t.uid = s.uid)
+                   -- a company whose search or site failed has only this
+                   or exists (select 1 from searches x where x.uid = s.uid))
             order by s.uid""",
         (cutoff, cutoff),
     )

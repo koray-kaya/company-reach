@@ -81,3 +81,37 @@ def test_a_recent_decision_keeps_an_old_company(settings, data):
         record_decision(conn, HOLD, "skipped", decided_at="2027-09-20T08:00:00+00:00")
     report = purge(settings, older_than_days=365, today=A_YEAR_LATER)
     assert HOLD not in report.companies
+
+
+def test_a_company_that_only_has_a_search_log_is_purged(settings, data):
+    """A company whose search or site failed has no contact, profile or site
+    record — only its search log, which can name people (a directory entry,
+    a profile URL). It goes after a year like the rest."""
+    from company_reach.tools.db import record_searches
+    from company_reach.tools.search import Asked, Result
+
+    old = "CHE222222228"
+    with connect(settings.db_path) as conn:
+        conn.execute(
+            "insert into seen values (?, 'r0', 1, '2020-03-01T09:00:00+00:00')",
+            (old,),
+        )
+        record_searches(
+            conn,
+            "r0",
+            old,
+            [
+                Asked(
+                    '"Alt Beispiel" Musterstadt',
+                    "searxng",
+                    [Result("https://ch.linkedin.com/in/anna-muster", "", "", "ddg")],
+                )
+            ],
+        )
+    report = purge(settings, older_than_days=365, today="2021-06-01")
+    assert report.companies == [old]
+    with connect(settings.db_path) as conn:
+        left = conn.execute(
+            "select count(*) from searches where uid = ?", (old,)
+        ).fetchone()[0]
+    assert left == 0
