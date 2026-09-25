@@ -118,15 +118,17 @@ def _uids_for(conn: sqlite3.Connection, key: str) -> list[str]:
     return sorted(r["uid"] for r in rows)
 
 
-def _sent_addresses(conn: sqlite3.Connection, uids: list[str]) -> list[str]:
-    """The addresses these companies were written to. `forget` clears them
-    from the ledger and keeps them on the never-again list instead, so an
-    inbox that asked to be forgotten is not written to again for a sister
-    company."""
+def _mailed_addresses(conn: sqlite3.Connection, uids: list[str]) -> list[str]:
+    """The addresses these companies were written to, bounced ones too.
+    `forget` clears them from the ledger and keeps them on the never-again
+    list instead, so an inbox that asked to be forgotten is not written to
+    again for a sister company. They are searched for under `data/` as
+    well: after a purge they are all that is left to look for."""
     marks = ",".join("?" * len(uids))
     rows = conn.execute(
         f"""select distinct address_key(address) as address from ledger
-             where uid in ({marks}) and status = 'sent' and address is not null
+             where uid in ({marks}) and status in ('sent', 'bounced')
+               and address is not null
              order by 1""",
         uids,
     )
@@ -316,7 +318,9 @@ def forget(settings: Settings, key: str) -> Report:
             names.update({key.strip().lower(), address_key(key)})
         domains = _domains(conn, uids) if uids else set()
         if uids:
-            addresses += _sent_addresses(conn, uids)
+            mailed = _mailed_addresses(conn, uids)
+            addresses += mailed
+            names.update(mailed)
             report.rows_deleted = _delete_rows(
                 conn, uids, domains, reason="forgotten", clear_ledger_addresses=True
             )

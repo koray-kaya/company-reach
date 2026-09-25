@@ -223,6 +223,27 @@ def test_a_backup_database_is_reported(settings, data):
     assert settings.db_path not in report.still_named
 
 
+def test_after_a_purge_forget_still_finds_the_backups(settings, data):
+    """Review: a purge deletes the contact, so `forget <UID>` a year later
+    had no name to look for and listed nothing. The address the mail went
+    to is still in the ledger, and a backup made before the purge holds it."""
+    import sqlite3
+
+    from company_reach.forget import purge
+
+    backups = data / "backups"
+    backups.mkdir()
+    source = sqlite3.connect(settings.db_path)
+    copy = sqlite3.connect(backups / "company_reach-before.db")
+    source.backup(copy)
+    copy.close()
+    source.close()
+    purge(settings, older_than_days=365, today="2028-01-01")
+
+    report = forget(settings, SEND)
+    assert backups / "company_reach-before.db" in report.still_named
+
+
 def test_a_name_across_a_read_boundary_is_found(settings, data, monkeypatch):
     """Files are read in blocks, never whole — a backup can be gigabytes.
     A name split between two blocks is still found."""
