@@ -49,6 +49,27 @@ def test_an_empty_brave_key_is_no_key(monkeypatch, tmp_path: Path, raw):
     assert Settings(_env_file=None, data_dir=tmp_path).brave_search_api_key is None
 
 
+def test_only_the_projects_own_variable_turns_tracing_on(monkeypatch, tmp_path: Path):
+    """LANGSMITH_TRACING is LangChain's own switch too, so exported in the
+    shell for any other project it set this setting as well (audit). The
+    setting reads a name no other project exports."""
+    monkeypatch.setenv("LLM_API_KEY", "abc")
+    monkeypatch.setenv("LLM_MODEL", "m")
+    monkeypatch.setenv("LANGSMITH_TRACING", "true")
+    monkeypatch.setenv("LANGCHAIN_TRACING_V2", "true")
+    monkeypatch.delenv("COMPANY_REACH_TRACING", raising=False)
+    assert Settings(_env_file=None, data_dir=tmp_path).langsmith_tracing is False
+
+    monkeypatch.setenv("COMPANY_REACH_TRACING", "true")
+    assert Settings(_env_file=None, data_dir=tmp_path).langsmith_tracing is True
+
+    # and .env.example names the variable that is read
+    monkeypatch.delenv("COMPANY_REACH_TRACING")
+    example = Settings(_env_file=".env.example", data_dir=tmp_path)
+    assert example.langsmith_tracing is False
+    assert "\nCOMPANY_REACH_TRACING=false\n" in Path(".env.example").read_text()
+
+
 def test_the_example_env_arms_no_fallback(monkeypatch, tmp_path: Path):
     monkeypatch.delenv("BRAVE_SEARCH_API_KEY", raising=False)
     monkeypatch.delenv("PLAYWRIGHT_URL", raising=False)

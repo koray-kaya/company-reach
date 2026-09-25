@@ -284,6 +284,8 @@ async def test_the_settings_line_shows_the_gates(settings):
     checks = {c.name: c for c in await run_checks(settings)}
     assert "sending_approved=False" in checks["settings"].detail
     assert "paid_fallback=none" in checks["settings"].detail
+    # the one switch for tracing, whatever the shell exports (audit)
+    assert "tracing=False" in checks["settings"].detail
 
 
 def test_the_settings_line_names_brave_when_a_key_is_set(settings):

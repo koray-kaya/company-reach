@@ -9,7 +9,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -94,7 +94,14 @@ class Settings(BaseSettings):
     # a single score carries; nine would sit exactly on the good ones.
     draw_min_score: int = 7
     max_batches_per_run: int = 3
-    langsmith_tracing: bool = False
+    # Read from COMPANY_REACH_TRACING, not LANGSMITH_TRACING: that one is
+    # LangChain's own switch, so an export made for any other project set
+    # this setting too and traced page text and names (audit). Every model
+    # call and graph run enters `llm.tracing`, so this value, and not the
+    # shell's, decides.
+    langsmith_tracing: bool = Field(
+        default=False, validation_alias="COMPANY_REACH_TRACING"
+    )
 
     @field_validator("brave_search_api_key", "playwright_url", mode="before")
     @classmethod

@@ -8,6 +8,7 @@ import respx
 
 from company_reach.errors import LlmError
 from company_reach.models import SelectionCriteria
+from company_reach.settings import Settings
 from company_reach.tools import llm
 
 URL = "https://api.openai.com/v1/chat/completions"  # the fixture default
@@ -201,3 +202,33 @@ async def test_a_busy_endpoint_is_asked_twice_at_most(settings, status):
     with pytest.raises(LlmError, match="after 2 attempts"):
         await llm.ask("criteria", SelectionCriteria, settings=settings, goal="g")
     assert route.call_count == 2
+
+
+@respx.mock
+async def test_tracing_stays_off_when_the_env_says_on(settings, traces_sent):
+    """Audit: settings.langsmith_tracing had no reader, and LangChain took
+    the shell's word. LANGSMITH_TRACING=true exported for another project
+    sent every prompt — page text, names, about_me — to LangSmith while
+    .env said false. The setting now decides, in code, for every call."""
+    # read after the export, as a run started from that shell reads them
+    shell = Settings(
+        _env_file=None, data_dir=settings.data_dir, profile_path=settings.profile_path
+    )
+    assert shell.langsmith_tracing is False
+    respx.post(URL).mock(return_value=answer(json.dumps(CRITERIA)))
+
+    await llm.ask("criteria", SelectionCriteria, settings=shell, goal="Anna Muster")
+
+    assert traces_sent() == []
+
+
+@respx.mock
+async def test_the_setting_is_what_turns_tracing_on(settings, traces_sent):
+    """The other half: with COMPANY_REACH_TRACING=true in .env, calls are
+    traced — the stand-in receives the run."""
+    on = settings.model_copy(update={"langsmith_tracing": True})
+    respx.post(URL).mock(return_value=answer(json.dumps(CRITERIA)))
+
+    await llm.ask("criteria", SelectionCriteria, settings=on, goal="g")
+
+    assert any(request.startswith("POST /runs") for request in traces_sent())

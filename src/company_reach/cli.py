@@ -850,16 +850,18 @@ def enrich(
     child = build_child(settings=s, until=until)
 
     try:
-        out = asyncio.run(
-            child.ainvoke(
-                {
-                    "run_id": rid,
-                    "uid": uid,
-                    "goal": "",
-                    "about_me": load_profile(s.profile_path).about_me,
-                }
+        # the child graph traces its state; only the setting may allow it
+        with llm.tracing(s):
+            out = asyncio.run(
+                child.ainvoke(
+                    {
+                        "run_id": rid,
+                        "uid": uid,
+                        "goal": "",
+                        "about_me": load_profile(s.profile_path).about_me,
+                    }
+                )
             )
-        )
     except CompanyReachError as error:
         typer.echo(str(error), err=True)
         raise typer.Exit(1) from error

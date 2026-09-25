@@ -52,9 +52,12 @@ in the repository's history. The Docker image contains the code only;
 | **LINDAS and SHAB** | a municipality number or a company's UID | building the pool; SHAB only when a site names nobody |
 
 Choose the model endpoint with that list in mind: it is a third party
-processing the page text and names the tool reads. Tracing
-(`LANGSMITH_TRACING`) is off by default and should stay off — a trace would
-contain the same page text and names and send them to one more party.
+processing the page text and names the tool reads. Tracing to LangSmith
+(`COMPANY_REACH_TRACING` in `.env`) is off by default and should stay off —
+a trace would contain the same page text and names and send them to one
+more party. Only that setting counts: a `LANGSMITH_TRACING` or
+`LANGCHAIN_TRACING_V2` exported in your shell, for another project, does not
+turn it on here, and `doctor` shows the value in force.
 
 **Nothing is sent by e-mail.** "Send" on the review page records the
 decision and opens the draft in your own mail program; the mail leaves only

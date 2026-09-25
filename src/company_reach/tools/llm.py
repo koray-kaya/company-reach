@@ -10,6 +10,7 @@ it can then be mistaken for a placeholder.
 
 import asyncio
 import time
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from functools import lru_cache
 from importlib.resources import files
@@ -18,6 +19,7 @@ from typing import Literal
 
 import httpx
 from langchain_openai import ChatOpenAI
+from langsmith import tracing_context
 from openai import APIStatusError, LengthFinishReasonError
 from pydantic import BaseModel
 
@@ -107,6 +109,16 @@ def _timeout(settings: Settings) -> httpx.Timeout:
     return httpx.Timeout(settings.llm_timeout_seconds, connect=10.0)
 
 
+def tracing(settings: Settings) -> AbstractContextManager[None]:
+    """LangSmith tracing as the setting says (`COMPANY_REACH_TRACING`), and
+    nothing else. LangChain and LangGraph decide from the process
+    environment: a `LANGSMITH_TRACING=true` exported for another project
+    traced every prompt, page text and names included, while .env said
+    false (audit). A tracing context is read before the environment, so
+    every model call and every graph run enters this one."""
+    return tracing_context(enabled=settings.langsmith_tracing)
+
+
 def _client(
     settings: Settings, max_tokens: int, effort: Effort, http_client: httpx.AsyncClient
 ) -> ChatOpenAI:
@@ -166,7 +178,8 @@ async def ask[ModelT: BaseModel](
                     await asyncio.sleep(settings.llm_retry_pause_s)
                 started = time.monotonic()
                 try:
-                    answer = await chain.ainvoke(text)
+                    with tracing(settings):
+                        answer = await chain.ainvoke(text)
                 except LengthFinishReasonError as e:
                     raise _truncated(prompt_name, budget, effort) from e
                 except APIStatusError as e:
