@@ -1,4 +1,6 @@
+import asyncio
 import json
+import time
 
 import httpx
 import pytest
@@ -119,3 +121,41 @@ async def test_concurrency_is_capped(settings, monkeypatch):
         ]
     )
     assert peak <= 2
+
+
+async def test_a_silent_endpoint_times_out(settings):
+    """Audit H5: the timeout never reached the request, and a silent
+    endpoint held a run for 44 minutes. One second here must mean one."""
+
+    async def never_answer(reader, writer):
+        await reader.read()  # returns when the client gives up and closes
+        writer.close()
+
+    server = await asyncio.start_server(never_answer, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    s = settings.model_copy(
+        update={
+            "llm_base_url": f"http://127.0.0.1:{port}/v1",
+            "llm_timeout_seconds": 1.0,
+        }
+    )
+    started = time.monotonic()
+    async with server:
+        with pytest.raises(LlmError):
+            await asyncio.wait_for(
+                llm.ask("criteria", SelectionCriteria, settings=s, goal="g"),
+                timeout=30,
+            )
+    assert time.monotonic() - started < 10
+
+
+@respx.mock
+async def test_a_rejected_request_is_not_retried(settings):
+    """A 400 says the request is wrong. Asking again the same way only
+    doubles the wait."""
+    route = respx.post(URL).mock(
+        return_value=httpx.Response(400, json={"error": {"message": "bad"}})
+    )
+    with pytest.raises(LlmError):
+        await llm.ask("criteria", SelectionCriteria, settings=settings, goal="g")
+    assert route.call_count == 1

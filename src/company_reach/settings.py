@@ -40,6 +40,9 @@ class Settings(BaseSettings):
     llm_max_tokens: int = 50000
     # A scoring call measured 41-130 s; httpx defaults to 5 s.
     llm_timeout_seconds: float = 600.0
+    # Between the two attempts of one model call. A transient overload
+    # rarely clears in the same second; tests set it to 0.
+    llm_retry_pause_s: float = 2.0
     # Ten concurrent requests timed out four of ten on the shared endpoint
     # without raising throughput.
     llm_concurrency: int = 3

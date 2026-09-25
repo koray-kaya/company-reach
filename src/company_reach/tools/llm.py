@@ -18,7 +18,7 @@ from typing import Literal
 
 import httpx
 from langchain_openai import ChatOpenAI
-from openai import LengthFinishReasonError
+from openai import APIStatusError, LengthFinishReasonError
 from pydantic import BaseModel
 
 from company_reach.errors import LlmError, PromptError
@@ -117,6 +117,9 @@ def _client(
         max_tokens=max_tokens,
         reasoning_effort=effort,
         http_async_client=http_client,
+        # The SDK sends its own per-request timeout, and None overrides the
+        # injected client's. Audit H5: without this a silent endpoint hangs.
+        timeout=settings.llm_timeout_seconds,
         max_retries=0,  # retrying is this module's job, and it counts attempts
     )
 
@@ -152,13 +155,24 @@ async def ask[ModelT: BaseModel](
             ).with_structured_output(
                 output_model, method=settings.llm_structured_method, include_raw=True
             )
-            for _ in range(2):
+            for attempt in range(2):
+                if attempt:
+                    await asyncio.sleep(settings.llm_retry_pause_s)
                 started = time.monotonic()
                 try:
                     answer = await chain.ainvoke(text)
                 except LengthFinishReasonError as e:
                     raise _truncated(prompt_name, budget, effort) from e
-                except Exception as e:  # transport, rate limit, endpoint error
+                except APIStatusError as e:
+                    # A 4xx other than a timeout or a rate limit says the
+                    # request itself is wrong; the same request fails again.
+                    if 400 <= e.status_code < 500 and e.status_code not in (408, 429):
+                        raise LlmError(
+                            f"{prompt_name}: the endpoint rejected the request: {e}"
+                        ) from e
+                    last = e
+                    continue
+                except Exception as e:  # transport, timeout, endpoint error
                     last = e
                     continue
                 seconds = time.monotonic() - started
