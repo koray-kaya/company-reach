@@ -22,6 +22,7 @@ from company_reach.settings import Settings
 from company_reach.tools import llm
 from company_reach.tools.db import connect, init_db
 from company_reach.tools.invitation import assemble, subject, survey_link
+from company_reach.tools.mailto import LIMIT as MAILTO_LIMIT
 from company_reach.tools.mailto import build
 from company_reach.tools.search import _brave, ask_searxng
 
@@ -145,9 +146,10 @@ _WORST_CONTACT = Contact(
     email_kind="generic",
     source="shab",
 )
-# `mailto:` links must stay under 2,000 encoded characters; 100 are left for
-# a name or an address longer than the worst case above.
-_MAILTO_WARN = 1900
+# `mailto:` links must stay under 2,000 encoded characters: over it, doctor
+# fails. Within 100 of it, a name or an address longer than the worst case
+# above may not fit, which is worth a warning, not a failure.
+_MAILTO_WARN = MAILTO_LIMIT - 100
 # A field never filled in: "[Hochschule]", "<Name>", "XY", "..."
 _UNFILLED = re.compile(r"[\[\]{}<>]|\bXY\b|\bXX\b|\.\.\.|…")
 
@@ -186,22 +188,28 @@ def _profile_check(settings: Settings) -> Check:
             f"invitation.closes is {closes.isoformat()}, less than "
             f"{MIN_DAYS_OPEN} days ahead; a reader needs time to answer"
         )
-    if not gaps and not found:
-        length = _worst_case_mailto(profile)
-        if length >= _MAILTO_WARN:
-            found.append(
-                f"the longest mail the frame can build encodes to {length} "
-                f"characters in a mailto: link (limit 2,000); shorten a "
-                "[sender] or [invitation] text"
-            )
+    length = None if gaps else _worst_case_mailto(profile)
+    if length is not None and length >= MAILTO_LIMIT:
+        found.append(
+            f"the longest mail the frame can build encodes to {length} characters "
+            f"in a mailto: link, over the {MAILTO_LIMIT:,} a mail client accepts; "
+            "shorten a [sender] or [invitation] text"
+        )
     if found:
         return Check("profile", False, "; ".join(found))
+    room = f"longest mail {length} of {MAILTO_LIMIT:,} mailto characters"
+    if length is not None and length >= _MAILTO_WARN:
+        # a warning, not a failure: only the client's limit is a hard one
+        room = (
+            f"warning: {room}, headroom {MAILTO_LIMIT - length}; a longer name "
+            "or address than the worst case may not fit"
+        )
     return Check(
         "profile",
         True,
         f"goal set, survey_url={profile.survey_url}, sender "
         f"{profile.sender.school_short}, closes "
-        f"{closes.isoformat() if closes else 'not set'}",
+        f"{closes.isoformat() if closes else 'not set'}, {room}",
     )
 
 

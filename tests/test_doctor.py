@@ -422,3 +422,22 @@ async def test_the_fictional_profile_passes_the_worst_case(settings):
     _real_survey(settings)
     check = await profile_check(settings)
     assert check.ok, check.detail
+    assert "of 2,000 mailto characters" in check.detail  # the headroom, shown
+
+
+@respx.mock
+async def test_a_worst_case_near_the_limit_is_a_warning_not_a_failure(settings):
+    """Review: doctor failed at 1,900 while the study's own profile measures
+    1,882. Only the 2,000 a mail client accepts is a hard limit; nearer than
+    100 characters to it is worth a warning."""
+    respx.post(URL).mock(side_effect=[probe_ok(), probe_truncated()])
+    old = 'affiliation = "Masterstudentin, OST Ostschweizer Fachhochschule"'
+    longer = (
+        "Masterstudentin, OST Ostschweizer Fachhochschule, Studiengang "
+        "Wirtschaftsinformatik mit Vertiefung Digital Business und Nachhaltigkeit"
+    )
+    _real_survey(settings, **{old: f'affiliation = "{longer}"'})
+    check = await profile_check(settings)
+    assert check.ok, check.detail
+    assert "warning" in check.detail
+    assert "headroom" in check.detail
