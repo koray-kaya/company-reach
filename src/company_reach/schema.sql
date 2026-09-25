@@ -4,6 +4,12 @@ CREATE TABLE IF NOT EXISTS companies (
   municipality TEXT NOT NULL, street TEXT, postal_code TEXT, city TEXT,
   purpose TEXT NOT NULL, purpose_head TEXT NOT NULL,
   screen_reason TEXT, imported_at TEXT NOT NULL, import_run_id TEXT NOT NULL);
+-- One row per `score` command: its criteria, then its end — status 'done'
+-- with counts, 'failed', or still 'scoring' if the command was killed. The
+-- criteria of goals scored before the criteria table are read from here.
+-- `run` writes no row: its record is data/runs/<id>/manifest.json. about_me,
+-- municipality, batch_size and cost_usd are never written; they stay so old
+-- databases and new ones keep one shape.
 CREATE TABLE IF NOT EXISTS runs (
   id TEXT PRIMARY KEY, goal TEXT, goal_hash TEXT, about_me TEXT, municipality TEXT,
   seed INTEGER, batch_size INTEGER, model TEXT, prompt_versions TEXT, criteria TEXT,
@@ -55,9 +61,13 @@ CREATE TABLE IF NOT EXISTS drafts (
   subject TEXT, body TEXT,
   mailto_fits INTEGER, prompt_version TEXT, model TEXT, created_at TEXT,
   model_text TEXT, frame_version TEXT, arm TEXT, problems TEXT);
+-- needs_js: how many of the pages read came back as a JavaScript shell
+-- (read_pages); null when the child did not say — it failed, or the row was
+-- written by code that reads no pages.
 CREATE TABLE IF NOT EXISTS results (
   run_id TEXT NOT NULL, uid TEXT NOT NULL, recommendation TEXT, reason TEXT,
-  error_kind TEXT, error_text TEXT, finished_at TEXT NOT NULL, PRIMARY KEY (run_id, uid));
+  error_kind TEXT, error_text TEXT, finished_at TEXT NOT NULL, needs_js INTEGER,
+  PRIMARY KEY (run_id, uid));
 -- One row per decision, never updated: a company's state is its latest row,
 -- and "contacted" is any 'sent' row ever (M7 open point 4) that no later
 -- 'not_sent' or 'bounced' row took back; `reverses` names the 'sent' row

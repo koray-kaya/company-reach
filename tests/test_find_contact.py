@@ -8,6 +8,7 @@ site named nobody (open point 3).
 
 import json
 import sqlite3
+from pathlib import Path
 
 import httpx
 import pytest
@@ -15,12 +16,22 @@ import respx
 from pydantic import SecretStr
 
 from company_reach.errors import SearchError, ShabError
-from company_reach.models import CompanyProfile, CompanyRecord, Person, ShabPerson
+from company_reach.models import (
+    CompanyProfile,
+    CompanyRecord,
+    Person,
+    RawPerson,
+    RawProfile,
+    ShabPerson,
+)
+from company_reach.nodes.check_profile import check_profile
 from company_reach.nodes.find_contact import find_contact
 from company_reach.nodes.find_site import SiteChoice
+from company_reach.nodes.recommend import recommend
 from company_reach.tools.db import init_db
 from company_reach.tools.invitation import greeting
 from company_reach.tools.search import Result
+from company_reach.tools.textify import textify
 
 SITE = "https://muster-metallbau.ch/"
 UID = "CHE000000046"
@@ -807,7 +818,7 @@ async def test_the_lead_search_never_asks_brave(db_settings):
     keyed = db_settings.model_copy(
         update={"brave_search_api_key": SecretStr("brave-test-key"), "search_gap_s": 0}
     )
-    respx.get("http://searxng:8080/search").mock(return_value=httpx.Response(503))
+    respx.get("http://127.0.0.1:8080/search").mock(return_value=httpx.Response(503))
     brave = respx.get("https://api.search.brave.com/res/v1/web/search").mock(
         return_value=httpx.Response(
             200,
@@ -1007,3 +1018,136 @@ async def test_no_inbox_is_guessed_on_a_site_builder_host(db_settings):
         None,
         None,
     )
+
+
+# --- the golden subset: contact choice and recommendation --------------------
+#
+# The audit found contact choice and the recommendation graded on nothing
+# realistic. Each row is a site of the public golden subset
+# (`fixtures/golden/subset/extraction.jsonl`, fictional): its saved pages go
+# through `textify` as a run's do, the people are what an extractor returns
+# — a correct one, or where the row says so a mistake one could make — and
+# `check_profile`, `find_contact` and `recommend` run as in the child, with
+# SHAB and the lead search stood in for. No model is asked. The expected
+# contact and verdict were written from the pages and the rules at the top
+# of this module, not read off the code.
+
+SUBSET = Path(__file__).parent / "fixtures/golden/subset"
+SUBSET_SITES = {
+    row["uid"]: row
+    for row in map(
+        json.loads,
+        (SUBSET / "extraction.jsonl").read_text(encoding="utf-8").splitlines(),
+    )
+}
+
+GOLDEN_CONTACTS = [
+    pytest.param(
+        "CHE900000016",
+        [RawPerson(name="Peter Beispiel", role="Geschäftsführer",
+                   email="p.beispiel@muster-praezision.ch")],
+        [],
+        ("Peter Beispiel", "p.beispiel@muster-praezision.ch", "seen", "site"),
+        "send",
+        id="an-own-address-only-in-a-mailto-link",
+    ),
+    pytest.param(
+        "CHE900000022",
+        [
+            RawPerson(name="Maria Muster", role="führt die Käserei"),
+            RawPerson(name="Hans Beispiel", role="leitet die Produktion"),
+        ],
+        [],
+        ("Maria Muster", "info@beispiel-kaeserei.ch", "generic", "site"),
+        "send",
+        id="two-named-the-first-at-the-inbox-written-with-at",
+    ),
+    pytest.param(
+        "CHE900000039",
+        [],
+        [shab_person("Jonas Exempel", "Geschäftsführer")],
+        ("Jonas Exempel", "info@exempel-verpackungen.ch", "constructed", "shab"),
+        "send",
+        id="nobody-on-the-site-so-shab-names-the-manager",
+    ),
+    pytest.param(
+        "CHE900000039",
+        [],
+        [shab_person("Jonas Exempel", "Geschäftsführer", departed=True)],
+        None,
+        "hold",
+        id="nobody-on-the-site-and-nobody-current-in-shab",
+    ),
+    pytest.param(
+        "CHE900000097",
+        [RawPerson(name="Sara Exempel", role="CEO",
+                   email="sara.exempel@exempel-elektronik.ch")],
+        [],
+        ("Sara Exempel", "sara.exempel@exempel-elektronik.ch", "seen", "site"),
+        "send",
+        id="an-own-address-only-in-cloudflare-form",
+    ),
+    pytest.param(
+        "CHE900000111",
+        [
+            RawPerson(name="Lea Beispiel", role="Inhaberin"),
+            RawPerson(name="Max Grafik", role="Konzept und Webdesign",
+                      email="max@designstudio-nord.example"),
+        ],
+        [],
+        ("Lea Beispiel", "info@beispiel-kosmetik.ch", "constructed", "site"),
+        "send",
+        id="the-web-agency-does-not-displace-the-owner",
+    ),
+    pytest.param(
+        "CHE900000111",
+        [RawPerson(name="Lea Beispiel", role="Inhaberin",
+                   email="max@designstudio-nord.example")],
+        [],
+        ("Lea Beispiel", "max@designstudio-nord.example", "third_party", "site"),
+        "hold",
+        id="the-agencys-address-given-to-the-owner-is-held",
+    ),
+]  # fmt: skip
+
+
+@pytest.mark.parametrize(
+    ("uid", "persons", "shab_says", "expected", "verdict"), GOLDEN_CONTACTS
+)
+async def test_the_golden_subset_gets_the_right_contact_and_verdict(
+    db_settings, uid, persons, shab_says, expected, verdict
+):
+    row = SUBSET_SITES[uid]
+    company = CompanyRecord(
+        uid=uid,
+        name=row["name"],
+        legal_form="0106",
+        municipality="3203",
+        city=row["city"],
+        purpose="-",
+        purpose_head="-",
+    )
+    st = {
+        "run_id": "run-1",
+        "uid": uid,
+        "company": company,
+        "site": SiteChoice(row["site"], "uid", uid, row["site"]),
+        "page_texts": {url: textify(html) for url, html in row["pages"].items()},
+        "raw_profile": RawProfile(description="-", persons=persons),
+    }
+    shab = Shab(shab_says)
+
+    st |= check_profile(st, settings=db_settings)
+    st |= await run(st, db_settings, shab)
+    st |= recommend(st)
+
+    contact = st["contact"]
+    found = (
+        None
+        if contact is None
+        else (contact.name, contact.email, contact.email_kind, contact.source)
+    )
+    assert found == expected
+    assert st["recommendation"] == verdict, st["reason"]
+    # open point 3: SHAB is asked only when the site names nobody
+    assert bool(shab.calls) == (not persons)

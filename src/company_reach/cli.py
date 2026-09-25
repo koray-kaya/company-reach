@@ -4,7 +4,6 @@
 import asyncio
 import json
 import math
-import tempfile
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -14,7 +13,7 @@ from typing import Annotated
 import typer
 import uvicorn
 
-from company_reach.errors import CompanyReachError
+from company_reach.errors import CompanyReachError, ProfileError
 from company_reach.graph import (
     build_child,
     build_stub_child,
@@ -33,22 +32,24 @@ from company_reach.nodes.write_criteria import (
     format_criteria,
     write_criteria,
 )
-from company_reach.profile import goal_hash, load_profile
+from company_reach.profile import Profile, goal_hash, load_profile
 from company_reach.settings import Settings, get_settings
 from company_reach.tools import llm
 from company_reach.tools.db import (
     connect,
-    copy_database,
     count_brave_queries,
     count_scored,
     current_criteria_hash,
     errored_uids,
+    finish_run,
     init_db,
     load_criteria,
+    needs_js_by_uid,
     off_limits_because,
     pool_standing,
     record_run,
     score_run_criteria,
+    scratch_copy,
     status_by_municipality,
     store_criteria,
 )
@@ -60,13 +61,24 @@ V0_DIR = Path("data/v0")
 app = typer.Typer(help="Find Swiss companies, find the person, draft the mail.")
 
 
+def _profile(s: Settings) -> Profile:
+    """profile.toml, or a message and exit code 1: a missing or broken file
+    is the user's to fix, and a traceback would bury the sentence that says
+    how (Phase A review)."""
+    try:
+        return load_profile(s.profile_path)
+    except ProfileError as error:
+        typer.echo(str(error), err=True)
+        raise typer.Exit(1) from error
+
+
 def _resolve_goal(explicit: str | None) -> str:
     """--goal wins; otherwise profile.toml. Trying a goal on the command line
     without editing the file is the common case while wording is still being
     worked out."""
     if explicit:
         return explicit.strip()
-    return load_profile(get_settings().profile_path).goal
+    return _profile(get_settings()).goal
 
 
 def _run_id(explicit: str | None) -> str:
@@ -77,23 +89,15 @@ def _run_id(explicit: str | None) -> str:
 def _work_database(s: Settings, *, dry: bool) -> Iterator[Settings]:
     """The settings a run reads and writes the database through.
 
-    A real run gets `s` itself. A dry run gets settings whose data directory
-    is a throwaway copy of the real database: the loop writes `seen` and
-    `results`, and on the real database a demonstration marked real
-    companies as drawn, out of every later run (Phase A's final review).
-
-    The copy holds the same personal data as the database, so it is made
-    inside the data directory, never the system's temp directory: a run
-    killed before the cleanup leaves a `.dry-*` folder there, under the
-    same care as the rest of `data/`."""
+    A real run gets `s` itself. A dry run gets a scratch copy of the real
+    database (`db.scratch_copy`, a `.dry-*` folder in the data directory):
+    the loop writes `seen` and `results`, and on the real database a
+    demonstration marked real companies as drawn, out of every later run
+    (Phase A's final review)."""
     if not dry:
         yield s
         return
-    s.data_dir.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(dir=s.data_dir, prefix=".dry-") as tmp:
-        work = s.model_copy(update={"data_dir": Path(tmp)})
-        if s.db_path.is_file():
-            copy_database(s.db_path, work.db_path)
+    with scratch_copy(s, prefix=".dry-") as work:
         yield work
 
 
@@ -366,8 +370,24 @@ def score(
     typer.echo("")
 
     record_run(s.db_path, rid, text, stored, seed=seed)
-    report = asyncio.run(
-        score_pool(rid, text, stored, settings=s, limit=limit, seed=seed)
+    try:
+        report = asyncio.run(
+            score_pool(rid, text, stored, settings=s, limit=limit, seed=seed)
+        )
+    except Exception as error:
+        finish_run(s.db_path, rid, status="failed", counts=None)
+        typer.echo(f"score {rid} failed — {type(error).__name__}: {error}", err=True)
+        raise typer.Exit(1) from error
+    finish_run(
+        s.db_path,
+        rid,
+        status="done",
+        counts={
+            "scored": report.scored,
+            "cached": report.cached,
+            "dropped": report.dropped,
+            "failed_batches": report.failed_batches,
+        },
     )
     typer.echo(
         f"{report.scored} newly scored · {report.cached} already scored, skipped"
@@ -524,6 +544,8 @@ def run(
     """
     s = get_settings()
     text = _resolve_goal(goal)
+    # --goal overrides the goal only; the drafts still say who writes
+    about_me = _profile(s).about_me
     rid = _run_id(run_id)
 
     # `work` holds the database the run reads and writes; `s` the real data
@@ -535,12 +557,19 @@ def run(
 
         with connect(work.db_path) as conn:
             stored = load_criteria(conn, goal_hash(text))
-        start_manifest(rid, settings=s, goal=text, seed=seed, criteria=stored, dry=dry)
+        start_manifest(
+            rid,
+            settings=s,
+            goal=text,
+            seed=seed,
+            about_me=about_me,
+            criteria=stored,
+            dry=dry,
+        )
         state = initial_state(
             run_id=rid,
             goal=text,
-            # --goal overrides the goal only; the drafts still say who writes
-            about_me=load_profile(s.profile_path).about_me,
+            about_me=about_me,
             municipality="",
             settings=work,
             seed=seed,
@@ -571,6 +600,7 @@ def run(
             # crashed attempt left unfinished belongs in the count too.
             errors = len(errored_uids(conn, rid))
             brave = count_brave_queries(conn, rid)
+            shells = needs_js_by_uid(conn, rid)
 
     counts = {
         "batches_drawn": out["batches_drawn"],
@@ -578,6 +608,8 @@ def run(
         "sendable": out["sendable_count"],
         "errors": errors,
         "brave_queries": brave,
+        # per company, the pages that were JavaScript shells
+        "needs_js": shells,
     }
     finish_manifest(rid, settings=s, status="done", counts=counts)
 
@@ -634,7 +666,8 @@ def review(
         str | None, typer.Argument(help="The run to open; omit to pick one by URL.")
     ] = None,
     host: Annotated[
-        str, typer.Option(help="127.0.0.1 outside Docker; the container uses 0.0.0.0.")
+        str,
+        typer.Option(help="127.0.0.1, the default, keeps the page off the network."),
     ] = "127.0.0.1",
     port: int = 8000,
 ) -> None:
@@ -769,12 +802,7 @@ def retry(
         f"{len(failing)} still failing"
     )
     for r in results:
-        outcome = (
-            f"{r.error_kind} error: {r.error_text}"
-            if r.error_kind
-            else (f"{r.recommendation}: {r.reason}")
-        )
-        typer.echo(f"  {r.uid}  {outcome}")
+        typer.echo(outcome_line(r))
 
 
 @app.command()
@@ -844,16 +872,18 @@ def enrich(
     child = build_child(settings=s, until=until)
 
     try:
-        out = asyncio.run(
-            child.ainvoke(
-                {
-                    "run_id": rid,
-                    "uid": uid,
-                    "goal": "",
-                    "about_me": load_profile(s.profile_path).about_me,
-                }
+        # the child graph traces its state; only the setting may allow it
+        with llm.tracing(s):
+            out = asyncio.run(
+                child.ainvoke(
+                    {
+                        "run_id": rid,
+                        "uid": uid,
+                        "goal": "",
+                        "about_me": load_profile(s.profile_path).about_me,
+                    }
+                )
             )
-        )
     except CompanyReachError as error:
         typer.echo(str(error), err=True)
         raise typer.Exit(1) from error
@@ -989,14 +1019,19 @@ def _resume(rid: str, goal: str | None, seed: int, target: int) -> str:
     return " ".join(parts)
 
 
-def _echo_result(result: CompanyResult) -> None:
-    """One line per company, the moment its child returns."""
+def outcome_line(result: CompanyResult) -> str:
+    """A company's line in `run` and `retry`: its verdict, or its error."""
     outcome = (
         f"{result.error_kind} error: {result.error_text}"
         if result.error_kind
         else f"{result.recommendation}: {result.reason}"
     )
-    typer.echo(f"  {result.uid}  {outcome}")
+    return f"  {result.uid}  {outcome}"
+
+
+def _echo_result(result: CompanyResult) -> None:
+    """One line per company, the moment its child returns."""
+    typer.echo(outcome_line(result))
 
 
 def _echo_contact(contact) -> None:

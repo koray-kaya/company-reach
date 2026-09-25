@@ -20,7 +20,7 @@ from company_reach.models import StoredCriteria
 from company_reach.profile import goal_hash
 from company_reach.settings import Settings
 from company_reach.tools.db import now
-from company_reach.tools.llm import PROMPT_DIR, load_prompt
+from company_reach.tools.llm import PROMPT_DIR, PROMPTS, load_prompt
 
 # The settings that change what a run produces. Timeouts and URLs are left
 # out: they change how it gets there, not what comes back.
@@ -43,18 +43,15 @@ def manifest_path(run_id: str, *, settings: Settings) -> Path:
 
 
 def _prompt_versions() -> dict[str, dict[str, str]]:
-    """Version and file digest for every prompt. The version says which prompt
-    was used; the sha says whether the file was edited without the version
-    being raised — which is the failure the score cache cannot see."""
+    """Version and file digest for every prompt the code loads
+    (`llm.PROMPTS`). The version says which prompt was used; the sha says
+    whether the file was edited without the version being raised — which is
+    the failure the score cache cannot see."""
     prompts: dict[str, dict[str, str]] = {}
-    for path in sorted(
-        (p for p in PROMPT_DIR.iterdir() if p.name.endswith(".md")),
-        key=lambda p: p.name,
-    ):
-        name = path.name.removesuffix(".md")
+    for name in sorted(PROMPTS):
         version, _ = load_prompt(name)
-        digest = hashlib.sha256(path.read_bytes()).hexdigest()
-        prompts[name] = {"version": version, "sha256": digest}
+        digest = hashlib.sha256(PROMPT_DIR.joinpath(f"{name}.md").read_bytes())
+        prompts[name] = {"version": version, "sha256": digest.hexdigest()}
     return prompts
 
 
@@ -131,7 +128,7 @@ def finish_manifest(
     *,
     settings: Settings,
     status: str,
-    counts: dict[str, int],
+    counts: dict[str, Any],
     criteria: Any = None,
     reason: str | None = None,
 ) -> Path:

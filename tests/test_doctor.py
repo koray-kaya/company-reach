@@ -8,11 +8,12 @@ from fictional_profile import profile_text
 from typer.testing import CliRunner
 
 from company_reach import cli
+from company_reach.tools import doctor
 from company_reach.tools.doctor import run_checks
 
 URL = "https://api.openai.com/v1/chat/completions"
 runner = CliRunner()
-SEARX = "http://searxng:8080"
+SEARX = "http://127.0.0.1:8080"
 BRAVE = "https://api.search.brave.com/res/v1/web/search"
 REAL_SURVEY = "https://umfrage.beispiel-hochschule.ch/kmu"
 
@@ -200,6 +201,48 @@ async def test_a_missing_baseline_engine_fails(settings):
 
 
 @respx.mock
+async def test_an_engines_page_not_found_is_unreadable(settings):
+    """Phase A review: a JSON 404 was read as a config listing no engines,
+    and the check said "not enabled" about a page it never got."""
+    respx.get(f"{SEARX}/config").mock(
+        return_value=httpx.Response(404, json={"detail": "Not Found"})
+    )
+    check = await doctor._engines_check(settings)
+    assert check.ok is False
+    assert "404" in check.detail
+    assert "not enabled" not in check.detail
+
+
+@pytest.mark.parametrize(
+    "body",
+    [[], {"engines": "all"}, {"engines": [{"enabled": True}]}],
+    ids=["a-list", "engines-not-a-list", "an-engine-without-a-name"],
+)
+@respx.mock
+async def test_an_odd_engines_page_fails_the_check_not_doctor(settings, body):
+    """Phase A review: the /config body was parsed outside the check's try,
+    so an answer of an unexpected shape crashed the whole command."""
+    respx.get(f"{SEARX}/config").mock(return_value=httpx.Response(200, json=body))
+    check = await doctor._engines_check(settings)
+    assert check.ok is False
+    assert "cannot read" in check.detail
+
+
+def test_the_shell_cannot_reach_the_settings_fixture(monkeypatch, request):
+    """Phase A review: a SEARXNG_URL, SENDING_APPROVED or Brave key exported
+    in the developer's shell reached every doctor test."""
+    monkeypatch.setenv("SEARXNG_URL", "http://searxng.shell.test:8080")
+    monkeypatch.setenv("SENDING_APPROVED", "true")
+    monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "a-key-from-the-shell")
+
+    settings = request.getfixturevalue("settings")
+
+    assert settings.searxng_url == SEARX
+    assert settings.sending_approved is False
+    assert settings.brave_search_api_key is None
+
+
+@respx.mock
 async def test_search_that_answers_nothing_fails(settings):
     respx.post(URL).mock(side_effect=[probe_ok(), probe_truncated()])
     respx.get(f"{SEARX}/search").mock(
@@ -223,9 +266,9 @@ async def test_the_placeholder_survey_url_fails(settings):
 
 
 def test_every_prompt_a_run_uses_is_loaded():
-    from company_reach.tools import doctor
+    from company_reach.tools import llm
 
-    assert set(doctor._PROMPTS) >= {
+    assert set(llm.PROMPTS) >= {
         "criteria",
         "score",
         "pick_site",
@@ -241,6 +284,8 @@ async def test_the_settings_line_shows_the_gates(settings):
     checks = {c.name: c for c in await run_checks(settings)}
     assert "sending_approved=False" in checks["settings"].detail
     assert "paid_fallback=none" in checks["settings"].detail
+    # the one switch for tracing, whatever the shell exports (audit)
+    assert "tracing=False" in checks["settings"].detail
 
 
 def test_the_settings_line_names_brave_when_a_key_is_set(settings):

@@ -9,7 +9,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -47,7 +47,7 @@ class Settings(BaseSettings):
     # without raising throughput.
     llm_concurrency: int = 3
 
-    searxng_url: str = "http://searxng:8080"
+    searxng_url: str = "http://127.0.0.1:8080"
     # The paid second opinion (decided 2026-09-25): asked when SearXNG fails,
     # when it answered nothing at all, and before any "no website" verdict.
     # Unset, search is SearXNG alone.
@@ -68,7 +68,6 @@ class Settings(BaseSettings):
     # meaning "this company has no website". Google is a bonus, not baseline:
     # measured, a self-hosted SearXNG behaves like a DuckDuckGo proxy.
     baseline_engines: str = "duckduckgo,mojeek,brave"
-    playwright_url: str | None = None
 
     max_pages_per_site: int = 10
     max_page_urls: int = 200
@@ -94,9 +93,16 @@ class Settings(BaseSettings):
     # a single score carries; nine would sit exactly on the good ones.
     draw_min_score: int = 7
     max_batches_per_run: int = 3
-    langsmith_tracing: bool = False
+    # Read from COMPANY_REACH_TRACING, not LANGSMITH_TRACING: that one is
+    # LangChain's own switch, so an export made for any other project set
+    # this setting too and traced page text and names (audit). Every model
+    # call and graph run enters `llm.tracing`, so this value, and not the
+    # shell's, decides.
+    langsmith_tracing: bool = Field(
+        default=False, validation_alias="COMPANY_REACH_TRACING"
+    )
 
-    @field_validator("brave_search_api_key", "playwright_url", mode="before")
+    @field_validator("brave_search_api_key", mode="before")
     @classmethod
     def _blank_is_none(cls, value):
         """An unset optional key is None, however the .env line was written.

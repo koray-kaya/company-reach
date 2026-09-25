@@ -2,14 +2,19 @@
 # review → merge". Until now nothing ran the tests on a pull request, so
 # whether they passed depended on somebody having run them by hand.
 #
-# No secrets, no services, no network. The suite takes about fifteen seconds
-# and the only tests it skips are the golden evaluations, which are already
-# opt-in behind RUN_LLM_EVALS because they call a paid endpoint and are not
-# deterministic. That is why this file can stay this short.
+# No secrets and no services. The suite takes about thirty seconds, offline;
+# the only tests it skips are the golden evaluations, which are opt-in
+# behind RUN_LLM_EVALS because they call a paid endpoint and are not
+# deterministic. The one step that goes online is the dependency audit,
+# which asks PyPI's advisory database about the locked versions.
 #
-# Actions are pinned to major tags rather than commit SHAs: this workflow is
-# handed no secrets and publishes nothing, so the blast radius of a bad
-# action is a failed build.
+# Actions are pinned to the commit of a release, its tag in the comment.
+# setup-uv publishes no major tags since v8 (its releases are immutable
+# instead), and a commit cannot be moved under us the way a tag can. This
+# workflow is handed no secrets and publishes nothing, so the blast radius
+# of a bad action is a failed build. Checked on GitHub 2026-09-25: checkout
+# v7.0.1 and setup-uv v10.2.0 are the latest releases. The audit found the
+# v4 and v6 used before declaring Node 20, which GitHub has retired.
 
 name: ci
 
@@ -30,10 +35,13 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
+    # A hung test or a stalled download fails in minutes, not after the
+    # six hours GitHub allows by default.
+    timeout-minutes: 15
     steps:
       # The whole history, not the default single commit: the privacy check
       # below has to see every commit ever made, not only the last one.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -47,7 +55,7 @@ jobs:
             exit 1
           fi
 
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           enable-cache: true
 
@@ -55,6 +63,16 @@ jobs:
       # green build means the lockfile really describes what was tested.
       - name: install
         run: uv sync --locked
+
+      # Known vulnerabilities in every locked dependency, the dev tools
+      # included. The export pins each version with its hashes, so pip-audit
+      # checks exactly what `uv sync` installed and resolves nothing itself.
+      - name: dependency audit
+        run: |
+          uv export --frozen --format requirements-txt --no-emit-project \
+            --all-groups -o "$RUNNER_TEMP/requirements.txt"
+          uvx pip-audit@2.10.1 --disable-pip --require-hashes \
+            -r "$RUNNER_TEMP/requirements.txt"
 
       - name: lint
         run: uv run ruff check .

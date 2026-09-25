@@ -28,6 +28,7 @@ from company_reach.tools.db import (
     record_result,
     result_for,
 )
+from company_reach.tools.llm import tracing
 
 _ERROR_KINDS: list[tuple[type[Exception], ErrorKind]] = [
     (SearchError, "search"),
@@ -79,21 +80,27 @@ async def enrich_company(
         return {"results": [result]}
 
     try:
-        out = await child.ainvoke(
-            {
-                "run_id": run_id,
-                "uid": uid,
-                "goal": state["goal"],
-                "about_me": state["about_me"],
-                # how the last attempt failed, so a refusal that repeats can
-                # be told from one that happened once (find_site)
-                "previous_error": done.error_text if done and done.error_kind else None,
-            }
-        )
+        # `retry` runs the child outside any run graph (`llm.tracing`)
+        with tracing(settings):
+            out = await child.ainvoke(
+                {
+                    "run_id": run_id,
+                    "uid": uid,
+                    "goal": state["goal"],
+                    "about_me": state["about_me"],
+                    # how the last attempt failed, so a refusal that repeats
+                    # can be told from one that happened once (find_site)
+                    "previous_error": (
+                        done.error_text if done and done.error_kind else None
+                    ),
+                }
+            )
         result = CompanyResult(
             uid=uid,
             recommendation=out.get("recommendation"),
             reason=out.get("reason"),
+            # read_pages lists the shells; a child that read no pages, none
+            needs_js=len(out.get("needs_js") or []),
         )
     except Exception as error:  # noqa: BLE001 — nothing may escape this node
         result = CompanyResult(

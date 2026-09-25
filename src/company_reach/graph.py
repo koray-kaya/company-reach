@@ -388,18 +388,20 @@ async def run_graph(
     1000, and follows the batch cap (`recursion_limit` above)."""
     graph = build_graph(settings=settings, child=child, dry=dry)
     final = state
-    async for mode, chunk in graph.astream(
-        state,
-        config={"recursion_limit": recursion_limit(settings.max_batches_per_run)},
-        stream_mode=["updates", "values"],
-    ):
-        if mode == "values":
-            final = chunk
-        elif on_result is not None:
-            for node, update in chunk.items():
-                if node == "enrich_company" and update:
-                    for result in update.get("results", []):
-                        on_result(result)
+    # the graph traces every state it passes; only the setting may allow it
+    with llm.tracing(settings):
+        async for mode, chunk in graph.astream(
+            state,
+            config={"recursion_limit": recursion_limit(settings.max_batches_per_run)},
+            stream_mode=["updates", "values"],
+        ):
+            if mode == "values":
+                final = chunk
+            elif on_result is not None:
+                for node, update in chunk.items():
+                    if node == "enrich_company" and update:
+                        for result in update.get("results", []):
+                            on_result(result)
     return final
 
 

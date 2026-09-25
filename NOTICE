@@ -14,6 +14,5 @@ Data sources used at run time (no data is shipped with this repository):
   this tool is not an official publication; only the publication on
   shab.ch / amtsblattportal.ch is authoritative.
 
-Third-party software keeps its own licence; SearXNG (AGPL-3.0) and
-Playwright (Apache-2.0) run as separate containers and are not part of this
-code base.
+Third-party software keeps its own licence; SearXNG (AGPL-3.0) runs as a
+separate container and is not part of this code base.

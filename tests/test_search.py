@@ -22,7 +22,7 @@ from company_reach.settings import Settings
 from company_reach.tools import search as search_module
 from company_reach.tools.search import Result, _brave, search
 
-SEARXNG = "http://searxng:8080/search"
+SEARXNG = "http://127.0.0.1:8080/search"
 BRAVE = "https://api.search.brave.com/res/v1/web/search"
 
 

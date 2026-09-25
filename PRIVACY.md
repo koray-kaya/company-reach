@@ -35,11 +35,12 @@ Only on the machine that runs it, under `data/`:
 |---|---|
 | `data/company_reach.db` (SQLite) | companies, scores, site evidence, the search log (each query, and SearXNG's first ten result URLs — never Brave's), page text, profiles, contacts, drafts, results, the ledger of decisions (for a mail sent: the address, the subject and a hash of the text), the never-again list, and — once imported from the survey's export — when each company's response started and finished (by UID; `report` prints only counts) |
 | `data/cache/` | the HTML of every page fetched |
-| `data/runs/<run>/manifest.json` | each run's settings, prompt versions and counts — no personal data |
+| `data/runs/<run>/manifest.json` | each run's settings, prompt versions and counts, and your own goal and `about_me` — nobody else's personal data |
 
 `data/` is excluded from git, and CI fails if any file under it ever appears
-in the repository's history. The Docker image contains the code only;
-`data/`, `.env` and `profile.toml` are mounted when the container runs.
+in the repository's history. Only the search engine runs in a container,
+and it holds none of this: the tool, the review page included, runs on your
+machine and keeps `data/`, `.env` and `profile.toml` there.
 
 ## Where it sends it
 
@@ -52,15 +53,17 @@ in the repository's history. The Docker image contains the code only;
 | **LINDAS and SHAB** | a municipality number or a company's UID | building the pool; SHAB only when a site names nobody |
 
 Choose the model endpoint with that list in mind: it is a third party
-processing the page text and names the tool reads. Tracing
-(`LANGSMITH_TRACING`) is off by default and should stay off — a trace would
-contain the same page text and names and send them to one more party.
+processing the page text and names the tool reads. Tracing to LangSmith
+(`COMPANY_REACH_TRACING` in `.env`) is off by default and should stay off —
+a trace would contain the same page text and names and send them to one
+more party. Only that setting counts: a `LANGSMITH_TRACING` or
+`LANGCHAIN_TRACING_V2` exported in your shell, for another project, does not
+turn it on here, and `doctor` shows the value in force.
 
 **Nothing is sent by e-mail.** "Send" on the review page records the
 decision and opens the draft in your own mail program; the mail leaves only
 when you press send there. The review page is reachable on `127.0.0.1`
-only — directly, or published there by Docker — and refuses any decision
-that did not come from the page itself.
+only and refuses any decision that did not come from the page itself.
 
 ## What the invitation tells its reader
 

@@ -32,6 +32,7 @@ import hashlib
 import re
 from datetime import date
 from typing import Literal, NamedTuple
+from urllib.parse import urlsplit
 
 from company_reach.errors import CompanyReachError
 from company_reach.models import Contact
@@ -81,6 +82,15 @@ def survey_link(survey_url: str, uid: str, *, lang: str = "de") -> str:
     if not uid_is_valid(uid):
         raise InvitationError(f"{uid!r} is not a UID with a valid check digit")
     return f"{survey_url.rstrip('/')}/?c={compact_uid(uid)}&l={lang}"
+
+
+def is_placeholder_url(url: str) -> bool:
+    """Whether a survey URL is the example's, never a real survey: a host
+    named `example`, or one under the reserved `.example` domain. Asked by
+    `doctor` of the profile and by the review card of a draft's link, so
+    the two cannot disagree about what is a placeholder."""
+    host = urlsplit(url).hostname or ""
+    return host == "example" or host.endswith(".example")
 
 
 def arm_for(uid: str, *, experiment: bool) -> Literal["voll", "kurz"]:

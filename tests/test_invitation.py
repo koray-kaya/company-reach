@@ -19,6 +19,7 @@ from company_reach.tools.invitation import (
     closing,
     german_date,
     greeting,
+    is_placeholder_url,
     link_block,
     needs_check,
     opening,
@@ -94,6 +95,23 @@ def test_the_smoke_tag_is_never_an_invitation():
     # reserved for the survey's own smoke test
     with pytest.raises(InvitationError):
         survey_link(URL, "SMOKE")
+
+
+@pytest.mark.parametrize(
+    ("url", "placeholder"),
+    [
+        ("https://survey.example", True),
+        ("https://survey.example/form?c=CHE000000046", True),
+        ("https://example/form", True),
+        ("https://umfrage.beispiel-hochschule.ch/kmu", False),
+        ("https://example.ch/form", False),
+        ("", False),  # missing, which doctor reports as missing
+    ],
+)
+def test_a_placeholder_survey_url_is_recognised(url, placeholder):
+    """One rule for doctor and the review card (Phase A review): the two
+    kept a copy each."""
+    assert is_placeholder_url(url) is placeholder
 
 
 def test_no_survey_url_is_an_error():

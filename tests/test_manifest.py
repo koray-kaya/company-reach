@@ -1,7 +1,9 @@
 import json
+from pathlib import Path
 
 from company_reach.manifest import finish_manifest, manifest_path, start_manifest
 from company_reach.settings import Settings
+from company_reach.tools import llm
 
 RUN = "r1"
 
@@ -89,6 +91,34 @@ def test_a_failed_run_records_its_reason(settings: Settings):
     )
     data = json.loads(manifest_path("r1", settings=settings).read_text())
     assert data["reason"] == "SearchError: down"
+
+
+def test_no_dead_prompt_is_listed(settings: Settings):
+    """Audit: three prompt files no code loads (translate, translate_tr,
+    german_probe) were shipped and listed in every manifest, and a broken
+    header in one of them stopped every run. The manifest lists the prompts
+    the code uses, and the package ships no other."""
+    start(settings)
+    listed = set(read(settings)["prompts"])
+    shipped = {
+        p.name.removesuffix(".md")
+        for p in llm.PROMPT_DIR.iterdir()
+        if p.name.endswith(".md")
+    }
+    assert listed == set(llm.PROMPTS) == shipped
+    assert {"translate", "translate_tr", "german_probe"}.isdisjoint(listed)
+
+
+def test_every_listed_prompt_is_loaded_somewhere():
+    """The other direction: a name in llm.PROMPTS that no module asks for
+    would be a dead prompt again, only listed by hand."""
+    sources = [
+        path.read_text(encoding="utf-8")
+        for path in Path(llm.__file__).parents[1].rglob("*.py")
+        if path.name != "llm.py"
+    ]
+    for name in llm.PROMPTS:
+        assert any(f'"{name}"' in source for source in sources), name
 
 
 def test_a_successful_resume_clears_the_old_reason(settings: Settings):

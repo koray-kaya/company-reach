@@ -6,6 +6,7 @@ exception — it does not close, so we close in the finally."""
 
 import json
 import sqlite3
+import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -28,6 +29,7 @@ from company_reach.screen import screen_reason
 from company_reach.tools.urls import address_key
 
 if TYPE_CHECKING:  # avoids pulling langchain into every db import
+    from company_reach.settings import Settings
     from company_reach.tools.llm import Provenance
     from company_reach.tools.search import Asked
 
@@ -80,6 +82,7 @@ _ADDED_COLUMNS = {
     ("ledger", "prompt_version"): "TEXT",
     # the sent row a not_sent or bounced takes back (D5)
     ("ledger", "reverses"): "INTEGER",
+    ("results", "needs_js"): "INTEGER",
 }
 
 
@@ -165,6 +168,25 @@ def copy_database(source: Path, target: Path) -> None:
     finally:
         src.close()
         dst.close()
+
+
+@contextmanager
+def scratch_copy(settings: "Settings", *, prefix: str) -> Iterator["Settings"]:
+    """Settings whose data directory is a throwaway folder holding a copy of
+    the database: what `run --dry` and the opt-in evaluations write to, so
+    neither leaves a row in the real one. Without a database there is
+    nothing to copy, and the folder starts empty.
+
+    The copy holds the same personal data as the database, so it is made
+    inside the data directory, never the system's temp directory: a process
+    killed before the cleanup leaves a `<prefix>*` folder there, under the
+    same care as the rest of `data/`."""
+    settings.data_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=settings.data_dir, prefix=prefix) as tmp:
+        work = settings.model_copy(update={"data_dir": Path(tmp)})
+        if settings.db_path.is_file():
+            copy_database(settings.db_path, work.db_path)
+        yield work
 
 
 def now() -> str:
@@ -388,7 +410,9 @@ def record_run(
     *,
     seed: int,
 ) -> None:
-    """Write the run's own record before any scoring happens.
+    """Write a `score` command's record before any scoring happens, with the
+    status "scoring" until `finish_run` ends it. (`run` keeps its record in
+    its manifest, not here.)
 
     The criteria are stored as JSON rather than left inside the prompt, so the
     question "why did this company score 8?" has an answer months later: these
@@ -401,7 +425,8 @@ def record_run(
                  prompt_versions, criteria, started_at, status)
                VALUES (?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(id) DO UPDATE SET criteria=excluded.criteria,
-                 prompt_versions=excluded.prompt_versions, model=excluded.model""",
+                 prompt_versions=excluded.prompt_versions, model=excluded.model,
+                 status=excluded.status, finished_at=NULL, counts=NULL""",
             (
                 run_id,
                 goal,
@@ -414,6 +439,18 @@ def record_run(
                 now(),
                 "scoring",
             ),
+        )
+
+
+def finish_run(
+    path: Path, run_id: str, *, status: str, counts: dict[str, int] | None
+) -> None:
+    """End a `score` command's row: "done" with what it scored, or "failed".
+    A row left at "scoring" then means a command that was killed."""
+    with connect(path) as conn:
+        conn.execute(
+            "update runs set status = ?, finished_at = ?, counts = ? where id = ?",
+            (status, now(), json.dumps(counts) if counts else None, run_id),
         )
 
 
@@ -693,15 +730,17 @@ def record_result(
     conn: sqlite3.Connection, result: CompanyResult, *, run_id: str
 ) -> None:
     """One row per (run, company). A retry of a company that errored replaces
-    its row, so a recovered company leaves no error behind."""
+    its row, so a recovered company leaves no error behind. A result that
+    does not know `needs_js` keeps the count already there."""
     conn.execute(
         """INSERT INTO results (run_id, uid, recommendation, reason,
-             error_kind, error_text, finished_at)
-           VALUES (?,?,?,?,?,?,?)
+             error_kind, error_text, finished_at, needs_js)
+           VALUES (?,?,?,?,?,?,?,?)
            ON CONFLICT(run_id, uid) DO UPDATE SET
              recommendation=excluded.recommendation, reason=excluded.reason,
              error_kind=excluded.error_kind, error_text=excluded.error_text,
-             finished_at=excluded.finished_at""",
+             finished_at=excluded.finished_at,
+             needs_js=coalesce(excluded.needs_js, results.needs_js)""",
         (
             run_id,
             result.uid,
@@ -710,6 +749,7 @@ def record_result(
             result.error_kind,
             result.error_text,
             now(),
+            result.needs_js,
         ),
     )
 
@@ -718,11 +758,23 @@ def result_for(
     conn: sqlite3.Connection, uid: str, *, run_id: str
 ) -> CompanyResult | None:
     row = conn.execute(
-        """select uid, recommendation, reason, error_kind, error_text
+        """select uid, recommendation, reason, error_kind, error_text, needs_js
              from results where run_id = ? and uid = ?""",
         (run_id, uid),
     ).fetchone()
     return CompanyResult(**dict(row)) if row else None
+
+
+def needs_js_by_uid(conn: sqlite3.Connection, run_id: str) -> dict[str, int]:
+    """The companies of a run whose site served a JavaScript shell, with how
+    many of their pages did: the measurement a browser fetcher would be
+    built on. From the table, so a resumed run counts its earlier attempt."""
+    rows = conn.execute(
+        """select uid, needs_js from results
+            where run_id = ? and needs_js > 0 order by uid""",
+        (run_id,),
+    ).fetchall()
+    return {row["uid"]: row["needs_js"] for row in rows}
 
 
 def count_sendable(conn: sqlite3.Connection, run_id: str) -> int:

@@ -164,8 +164,9 @@ async def test_the_footer_survives_the_cut_on_a_long_page(settings):
 
 @respx.mock
 async def test_a_shell_is_recorded_as_needing_javascript(settings):
-    """The counter the Playwright service is judged by. It travels with the
-    company; totalling it over a run is #20's business."""
+    """The counter a browser fetcher would be judged by. It travels with the
+    company into its results row, and the run's manifest lists it per
+    company (`counts.needs_js`)."""
     allow_robots()
     serve("/", SHELL)
 

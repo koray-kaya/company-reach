@@ -545,3 +545,31 @@ def test_the_pending_text_is_true_while_running_and_after_a_crash(settings):
     with connect(settings.db_path) as conn:
         text = conn.execute("select error_text from results").fetchone()[0]
     assert "not finished" in text and "retry" in text
+
+
+async def test_a_run_is_not_traced_when_the_env_says_on(settings, traces_sent):
+    """The graph traces itself too, with every state it passes — the goal,
+    about_me, what each child found. LANGSMITH_TRACING=true in the shell
+    must not turn that on either; only the setting may."""
+    _seed(settings, {"CHE000000001": 9})
+
+    await run_graph(
+        _start(settings), settings=settings, dry=True, child=build_stub_child()
+    )
+
+    assert traces_sent() == []
+
+
+async def test_a_retry_is_not_traced_when_the_env_says_on(settings, traces_sent):
+    """`retry` runs each child outside any run graph, so the child itself
+    has to be kept from tracing."""
+    _seed(settings, {"CHE000000001": 9})
+    with connect(settings.db_path) as conn:
+        _row(conn, "CHE000000001", "r1", None, error="search")
+
+    [result] = await retry_errors(
+        "r1", settings=settings, child=build_stub_child(), dry=True
+    )
+
+    assert result.recommendation == "skip"
+    assert traces_sent() == []

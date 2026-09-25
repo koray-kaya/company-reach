@@ -8,7 +8,6 @@ import tempfile
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-from urllib.parse import urlsplit
 
 import httpx
 from pydantic import BaseModel
@@ -21,23 +20,17 @@ from company_reach.profile import Profile, load_profile
 from company_reach.settings import Settings
 from company_reach.tools import llm
 from company_reach.tools.db import connect, init_db
-from company_reach.tools.invitation import assemble, subject, survey_link
+from company_reach.tools.invitation import (
+    assemble,
+    is_placeholder_url,
+    subject,
+    survey_link,
+)
 from company_reach.tools.mailto import LIMIT as MAILTO_LIMIT
 from company_reach.tools.mailto import build
 from company_reach.tools.search import _brave, ask_searxng
 
 MARKER = "COMPANY-REACH-OK"
-# Every prompt a run loads, so a broken header fails here rather than at the
-# first company that reaches that node.
-_PROMPTS = (
-    "criteria",
-    "score",
-    "doctor",
-    "pick_site",
-    "pick_pages",
-    "extract",
-    "draft",
-)
 
 
 class _Probe(BaseModel):
@@ -58,13 +51,16 @@ def _settings_check(settings: Settings) -> Check:
         f"model={settings.llm_model} effort={settings.llm_reasoning_effort} "
         f"max_tokens={settings.llm_max_tokens} concurrency={settings.llm_concurrency} "
         f"sending_approved={settings.sending_approved} "
-        f"paid_fallback={'brave' if settings.brave_search_api_key else 'none'}",
+        f"paid_fallback={'brave' if settings.brave_search_api_key else 'none'} "
+        f"tracing={settings.langsmith_tracing}",
     )
 
 
 def _prompts_check() -> Check:
+    """Every prompt a run loads (`llm.PROMPTS`), so a broken header fails
+    here rather than at the first company that reaches that node."""
     try:
-        versions = {name: llm.load_prompt(name)[0] for name in _PROMPTS}
+        versions = {name: llm.load_prompt(name)[0] for name in llm.PROMPTS}
     except Exception as e:
         return Check("prompts", False, str(e))
     return Check("prompts", True, ", ".join(f"{k}@{v}" for k, v in versions.items()))
@@ -167,10 +163,10 @@ def _profile_check(settings: Settings) -> Check:
     found: list[str] = []
     if gaps := profile.drafting_gaps():
         found.append(f"missing for drafting: {', '.join(gaps)}")
-    host = urlsplit(profile.survey_url).hostname or ""
-    if host == "example" or host.endswith(".example"):
+    if is_placeholder_url(profile.survey_url):
         found.append(
-            f"survey_url is a placeholder ({host}); drafts would be unsendable"
+            f"survey_url is a placeholder ({profile.survey_url}); drafts would "
+            "be unsendable"
         )
     fields = {
         **{f"sender.{k}": v for k, v in profile.sender.model_dump().items()},
@@ -255,10 +251,17 @@ async def _engines_check(settings: Settings) -> Check:
     url = f"{settings.searxng_url.rstrip('/')}/config"
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            config = (await client.get(url)).json()
-    except Exception as e:
+            answer = await client.get(url)
+        if answer.status_code != 200:
+            # a JSON error page would otherwise read as "no engine enabled"
+            return Check(
+                "engines", False, f"cannot read {url}: HTTP {answer.status_code}"
+            )
+        enabled = {
+            e["name"] for e in answer.json().get("engines", []) if e.get("enabled")
+        }
+    except Exception as e:  # a check reports; it never stops the others
         return Check("engines", False, f"cannot read {url}: {type(e).__name__}")
-    enabled = {e["name"] for e in config.get("engines", []) if e.get("enabled")}
     wanted = [n.strip() for n in settings.baseline_engines.split(",") if n.strip()]
     missing = [n for n in wanted if n not in enabled]
     if missing:

@@ -107,7 +107,7 @@ company-reach/
 │   ├── test_graph.py          # stubbed parent graph
 │   └── test_prompts.py        # golden set, RUN_LLM_EVALS=1
 ├── searxng/settings.yml
-├── compose.yaml · Dockerfile
+├── compose.yaml               # SearXNG, the only container
 ├── pyproject.toml · uv.lock · .python-version · .env.example
 ├── LICENSE · NOTICE · PRIVACY.md · README.md
 ├── IMPLEMENTATION.md · LEARNINGS.md · AGENTS.md · CLAUDE.md
