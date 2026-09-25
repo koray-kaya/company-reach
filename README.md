@@ -140,7 +140,10 @@ year.
 the real model and are opt-in: `RUN_LLM_EVALS=1 uv run pytest
 tests/test_prompts.py -s`. They use my hand-labelled set in `data/golden/`
 when it is there and a fictional subset committed in `tests/fixtures/`
-otherwise, so they run from a fresh clone.
+otherwise, so they run from a fresh clone. They write to a scratch copy of
+the database, never to the real one. The scoring evaluation grades the
+decision a run makes — who clears the draw threshold — over three trials,
+and appends its numbers to `data/evals/results.jsonl`.
 
 ## Notes
 

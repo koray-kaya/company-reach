@@ -2,23 +2,29 @@
 
     RUN_LLM_EVALS=1 uv run pytest tests/test_prompts.py -s
 
-What it measures, and why these numbers and not others:
+Every evaluation works on a scratch copy of the database (`eval_settings`),
+never on data/company_reach.db.
 
-*top-5 and top-10 overlap* — M3 draws from the top of the ranking, so only
-the top matters. A prompt change that reshuffles the bottom of the pool is
-not a regression.
+What the scoring evaluation measures, and why these numbers and not others:
 
-*bias* — mean(model - human). A systematically generous prompt fills the
-batch with companies the reviewer will reject, which is the expensive kind of
-error: each one costs a web search, ten page fetches and a draft.
+*the production decision* — a run draws a company when it scores at least
+DRAW_MIN_SCORE (7), and the companies worth drawing are the ones a person
+labels 6 or more. So precision and recall at that threshold are asserted:
+precision is the share of the drawn companies that were worth drawing,
+recall the share of those worth drawing that were drawn. The top-k overlap
+and the mean bias asserted before could stay green while the threshold let
+the wrong companies through: a bias near zero hid scores three points off in
+both directions (audit).
 
-*exact agreement* is reported but not asserted. On a 0-10 scale two careful
-people rarely agree exactly, and the measured model-against-itself noise is
-already 45/50 — an exact-match threshold would mostly measure noise.
+*three trials* — the model is not deterministic, and one trial cannot tell a
+real change from its own noise. Every trial has to clear the floor; the
+spread, the worst and the best trial, is printed.
 
-The baseline below was measured on 2026-09-20 with prompt score@1 and the
-goal at that date. Raise it when a change genuinely improves the numbers;
-that is the point of having it.
+*top-5, top-10, bias, mean absolute error, exact agreement* — printed, not
+asserted: the context a failing decision needs.
+
+Every run appends its numbers, per trial and per company, to
+data/evals/results.jsonl (`evals.RESULTS`), whether it passed or not.
 """
 
 import asyncio
@@ -29,8 +35,10 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+from evals import RESULTS, append_result, decision, spread
 
-from company_reach.models import CompanyRecord, ScoreBatch
+from company_reach.manifest import _git_commit
+from company_reach.models import CompanyRecord, ScoreBatch, SelectionCriteria
 from company_reach.nodes.find_site import _ask_model, _decide
 from company_reach.nodes.score_pool import _as_prompt_data, _check
 from company_reach.nodes.write_criteria import format_criteria, write_criteria
@@ -38,21 +46,39 @@ from company_reach.profile import load_profile
 from company_reach.settings import Settings
 from company_reach.tools import llm
 from company_reach.tools.candidate_pages import CandidatePages
-from company_reach.tools.db import company_by_uid, connect, scratch_copy
+from company_reach.tools.db import company_by_uid, connect, now, scratch_copy
 
 GOLDEN = Path("data/golden/labels.jsonl")
 # The public subset: fictional, committed, used when data/golden/ is absent
 # so a fresh clone can run these evaluations (M8). See its README.
 SUBSET = Path(__file__).parent / "fixtures/golden/subset"
 
-# Measured 2026-09-20, goal "make or process a product and sell it on",
-# score@1, GLM-5.3-Flash, reasoning_effort=low.
-BASELINE = {"top5": 3, "top10": 6, "abs_bias": 0.37}
-# The public subset has its own floor: twenty fictional companies whose top
-# five and top ten are unambiguous by construction. Measured twice in a fresh
-# clone on 2026-09-24 (score@1, GLM-5.3-Flash, low): top-5 3 and 4, top-10
-# 10 and 9, bias +0.90 and +0.45. The floor is the worse run.
-SUBSET_BASELINE: dict[str, float] | None = {"top5": 3, "top10": 9, "abs_bias": 0.90}
+# The label a person gave a company worth drawing.
+HUMAN_BAR = 6
+TRIALS = 3
+# Precision and recall at DRAW_MIN_SCORE against HUMAN_BAR. The private
+# floor is the one measurement there is: the audit (2026-09-24) read the
+# production scores stored for 19 golden companies, and at 7 against 6 they
+# drew three of the four worth drawing, and two that were not. With four
+# companies worth drawing, one company moves recall by 0.25: the numbers
+# are only as steady as the set is large.
+DECISION_FLOOR = {"precision": 0.60, "recall": 0.75}
+# The public subset's floor comes from how it was built, not from a
+# measurement: the nine companies labelled 8 or 9 are drawn and the bakery
+# at 6 may go either way (recall 0.9), and none of the ten labelled 0-2 is
+# (precision 1.0). Replace it with the worse trial of the first measured run.
+SUBSET_DECISION_FLOOR = {"precision": 1.0, "recall": 0.9}
+# How far below the floor a trial may fall: one score in ten, the share that
+# moved between two identical scoring runs (45 of 50 agreed, 2026-09-20).
+MARGIN = 0.10
+# What was asserted before the decision was: top-5 and top-10 overlap and
+# the bias, measured 2026-09-20 on the private set (score@1, GLM-5.3-Flash,
+# low) and 2026-09-24 on the subset, the worse of two runs. Printed beside
+# today's numbers for comparison.
+EARLIER = {
+    "private": "top-5 3, top-10 6, bias +0.37",
+    "subset": "top-5 3, top-10 9, bias +0.90",
+}
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("RUN_LLM_EVALS") != "1",
@@ -80,10 +106,51 @@ def _top(scores: dict[str, int], n: int) -> set[str]:
     return {u for u, _ in sorted(scores.items(), key=lambda z: (-z[1], z[0]))[:n]}
 
 
-async def test_scoring_matches_the_hand_labels(eval_settings: Settings):
+async def _score_once(
+    goal: str,
+    criteria: SelectionCriteria,
+    companies: list[CompanyRecord],
+    settings: Settings,
+) -> tuple[dict[str, int], llm.Provenance, int, int]:
+    """One trial, as `score` asks it: (scores, provenance, missing, dropped)."""
+    answer, prov = await llm.ask(
+        "score",
+        ScoreBatch,
+        settings=settings,
+        goal=goal,
+        criteria=format_criteria(criteria),
+        companies=_as_prompt_data(companies),
+    )
+    valid, missing, dropped = _check(answer, {c.uid: c for c in companies})
+    return {v.uid: v.score for v in valid}, prov, len(missing), dropped
+
+
+def _trial(model: dict[str, int], human: dict[str, int], *, draw_at: int) -> dict:
+    d = decision(model, human, draw_at=draw_at, human_bar=HUMAN_BAR)
+    errors = [model[u] - human[u] for u in human if u in model]
+    return {
+        "precision": round(d.precision, 3),
+        "recall": round(d.recall, 3),
+        "drawn": d.drawn,
+        "deserved": d.deserved,
+        "hits": d.hits,
+        "top5": len(_top(human, 5) & _top(model, 5)),
+        "top10": len(_top(human, 10) & _top(model, 10)),
+        "bias": round(statistics.mean(errors), 2),
+        "mae": round(statistics.mean(abs(e) for e in errors), 2),
+        "exact": sum(e == 0 for e in errors),
+        "scored": len(errors),
+    }
+
+
+def _clears(value: float, floor: float) -> bool:
+    return value >= floor - MARGIN - 1e-9  # the float's own error is no failure
+
+
+async def test_scoring_makes_the_production_decision(eval_settings: Settings):
     private = GOLDEN.is_file()
     source = GOLDEN if private else SUBSET / "scoring.jsonl"
-    baseline = BASELINE if private else SUBSET_BASELINE
+    floor = DECISION_FLOOR if private else SUBSET_DECISION_FLOOR
 
     lines = source.read_text(encoding="utf-8").splitlines()
     items = [json.loads(line) for line in lines]
@@ -101,48 +168,100 @@ async def test_scoring_matches_the_hand_labels(eval_settings: Settings):
     ]
 
     settings = eval_settings
+    draw_at = settings.draw_min_score
     # the subset's labels were written against its own goal, not yours
     goal = (
         load_profile(Path("profile.toml")).goal
         if private
         else (SUBSET / "goal.txt").read_text(encoding="utf-8").strip()
     )
-    criteria, _ = await write_criteria(goal, settings=settings)
-    answer, prov = await llm.ask(
-        "score",
-        ScoreBatch,
-        settings=settings,
-        goal=goal,
-        criteria=format_criteria(criteria),
-        companies=_as_prompt_data(companies),
+    # One set of criteria for every trial, as a goal has one stored set.
+    criteria, criteria_prov = await write_criteria(goal, settings=settings)
+    runs = await asyncio.gather(
+        *(_score_once(goal, criteria, companies, settings) for _ in range(TRIALS))
     )
-    valid, missing, dropped = _check(answer, {c.uid: c for c in companies})
-    model = {v.uid: v.score for v in valid}
 
-    shared = [u for u in human if u in model]
-    top5 = len(_top(human, 5) & _top(model, 5))
-    top10 = len(_top(human, 10) & _top(model, 10))
-    bias = statistics.mean(model[u] - human[u] for u in shared)
-    exact = sum(1 for u in shared if human[u] == model[u])
+    trials = []
+    for model, prov, missing, dropped in runs:
+        trials.append(
+            _trial(model, human, draw_at=draw_at)
+            | {
+                "missing": missing,
+                "dropped": dropped,
+                "seconds": round(prov.seconds, 1),
+                "prompt_tokens": prov.prompt_tokens,
+                "completion_tokens": prov.completion_tokens,
+            }
+        )
+    passed = all(
+        not t["missing"]
+        and _clears(t["precision"], floor["precision"])
+        and _clears(t["recall"], floor["recall"])
+        for t in trials
+    )
+    which = "private" if private else "subset"
+    prov = runs[0][1]
+    append_result(
+        RESULTS,
+        {
+            "eval": "scoring",
+            "at": now(),
+            "git_commit": _git_commit(),
+            "set": which,
+            "prompts": {
+                "score": prov.prompt_version,
+                "criteria": criteria_prov.prompt_version,
+            },
+            "model": prov.model,
+            "reasoning_effort": prov.reasoning_effort,
+            "draw_at": draw_at,
+            "human_bar": HUMAN_BAR,
+            "floor": floor,
+            "margin": MARGIN,
+            "passed": passed,
+            "trials": trials,
+            "scores": {
+                uid: {"human": label, "model": [run[0].get(uid) for run in runs]}
+                for uid, label in human.items()
+            },
+        },
+    )
 
-    which = "private golden set" if private else "public subset"
-    floor = baseline or {"top5": "-", "top10": "-", "abs_bias": float("nan")}
+    low_p, high_p = spread([t["precision"] for t in trials])
+    low_r, high_r = spread([t["recall"] for t in trials])
     print(
-        f"\n{which}: {len(shared)} companies, prompt score@{prov.prompt_version}, "
-        f"{prov.seconds:.0f}s\n"
-        f"  top-5 overlap  {top5}/5   (baseline {floor['top5']})\n"
-        f"  top-10 overlap {top10}/10  (baseline {floor['top10']})\n"
-        f"  bias           {bias:+.2f}  (baseline {floor['abs_bias']:+.2f})\n"
-        f"  exact          {exact}/{len(shared)}  (reported, not asserted)\n"
-        f"  missing {len(missing)}, dropped {dropped}"
+        f"\n{'private golden set' if private else 'public subset'}: "
+        f"{len(human)} companies, score@{prov.prompt_version}, "
+        f"{prov.model}, {TRIALS} trials, drawn at score >= {draw_at}, "
+        f"worth drawing at label >= {HUMAN_BAR}\n"
+        f"  precision  {low_p:.2f}-{high_p:.2f}  (floor {floor['precision']:.2f}"
+        f" - {MARGIN:.2f})\n"
+        f"  recall     {low_r:.2f}-{high_r:.2f}  (floor {floor['recall']:.2f}"
+        f" - {MARGIN:.2f})"
     )
+    for n, t in enumerate(trials, 1):
+        print(
+            f"  trial {n}: drew {t['drawn']}, {t['hits']} of {t['deserved']} worth "
+            f"it · top-5 {t['top5']} top-10 {t['top10']} bias {t['bias']:+.2f} "
+            f"mae {t['mae']:.2f} exact {t['exact']}/{t['scored']} · missing "
+            f"{t['missing']} dropped {t['dropped']} · {t['seconds']:.0f}s"
+        )
+    print(f"  asserted before: {EARLIER[which]}")
+    for uid, label in human.items():
+        scores = [run[0].get(uid) for run in runs]
+        wrong = [s is None or (s >= draw_at) != (label >= HUMAN_BAR) for s in scores]
+        if any(wrong):
+            print(f"  disagrees  {uid}  label {label}  scores {scores}")
+    print(f"  appended to {RESULTS}")
 
-    assert not missing, "the model failed to answer for some companies"
-    if baseline is None:
-        pytest.skip("no baseline for this set yet; the numbers above are the first")
-    assert top5 >= baseline["top5"], f"top-5 overlap fell to {top5}"
-    assert top10 >= baseline["top10"], f"top-10 overlap fell to {top10}"
-    assert abs(bias) <= baseline["abs_bias"] + 0.5, f"bias drifted to {bias:+.2f}"
+    for n, t in enumerate(trials, 1):
+        assert not t["missing"], f"trial {n}: the model left {t['missing']} out"
+        assert _clears(t["precision"], floor["precision"]), (
+            f"trial {n}: precision at score >= {draw_at} is {t['precision']:.2f}"
+        )
+        assert _clears(t["recall"], floor["recall"]), (
+            f"trial {n}: recall at score >= {draw_at} is {t['recall']:.2f}"
+        )
 
 
 # --- site choice --------------------------------------------------------------
