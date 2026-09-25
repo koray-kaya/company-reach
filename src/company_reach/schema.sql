@@ -32,6 +32,12 @@ CREATE TABLE IF NOT EXISTS criteria_history (
   created_at TEXT NOT NULL, replaced_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS seen (
   uid TEXT PRIMARY KEY, run_id TEXT NOT NULL, batch_no INTEGER NOT NULL, drawn_at TEXT NOT NULL);
+-- Where each company of a run stands while the run works on it: the step of
+-- its graph it entered last (issue #60). The front page reads it; `results`
+-- says how the company ended. A step's name only: no page text, no person.
+CREATE TABLE IF NOT EXISTS progress (
+  run_id TEXT NOT NULL, uid TEXT NOT NULL, stage TEXT NOT NULL, updated_at TEXT NOT NULL,
+  PRIMARY KEY (run_id, uid));
 -- The search log (#20): one row per provider asked for one of find_site's
 -- queries, errors included. `results` holds SearXNG's first ten URLs and is
 -- NULL for Brave, whose terms forbid storing its results.

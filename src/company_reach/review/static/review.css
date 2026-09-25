@@ -139,7 +139,7 @@ body.home{overflow:auto}
 .home .hint{margin-top:8px;font-size:13px;color:var(--muted)}
 .home .gate{margin-top:12px;padding:10px 12px;border-radius:8px;background:var(--warn);color:var(--warn-ink);font-size:14px}
 .home .gate.open{background:var(--good);color:var(--good-ink)}
-.home .actions{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+.home .actions{display:flex;flex-wrap:wrap;gap:10px;align-items:center;background:none;border:0;padding:0}
 .home .actions form.inline{display:flex;gap:6px}
 .home input{font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--ink);min-width:0;width:220px;max-width:100%}
 .home button{font:inherit;font-weight:700;padding:8px 14px;border-radius:8px;border:1px solid var(--line);background:var(--surface);color:var(--ink);cursor:pointer}
@@ -161,3 +161,14 @@ body.home{overflow:auto}
 .bar .home-link{white-space:nowrap;font-weight:700}
 .waiting-count{white-space:nowrap;color:var(--tint-ink);background:var(--tint);padding:3px 10px;border-radius:999px;font-weight:700}
 .home .done-note{padding:10px 14px;border-radius:8px;background:var(--good);color:var(--good-ink);font-size:14px}
+/* a running round, company by company (issue #60) */
+.home .round-summary{font-size:14.5px;color:var(--text);margin-bottom:10px}
+.home table.stages td,.home table.stages th{text-align:left;vertical-align:top}
+.home table.stages td:nth-child(2),.home table.stages th:nth-child(2){text-align:right;width:3.5em;color:var(--muted)}
+.home table.stages .stage{font-weight:700;white-space:nowrap}
+.home table.stages .why{display:block;font-size:12.5px;color:var(--muted);overflow-wrap:anywhere}
+.home table.stages tr.good .stage{color:var(--good-ink)}
+.home table.stages tr.now .stage{color:var(--blue)}
+.home table.stages tr.bad .stage{color:var(--warn-ink)}
+.home table.stages tr.done .stage,.home table.stages tr.wait .stage{color:var(--muted);font-weight:400}
+.home details.output{margin-top:12px} .home details.output summary{cursor:pointer;color:var(--muted);font-size:13px;margin-bottom:8px}

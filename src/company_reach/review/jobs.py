@@ -23,6 +23,7 @@ import sys
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
+from itertools import islice
 from pathlib import Path
 
 # a run id as `run` makes them (r1a2b3c4d) or as a person typed one (m6-e2e-1);
@@ -30,6 +31,9 @@ from pathlib import Path
 _RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
 # FSO municipality numbers, one or a comma list
 _MUNICIPALITIES = re.compile(r"[0-9]{1,4}(,[0-9]{1,4})*")
+
+# `run` prints "run <id> — if it stops, …" as its first line
+_RUN_LINE = re.compile(r"run (\S+) ")
 
 FIXED = {
     "round": ["run", "--target", "10"],
@@ -98,6 +102,21 @@ class Job:
         if self.process:
             return self.process.poll() is None
         return _alive(self.pid) and _runs(self.pid, self.argv)
+
+    @property
+    def run_id(self) -> str | None:
+        """The run this command works on: named in `retry` and `redraft`,
+        printed by `run` in its first line. None for anything else."""
+        if self.argv[:1] in (["retry"], ["redraft"]) and len(self.argv) > 1:
+            return self.argv[1]
+        try:
+            with self.log.open(encoding="utf-8", errors="replace") as f:
+                for line in islice(f, 5):
+                    if found := _RUN_LINE.match(line):
+                        return found.group(1)
+        except FileNotFoundError:
+            pass
+        return None
 
     def tail(self, lines: int = 40) -> str:
         try:
