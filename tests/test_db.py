@@ -12,11 +12,13 @@ from company_reach.tools.db import (
     connect,
     errored_uids,
     init_db,
+    is_suppressed,
     load_criteria,
     profile_by_uid,
     record_decision,
     record_page,
     record_searches,
+    scratch_copy,
     search_log,
     store_criteria,
     suppress,
@@ -511,3 +513,31 @@ def test_replaced_criteria_are_kept_in_history(tmp_path: Path):
     assert SelectionCriteria.model_validate_json(kept[0]["criteria"]) == sets[0]
     assert all(row["goal_hash"] == "g1" and row["replaced_at"] for row in kept)
     assert current is not None and current.criteria_hash == "h3"
+
+
+def test_a_scratch_copy_leaves_the_real_database_alone(settings):
+    """What a dry run and the opt-in evaluations work on (audit: the draft
+    evaluation wrote drafts with real names into the production database).
+    The copy sits inside the data directory, under the same care as the
+    database it copies, and is gone afterwards."""
+    init_db(settings.db_path)
+    with connect(settings.db_path) as conn:
+        suppress(conn, "anna@muster.example", reason="request")
+
+    with scratch_copy(settings, prefix=".eval-") as work:
+        assert work.db_path != settings.db_path
+        assert work.data_dir.parent == settings.data_dir
+        with connect(work.db_path) as conn:
+            assert is_suppressed(conn, "anna@muster.example")  # reads the real rows
+            suppress(conn, "eval@muster.example", reason="eval")
+
+    with connect(settings.db_path) as conn:
+        assert not is_suppressed(conn, "eval@muster.example")
+    assert not work.data_dir.exists()
+
+
+def test_a_scratch_copy_without_a_database_starts_empty(settings):
+    with scratch_copy(settings, prefix=".eval-") as work:
+        with connect(work.db_path) as conn:
+            assert conn.execute("select count(*) from companies").fetchone()[0] == 0
+    assert not settings.db_path.exists()

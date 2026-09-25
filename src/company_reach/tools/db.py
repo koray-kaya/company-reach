@@ -6,6 +6,7 @@ exception — it does not close, so we close in the finally."""
 
 import json
 import sqlite3
+import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -28,6 +29,7 @@ from company_reach.screen import screen_reason
 from company_reach.tools.urls import address_key
 
 if TYPE_CHECKING:  # avoids pulling langchain into every db import
+    from company_reach.settings import Settings
     from company_reach.tools.llm import Provenance
     from company_reach.tools.search import Asked
 
@@ -165,6 +167,25 @@ def copy_database(source: Path, target: Path) -> None:
     finally:
         src.close()
         dst.close()
+
+
+@contextmanager
+def scratch_copy(settings: "Settings", *, prefix: str) -> Iterator["Settings"]:
+    """Settings whose data directory is a throwaway folder holding a copy of
+    the database: what `run --dry` and the opt-in evaluations write to, so
+    neither leaves a row in the real one. Without a database there is
+    nothing to copy, and the folder starts empty.
+
+    The copy holds the same personal data as the database, so it is made
+    inside the data directory, never the system's temp directory: a process
+    killed before the cleanup leaves a `<prefix>*` folder there, under the
+    same care as the rest of `data/`."""
+    settings.data_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=settings.data_dir, prefix=prefix) as tmp:
+        work = settings.model_copy(update={"data_dir": Path(tmp)})
+        if settings.db_path.is_file():
+            copy_database(settings.db_path, work.db_path)
+        yield work
 
 
 def now() -> str:

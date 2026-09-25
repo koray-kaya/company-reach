@@ -4,7 +4,6 @@
 import asyncio
 import json
 import math
-import tempfile
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -38,7 +37,6 @@ from company_reach.settings import Settings, get_settings
 from company_reach.tools import llm
 from company_reach.tools.db import (
     connect,
-    copy_database,
     count_brave_queries,
     count_scored,
     current_criteria_hash,
@@ -49,6 +47,7 @@ from company_reach.tools.db import (
     pool_standing,
     record_run,
     score_run_criteria,
+    scratch_copy,
     status_by_municipality,
     store_criteria,
 )
@@ -88,23 +87,15 @@ def _run_id(explicit: str | None) -> str:
 def _work_database(s: Settings, *, dry: bool) -> Iterator[Settings]:
     """The settings a run reads and writes the database through.
 
-    A real run gets `s` itself. A dry run gets settings whose data directory
-    is a throwaway copy of the real database: the loop writes `seen` and
-    `results`, and on the real database a demonstration marked real
-    companies as drawn, out of every later run (Phase A's final review).
-
-    The copy holds the same personal data as the database, so it is made
-    inside the data directory, never the system's temp directory: a run
-    killed before the cleanup leaves a `.dry-*` folder there, under the
-    same care as the rest of `data/`."""
+    A real run gets `s` itself. A dry run gets a scratch copy of the real
+    database (`db.scratch_copy`, a `.dry-*` folder in the data directory):
+    the loop writes `seen` and `results`, and on the real database a
+    demonstration marked real companies as drawn, out of every later run
+    (Phase A's final review)."""
     if not dry:
         yield s
         return
-    s.data_dir.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(dir=s.data_dir, prefix=".dry-") as tmp:
-        work = s.model_copy(update={"data_dir": Path(tmp)})
-        if s.db_path.is_file():
-            copy_database(s.db_path, work.db_path)
+    with scratch_copy(s, prefix=".dry-") as work:
         yield work
 
 

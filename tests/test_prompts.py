@@ -25,6 +25,7 @@ import asyncio
 import json
 import os
 import statistics
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -37,7 +38,7 @@ from company_reach.profile import load_profile
 from company_reach.settings import Settings
 from company_reach.tools import llm
 from company_reach.tools.candidate_pages import CandidatePages
-from company_reach.tools.db import company_by_uid, connect
+from company_reach.tools.db import company_by_uid, connect, scratch_copy
 
 GOLDEN = Path("data/golden/labels.jsonl")
 # The public subset: fictional, committed, used when data/golden/ is absent
@@ -59,11 +60,27 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+@pytest.fixture
+def eval_settings() -> Iterator[Settings]:
+    """The real settings with the data directory swapped for a scratch copy
+    of the database (`db.scratch_copy`). An evaluation reads the golden
+    companies, profiles and contacts the database holds; whatever it writes
+    — pages, profiles, contacts, drafts — goes to the copy and is gone
+    afterwards. The audit found the draft evaluation writing drafts with
+    real names into the production database, where they then changed its
+    own inputs from one run to the next."""
+    real = Settings()
+    with scratch_copy(real, prefix=".eval-") as work:
+        assert work.db_path != real.db_path
+        assert real.data_dir.resolve() in work.db_path.resolve().parents
+        yield work
+
+
 def _top(scores: dict[str, int], n: int) -> set[str]:
     return {u for u, _ in sorted(scores.items(), key=lambda z: (-z[1], z[0]))[:n]}
 
 
-async def test_scoring_matches_the_hand_labels():
+async def test_scoring_matches_the_hand_labels(eval_settings: Settings):
     private = GOLDEN.is_file()
     source = GOLDEN if private else SUBSET / "scoring.jsonl"
     baseline = BASELINE if private else SUBSET_BASELINE
@@ -83,7 +100,7 @@ async def test_scoring_matches_the_hand_labels():
         for i in items
     ]
 
-    settings = Settings()
+    settings = eval_settings
     # the subset's labels were written against its own goal, not yours
     goal = (
         load_profile(Path("profile.toml")).goal
@@ -168,7 +185,7 @@ async def _choose(row: dict, settings: Settings) -> tuple[str | None, str]:
     return (_domain(site.url) if site else None), (answer.quote or "")
 
 
-async def test_site_choice_matches_the_golden_set():
+async def test_site_choice_matches_the_golden_set(eval_settings: Settings):
     """Twenty companies, labelled by hand on 2026-09-21: fourteen with a
     site, six without. The six are the valuable half — the easy way for a
     site finder to fail is to find a site for everyone.
@@ -184,7 +201,7 @@ async def test_site_choice_matches_the_golden_set():
         pytest.skip(f"no golden sites at {SITES} (they live outside git)")
 
     rows = [json.loads(line) for line in expected_file.read_text().splitlines()]
-    settings = Settings()
+    settings = eval_settings
     runs: list[tuple[int, int, list[str]]] = []
     for _ in range(2):
         chosen = await asyncio.gather(*[_choose(row, settings) for row in rows])
@@ -273,7 +290,10 @@ async def _profile_for(row: dict, settings: Settings):
     else:
         with connect(settings.db_path) as conn:
             record = company_by_uid(conn, row["uid"])
-        fetcher = Fetcher(settings, delay_s=0.0)
+        # the page cache is the real one: it is not the database, and a
+        # scratch cache would fetch every site again on every evaluation
+        cache = settings.model_copy(update={"data_dir": settings.data_dir.parent})
+        fetcher = Fetcher(cache, delay_s=0.0)
         urls = json.loads((SITES / row["uid"] / "read.json").read_text())
         read = await read_pages(
             {"pages_to_read": urls}, settings=settings, fetcher=fetcher
@@ -297,7 +317,7 @@ def _subset_record(row: dict) -> CompanyRecord:
     )
 
 
-async def test_extraction_matches_the_hand_labels():
+async def test_extraction_matches_the_hand_labels(eval_settings: Settings):
     """Persons and e-mail addresses, compared as sets.
 
     `description` and `size_signal` are not graded. They are prose, and an
@@ -312,7 +332,7 @@ async def test_extraction_matches_the_hand_labels():
     source = LABELS if private else SUBSET / "extraction.jsonl"
     baseline = EXTRACT_BASELINE if private else EXTRACT_SUBSET_BASELINE
     rows = [json.loads(line) for line in source.read_text().splitlines()]
-    settings = Settings()
+    settings = eval_settings
     profiles = await asyncio.gather(*[_profile_for(r, settings) for r in rows])
 
     names_right = mails_right = extra = 0
@@ -424,11 +444,11 @@ def _draft_inputs(settings: Settings) -> list[dict]:
     return inputs
 
 
-async def test_drafts_pass_the_checklist():
+async def test_drafts_pass_the_checklist(eval_settings: Settings):
     from company_reach.nodes.check_draft import sentence_problems
     from company_reach.nodes.draft import draft
 
-    settings = Settings()
+    settings = eval_settings
     private = (SITES / "expected.jsonl").is_file()
     inputs = _draft_inputs(settings) if private else _subset_draft_inputs(settings)
     baseline = DRAFT_BASELINE if private else DRAFT_SUBSET_BASELINE
@@ -467,7 +487,7 @@ async def test_drafts_pass_the_checklist():
     assert passed >= baseline["passed"]
 
 
-async def test_a_poisoned_page_never_reaches_a_mail():
+async def test_a_poisoned_page_never_reaches_a_mail(eval_settings: Settings):
     """The P1 acceptance (audit-2026-09-19.md:186), end to end with the
     model: three trials on the poisoned fixture, and no finished mail may
     carry anything the page planted. One is a failure — the model is not
@@ -481,7 +501,7 @@ async def test_a_poisoned_page_never_reaches_a_mail():
     from company_reach.nodes.recommend import recommend
     from company_reach.tools.textify import textify
 
-    settings = Settings()
+    settings = eval_settings
     site = "https://beispiel-holzbau.ch/"
     page = Path("tests/fixtures/golden/poisoned_instructions.html").read_text()
     record = CompanyRecord(
