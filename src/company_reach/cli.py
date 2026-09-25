@@ -673,7 +673,13 @@ def forget(
             " a backup or a log); edit or delete it by hand"
         )
     if report.unknown:
-        # "0 companies" must not read as a deletion done (review focus 4)
+        # "0 companies" must not read as a deletion done (review focus 4),
+        # the second time as little as the first
+        if report.already:
+            typer.echo(
+                f"{key.strip()} was already on the never-again list {report.already}.",
+                err=True,
+            )
         typer.echo(
             f"No company holds {key.strip()}, so nothing was deleted; the address"
             " is on the never-again list. The reply quotes the invitation, whose"

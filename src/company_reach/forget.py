@@ -48,7 +48,7 @@ from pathlib import Path
 
 from company_reach.models import CompanyProfile
 from company_reach.settings import Settings
-from company_reach.tools.db import connect, is_suppressed, suppress
+from company_reach.tools.db import connect, suppress, suppression_for
 from company_reach.tools.urls import address_key, email_domain, registered_domain
 
 _UID = re.compile(r"^CHE[-.\s\d]+$", re.IGNORECASE)
@@ -59,6 +59,7 @@ _SEARCHED = {
     *(".db", ".db-wal", ".sqlite", ".sqlite3"),
 }
 _BLOCK = 1 << 20  # bytes read at a time
+_NO_COMPANY = "forgotten on request; no company found"
 
 
 @dataclass
@@ -68,9 +69,11 @@ class Report:
     rows_deleted: int = 0
     cache_files_deleted: int = 0
     still_named: list[Path] = field(default_factory=list)
-    # an address no table holds and nobody suppressed before: nothing could
-    # be deleted, and the company has to be found another way
+    # an address no company holds: nothing could be deleted, and the company
+    # has to be found another way — however often the address is forgotten
     unknown: bool = False
+    # the key was on the never-again list before: "since <date> (<reason>)"
+    already: str | None = None
 
 
 def _uids_for(conn: sqlite3.Connection, key: str) -> list[str]:
@@ -269,7 +272,8 @@ def forget(settings: Settings, key: str) -> Report:
     by_address = not _UID.match(key)
     with connect(settings.db_path) as conn:
         uids = _uids_for(conn, key)
-        known = bool(uids) or (by_address and is_suppressed(conn, key))
+        if before := suppression_for(conn, key):
+            report.already = f"since {before['added_at'][:10]} ({before['reason']})"
         names = _names(conn, uids) if uids else set()
         addresses = [address_key(key)] if by_address else []
         if by_address:
@@ -283,10 +287,13 @@ def forget(settings: Settings, key: str) -> Report:
         for uid in uids:
             suppress(conn, uid, reason="forgotten on request")
         report.suppressed = list(uids)
+        # an address no company holds keeps saying so: a second request
+        # from it must not read the first one's row as a company found
+        reason = "forgotten on request" if uids else _NO_COMPANY
         for address in dict.fromkeys(addresses):  # in order, once each
-            suppress(conn, address, reason="forgotten on request")
+            suppress(conn, address, reason=reason)
             report.suppressed.append(address)
-    report.unknown = by_address and not known
+    report.unknown = by_address and not uids
     report.companies = uids
     report.cache_files_deleted = _delete_cache(settings.data_dir / "cache", domains)
     _compact(settings.db_path)

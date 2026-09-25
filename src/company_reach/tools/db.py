@@ -1159,10 +1159,14 @@ def suppress(conn: sqlite3.Connection, key: str, *, reason: str) -> None:
 
 
 def is_suppressed(conn: sqlite3.Connection, key: str) -> bool:
-    return (
-        conn.execute("select 1 from suppression where key = ?", (_key(key),)).fetchone()
-        is not None
-    )
+    return suppression_for(conn, key) is not None
+
+
+def suppression_for(conn: sqlite3.Connection, key: str) -> sqlite3.Row | None:
+    """The key's never-again row — its reason and since when — or None."""
+    return conn.execute(
+        "select reason, added_at from suppression where key = ?", (_key(key),)
+    ).fetchone()
 
 
 def address_block(conn: sqlite3.Connection, address: str, *, uid: str) -> str | None:
@@ -1170,9 +1174,7 @@ def address_block(conn: sqlite3.Connection, address: str, *, uid: str) -> str | 
     The never-again list and "contacted once" hold for an inbox as well as
     for a company: sister firms share a site and an info@, and a person who
     asked to be forgotten through one of them must not hear from the other."""
-    row = conn.execute(
-        "select reason, added_at from suppression where key = ?", (_key(address),)
-    ).fetchone()
+    row = suppression_for(conn, address)
     if row is not None:
         return f"on the never-again list since {row['added_at'][:10]} ({row['reason']})"
     # a send taken back reached nobody; a bounced address is suppressed above

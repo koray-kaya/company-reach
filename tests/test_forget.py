@@ -326,3 +326,21 @@ def test_an_unknown_address_explains_and_exits_2(settings, data, monkeypatch):
     assert "company-reach forget CHE" in r.output
     with connect(settings.db_path) as conn:
         assert is_suppressed(conn, "someone@nowhere.example")
+
+
+def test_an_unknown_address_forgotten_twice_still_exits_2(settings, data, monkeypatch):
+    """Review: the first run suppressed the address, and the second read
+    that as a known address and reported success — although no company was
+    ever found and nothing was ever deleted."""
+    from typer.testing import CliRunner
+
+    from company_reach import cli
+
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    runner = CliRunner()
+    first = runner.invoke(cli.app, ["forget", "someone@nowhere.example"])
+    second = runner.invoke(cli.app, ["forget", "Someone@Nowhere.example"])
+    assert (first.exit_code, second.exit_code) == (2, 2), second.output
+    assert "already on the never-again list since" in second.output
+    assert "no company found" in second.output
+    assert "company-reach forget CHE" in second.output
