@@ -492,12 +492,14 @@ async def test_retry_skips_a_forgotten_company(settings):
     run is retried. Retrying would search, read and name the person again."""
     from company_reach.forget import forget
 
-    _seed(settings, {"CHE000000001": 9, "CHE000000002": 9, "CHE000000003": 9})
+    # forget checks a UID's check digit, so these three are real-shaped
+    forgotten, kept, no_site = "CHE000000046", "CHE123456788", "CHE111111118"
+    _seed(settings, {forgotten: 9, kept: 9, no_site: 9})
     with connect(settings.db_path) as conn:
         for uid, rec, reason, kind in (
-            ("CHE000000001", None, None, "search"),
-            ("CHE000000002", None, None, "search"),
-            ("CHE000000003", "skip", "no website found after 3 searches", None),
+            (forgotten, None, None, "search"),
+            (kept, None, None, "search"),
+            (no_site, "skip", "no website found after 3 searches", None),
         ):
             conn.execute(
                 "insert into results (run_id, uid, recommendation, reason,"
@@ -505,12 +507,12 @@ async def test_retry_skips_a_forgotten_company(settings):
                 " values ('r1', ?, ?, ?, ?, '2026-09-24T00:00:00+00:00')",
                 (uid, rec, reason, kind),
             )
-    forget(settings, "CHE000000001")
-    forget(settings, "CHE000000003")
+    forget(settings, forgotten)
+    forget(settings, no_site)
 
-    child = ChildByUid({"CHE000000002": "send"})
+    child = ChildByUid({kept: "send"})
     await retry_errors("r1", settings=settings, child=child, dry=True, no_site=True)
-    assert child.seen == ["CHE000000002"]
+    assert child.seen == [kept]
 
 
 async def test_a_resumed_batch_leaves_a_company_marked_never_alone(settings):

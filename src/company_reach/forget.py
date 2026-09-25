@@ -3,7 +3,8 @@
 The invitation promises it: "Ein kurzes «Nein» genügt, dann lösche ich Ihren
 Namen" (frame@1, `tools/invitation.privacy`). It promises the name, never
 the address, because the address is kept on the never-again list for good.
-So `forget <uid|email>`:
+So `forget <uid|email|survey link>` (a link's `c=` UID; a UID's check
+digit is checked, and anything else is refused before anything happens):
 
 * removes the company's contacts (and the alternatives named beside them),
   drafts, profiles and site evidence, and the person's name from the
@@ -22,8 +23,9 @@ An address is looked up wherever the tool kept one: the contact and every
 address its card offered, the persons a profile names, and the ledger —
 after a purge the only place left. A reply usually comes from the person's
 own mailbox rather than the inbox the mail went to. An address found
-nowhere is still suppressed, and the command says how to find the company:
-by the `c=` UID in the survey link the reply quotes.
+nowhere — and a UID no table holds — is still suppressed, and the command
+says nothing was deleted and how to find the company: by the `c=` UID in
+the survey link the reply quotes.
 
 Hand-kept research files (`data/v0`, `data/golden`) are not edited by code,
 and neither are copies: a database backup under `data/`, a log, a
@@ -47,10 +49,13 @@ import sqlite3
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
+from company_reach.errors import CompanyReachError
 from company_reach.models import CompanyProfile
 from company_reach.settings import Settings
 from company_reach.tools.db import connect, suppress, suppression_for
+from company_reach.tools.uid import is_valid_uid
 from company_reach.tools.urls import address_key, email_domain, registered_domain
 
 _UID = re.compile(r"^CHE[-.\s\d]+$", re.IGNORECASE)
@@ -75,10 +80,17 @@ _COMPRESSED = {
 _BLOCK = 1 << 20  # bytes read at a time
 _LIVE = ("-wal", "-shm")  # the live database's own companions
 _NO_COMPANY = "forgotten on request; no company found"
+# every table that holds a row about a company, by its uid
+_UID_TABLES = (
+    *("companies", "scores", "seen", "results", "ledger", "contacts"),
+    *("profiles", "drafts", "sites", "searches", "responses"),
+)
 
 
 @dataclass
 class Report:
+    key: str = ""  # what the request named, as parsed: a UID or an address
+    by_uid: bool = False
     companies: list[str] = field(default_factory=list)
     suppressed: list[str] = field(default_factory=list)
     rows_deleted: int = 0
@@ -86,22 +98,56 @@ class Report:
     still_named: list[Path] = field(default_factory=list)
     # compressed or unreadable: it may name the person, and nobody looked
     not_searched: list[Path] = field(default_factory=list)
-    # an address no company holds: nothing could be deleted, and the company
-    # has to be found another way — however often the address is forgotten
+    # a key no company holds: nothing could be deleted, and the company has
+    # to be found another way — however often the key is forgotten
     unknown: bool = False
     # the key was on the never-again list before: "since <date> (<reason>)"
     already: str | None = None
 
 
-def _uids_for(conn: sqlite3.Connection, key: str) -> list[str]:
-    """The companies an address belongs to, wherever the tool kept it: the
-    chosen contact and every address the card offered, the persons a
-    profile names, and the ledger — which, after a purge, is the only place
-    left. Exact matches only, by `address_key` (case, internationalised
-    domains); a LIKE pattern read "_" as any character and forgot the
-    wrong company."""
-    if _UID.match(key):
-        return ["CHE" + re.sub(r"\D", "", key)]
+def parse_key(key: str) -> tuple[bool, str]:
+    """What a deletion request names: `(True, "CHE…")` for a UID — typed,
+    or read from the `c=` of a pasted survey link — and `(False, address)`
+    for an e-mail address. Anything else raises: a mistyped UID or a line
+    of text must not become a never-again key and a reported success."""
+    text = key.strip()
+    from_link = parse_qs(urlsplit(text).query).get("c", [""])[0].strip()
+    if from_link:
+        text = from_link
+    if _UID.match(text):
+        uid = "CHE" + re.sub(r"\D", "", text)
+        if not is_valid_uid(uid):
+            raise CompanyReachError(
+                f"{text} is not a UID: its check digit does not match. Nothing"
+                " was forgotten; copy the UID again from the survey link (c=CHE…)."
+            )
+        return True, uid
+    if not from_link and "@" in text and not any(c.isspace() for c in text):
+        return False, text
+    raise CompanyReachError(
+        f"{key.strip()!r} is neither a UID (CHE…), an e-mail address nor a survey"
+        " link with ?c=CHE…. Nothing was forgotten."
+    )
+
+
+def _uid_known(conn: sqlite3.Connection, uid: str) -> bool:
+    """Whether any table holds the company — a UID nothing holds is most
+    likely mistyped, and forgetting it deletes nothing."""
+    return any(
+        conn.execute(f"select 1 from {table} where uid = ? limit 1", (uid,)).fetchone()
+        for table in _UID_TABLES
+    )
+
+
+def _uids_for(conn: sqlite3.Connection, by_uid: bool, key: str) -> list[str]:
+    """The company a UID names, if the tool holds it, or the companies an
+    address belongs to, wherever the tool kept it: the chosen contact and
+    every address the card offered, the persons a profile names, and the
+    ledger — which, after a purge, is the only place left. Exact matches
+    only, by `address_key` (case, internationalised domains); a LIKE
+    pattern read "_" as any character and forgot the wrong company."""
+    if by_uid:
+        return [key] if _uid_known(conn, key) else []
     rows = conn.execute(
         """select uid from contacts
             where address_key(email) = :key
@@ -306,20 +352,24 @@ def _still_named(
 
 
 def forget(settings: Settings, key: str) -> Report:
-    report = Report()
-    by_address = not _UID.match(key)
+    """Raises `CompanyReachError`, before touching anything, when `key` is
+    neither a valid UID, an address nor a survey link carrying one."""
+    by_uid, key = parse_key(key)
+    report = Report(key=key if by_uid else address_key(key), by_uid=by_uid)
     with connect(settings.db_path) as conn:
-        uids = _uids_for(conn, key)
+        uids = _uids_for(conn, by_uid, key)
         if before := suppression_for(conn, key):
             report.already = f"since {before['added_at'][:10]} ({before['reason']})"
         names = _names(conn, uids) if uids else set()
-        addresses = [address_key(key)] if by_address else []
-        if by_address:
-            names.update({key.strip().lower(), address_key(key)})
+        # the key itself goes on the list when it is an address, or a UID
+        # no table holds; a company found is suppressed by its uid below
+        keys = [] if by_uid and uids else [report.key]
+        if not by_uid:
+            names.update({key.lower(), address_key(key)})
         domains = _domains(conn, uids) if uids else set()
         if uids:
             mailed = _mailed_addresses(conn, uids)
-            addresses += mailed
+            keys += mailed
             names.update(mailed)
             report.rows_deleted = _delete_rows(
                 conn, uids, domains, reason="forgotten", clear_ledger_addresses=True
@@ -327,13 +377,13 @@ def forget(settings: Settings, key: str) -> Report:
         for uid in uids:
             suppress(conn, uid, reason="forgotten on request")
         report.suppressed = list(uids)
-        # an address no company holds keeps saying so: a second request
-        # from it must not read the first one's row as a company found
+        # a key no company holds keeps saying so: a second request with it
+        # must not read the first one's row as a company found
         reason = "forgotten on request" if uids else _NO_COMPANY
-        for address in dict.fromkeys(addresses):  # in order, once each
-            suppress(conn, address, reason=reason)
-            report.suppressed.append(address)
-    report.unknown = by_address and not uids
+        for other in dict.fromkeys(keys):  # in order, once each
+            suppress(conn, other, reason=reason)
+            report.suppressed.append(other)
+    report.unknown = not uids
     report.companies = uids
     report.cache_files_deleted = _delete_cache(settings.data_dir / "cache", domains)
     _compact(settings.db_path)

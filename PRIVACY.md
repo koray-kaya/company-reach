@@ -110,7 +110,7 @@ gets it. Everything else is written by code (`tools/invitation.py`):
 
 ## How it is deleted
 
-- **On request:** `company-reach forget <uid|email>` removes the person
+- **On request:** `company-reach forget <uid|email|survey link>` removes the person
   from the database and the page cache — contacts and everyone named beside
   them, drafts, profiles, site evidence, the search log, the imported survey
   response times for the company, the name in the recommendation — and
@@ -123,7 +123,10 @@ gets it. Everything else is written by code (`tools/invitation.py`):
   When no company holds it, `forget` still puts it on the never-again list,
   says that nothing was deleted, and exits with status 2: the company is
   found by the UID in the survey link the reply quotes (`?c=CHE…`), and
-  `forget <UID>` deletes it. Files the tool did not write are not edited;
+  `forget <UID>`, or `forget` with the pasted link, deletes it. A UID
+  whose check digit does not match is refused, and one no table holds is
+  handled like an unknown address: listed, nothing deleted, status 2.
+  Files the tool did not write are not edited;
   any that still name the person are listed — including a copy of the
   database (a backup under `data/`, with its `-wal` file) and a log, which
   have to be deleted or cleaned by hand. A file it cannot search — a

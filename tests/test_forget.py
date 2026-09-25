@@ -389,6 +389,52 @@ def test_an_unknown_address_explains_and_exits_2(settings, data, monkeypatch):
         assert is_suppressed(conn, "someone@nowhere.example")
 
 
+def forget_cli(settings, monkeypatch, key: str):
+    from typer.testing import CliRunner
+
+    from company_reach import cli
+
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    return CliRunner().invoke(cli.app, ["forget", key])
+
+
+def suppression_keys(settings) -> set[str]:
+    with connect(settings.db_path) as conn:
+        return {r["key"] for r in conn.execute("select key from suppression")}
+
+
+def test_a_uid_with_a_wrong_check_digit_is_refused(settings, data, monkeypatch):
+    """Review: a mistyped UID was suppressed and reported as a success."""
+    r = forget_cli(settings, monkeypatch, "CHE-000.000.047")
+    assert r.exit_code == 2, r.output
+    assert "check digit" in r.output
+    assert suppression_keys(settings) == set()
+
+
+def test_a_uid_in_no_table_exits_2(settings, data, monkeypatch):
+    """A valid UID the tool never held: nothing to delete, which must not
+    read as a deletion done."""
+    r = forget_cli(settings, monkeypatch, "CHE-900.000.016")
+    assert r.exit_code == 2, r.output
+    assert "No record of CHE900000016" in r.output
+    assert suppression_keys(settings) == {"CHE900000016"}
+
+
+def test_a_pasted_survey_link_forgets_its_uid(settings, data):
+    """The reply quotes the invitation; its link is what gets pasted. The
+    link's c= UID is the key — the link itself is no suppression key."""
+    report = forget(settings, f"https://survey.test/form/?c={SEND}&l=de")
+    assert report.companies == [SEND]
+    assert suppression_keys(settings) == {SEND, "info@muster-metallbau.ch"}
+
+
+def test_a_key_that_is_neither_is_refused(settings, data, monkeypatch):
+    r = forget_cli(settings, monkeypatch, "Anna Muster")
+    assert r.exit_code == 2, r.output
+    assert "neither" in r.output
+    assert suppression_keys(settings) == set()
+
+
 def test_an_unknown_address_forgotten_twice_still_exits_2(settings, data, monkeypatch):
     """Review: the first run suppressed the address, and the second read
     that as a known address and reported success — although no company was

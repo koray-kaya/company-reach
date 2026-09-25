@@ -655,13 +655,23 @@ def review(
 
 @app.command()
 def forget(
-    key: Annotated[str, typer.Argument(help="A company's UID or a person's address.")],
+    key: Annotated[
+        str,
+        typer.Argument(
+            help="A company's UID, a person's address, or the invitation's"
+            " survey link (its c= UID)."
+        ),
+    ],
 ) -> None:
     """Honour a deletion request: remove the person from the database and the
     page cache, and never contact the company or address again."""
     from company_reach.forget import forget as forget_key
 
-    report = forget_key(get_settings(), key)
+    try:
+        report = forget_key(get_settings(), key)
+    except CompanyReachError as error:  # a mistyped UID, a line of text
+        typer.echo(str(error), err=True)
+        raise typer.Exit(2) from error
     typer.echo(
         f"{len(report.companies)} companies · {report.rows_deleted} rows and "
         f"{report.cache_files_deleted} cache files deleted"
@@ -682,16 +692,24 @@ def forget(
         # the second time as little as the first
         if report.already:
             typer.echo(
-                f"{key.strip()} was already on the never-again list {report.already}.",
+                f"{report.key} was already on the never-again list {report.already}.",
                 err=True,
             )
-        typer.echo(
-            f"No company holds {key.strip()}, so nothing was deleted; the address"
-            " is on the never-again list. The reply quotes the invitation, whose"
-            " survey link ends in ?c=CHE…: run `company-reach forget CHE…` with"
-            " that UID.",
-            err=True,
-        )
+        if report.by_uid:
+            typer.echo(
+                f"No record of {report.key} in the database, so nothing was"
+                " deleted; the UID is on the never-again list. Check it against"
+                " the survey link the reply quotes (?c=CHE…).",
+                err=True,
+            )
+        else:
+            typer.echo(
+                f"No company holds {report.key}, so nothing was deleted; the"
+                " address is on the never-again list. The reply quotes the"
+                " invitation, whose survey link ends in ?c=CHE…: run"
+                " `company-reach forget CHE…` with that UID, or paste the link.",
+                err=True,
+            )
         raise typer.Exit(2)
 
 
