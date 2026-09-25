@@ -21,12 +21,22 @@ never drown the reader.
 
 | Band | Content | Notes |
 |---|---|---|
-| **Top bar** (one line) | goal · municipality · progress marks (one per company: blue = current, green = sent, grey = skipped) · `3 / 10` · `Sent this month: 14` | Read once. The count is a plain number: no cap exists by design. |
+| **Top bar** (one line) | ← Home · previous / `3 / 10` / next · progress marks (one per company: blue = current, green = sent, grey = skipped) · `3 / 10` · `Sent this month: 14` | Read once. The count is a plain number: no cap exists by design. |
 | **Stage** (fills the rest) | left pane 5/11: decision and facts · right pane 6/11: the draft as a letter | The stage is a horizontal track; each company is one slide. Arrows at the left and right edges. |
 | **Bottom bar** (one line) | `Skip:` four one-tap reasons · `Never again` · spacer · `Send` (primary, right) | Always in the same place, so the hand learns it. |
 
-Nothing scrolls on a desktop (≥ 900 px). Below that width the panes stack and
-the page may scroll — a phone cannot hold both panes.
+The page does not scroll on a desktop (≥ 900 px): each pane that holds more
+than the screen scrolls on its own and shows a soft shadow on the edge with
+more. Below that width the panes stack and the page scrolls, with the action
+bar kept at the bottom — a phone cannot hold both panes.
+
+Changed 2026-09-25 (issue #49): the goal left the top bar — it is the same on
+every card, and as one unbreakable line it made the page wider than a 1470 px
+window, pushing the draft and Send off screen. The page's one grid column is
+`minmax(0,1fr)` so no content can widen it again; previous and next moved
+from the screen edges into the top bar; the draft's paragraphs are spaced by
+a margin instead of a blank line, so a whole invitation fits a 738 px high
+window.
 
 ### Left pane, top to bottom
 

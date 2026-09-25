@@ -15,18 +15,18 @@
 {% endif %}
   <header class="bar">
     <a class="home-link" href="/">← Home</a>
-    <div class="goal"><strong>{{ goal }}</strong></div>
+    <nav class="steps" aria-label="Companies">
+      <a class="step{% if n == 0 %} off{% endif %}" id="prev" href="/review/{{ run_id }}/{{ n - 1 }}" aria-label="Previous company">‹</a>
+      <span class="pos">{{ n + 1 }} / {{ cards | length }}</span>
+      <a class="step{% if n + 1 == cards | length %} off{% endif %}" id="next" href="/review/{{ run_id }}/{{ n + 1 }}" aria-label="Next company">›</a>
+    </nav>
     <div class="progress" aria-hidden="true">
       {% for other in cards %}<i class="{% if loop.index0 == n %}now{% elif other.decision == 'sent' %}sent{% elif other.decision %}skipped{% endif %}"></i>{% endfor %}
     </div>
-    <div class="pos">{{ n + 1 }} / {{ cards | length }}</div>
     <div class="count">Sent this month: <strong>{{ sent_this_month }}</strong></div>
   </header>
 
   <main class="stage" aria-live="polite">
-    <a class="nav prev{% if n == 0 %} off{% endif %}" id="prev" href="/review/{{ run_id }}/{{ n - 1 }}" aria-label="Previous company">‹</a>
-    <a class="nav next{% if n + 1 == cards | length %} off{% endif %}" id="next" href="/review/{{ run_id }}/{{ n + 1 }}" aria-label="Next company">›</a>
-
     <section class="slide" aria-label="{{ card.name }}">
       <div class="facts">
         <div class="verdict">
@@ -69,8 +69,8 @@
             {% set refused = card.address_blocks.get(a.email) %}
             <label class="addr"><input type="radio" name="to" value="{{ a.email }}"{% if a.email == card.default_to %} checked{% endif %}{% if card.send_block or a.kind == 'third_party' or refused or not written_for %} disabled{% endif %}><span class="mail">{{ a.email }}</span><span class="kind {{ a.kind }}">{{ a.kind | replace('_', ' ') }}</span>
               <span class="rowhint">{% if refused %}<strong>Not sent to: {{ refused }}.</strong> {% endif %}{% if a.kind == 'seen' %}Their own address on the company's site.{% elif a.kind == 'generic' %}The inbox the site publishes.{% if c.name and written_for %} The first line of the mail asks whoever reads it to pass it to {{ c.name }}.{% endif %}{% elif a.kind == 'constructed' %}Not seen anywhere: info@ on the site's domain, guessed. A bounce is visible and harmless.{% elif a.kind == 'third_party' %}On another domain than the verified site — the way a hostile page plants a contact. Never sent to from here.{% endif %}</span></label>
-            {% if not written_for and a.kind != 'third_party' and not refused and card.can_readdress %}<p class="hint" style="margin:0 0 0 30px"><button class="btn small" name="action" value="address:{{ a.email }}">Write to this address instead</button> The mail is rebuilt for it; read it again before sending.</p>{% endif %}
-            {% if a.note %}<p class="hint" style="margin:0 0 0 30px">{{ a.email }}: {{ a.note }}</p>{% endif %}
+            {% if not written_for and a.kind != 'third_party' and not refused and card.can_readdress %}<p class="hint indent"><button class="btn small" name="action" value="address:{{ a.email }}">Write to this address instead</button> The mail is rebuilt for it; read it again before sending.</p>{% endif %}
+            {% if a.note %}<p class="hint indent">{{ a.email }}: {{ a.note }}</p>{% endif %}
             {% endfor %}
           </div>
           {% endif %}
@@ -102,7 +102,7 @@
           <dt>To</dt><dd>{% if c and c.name %}{{ c.name }} &lt;{{ c.email }}&gt;{% else %}{{ c.email }}{% endif %}</dd>
           <dt>Subject</dt><dd>{{ card.draft.subject }}</dd>
         </dl></header>
-        <div class="body">{{ card.draft.body }}</div>
+        <div class="body">{% for paragraph in card.draft.body.split("\n\n") %}<p>{{ paragraph }}</p>{% endfor %}</div>
         <footer>
           <span>Opens in your mail client · {{ card.link_length }} of 2,000 link characters</span>
           <span>draft@{{ card.draft.prompt_version }} · {{ card.draft.frame_version or 'no frame' }} · {{ card.draft.arm or '–' }} · {{ card.draft.model }}</span>
