@@ -103,9 +103,13 @@
           <dt>To</dt><dd>{% if c and c.name %}{{ c.name }} &lt;{{ c.email }}&gt;{% else %}{{ c.email }}{% endif %}</dd>
           <dt>Subject</dt><dd>{{ card.draft.subject }}</dd>
         </dl></header>
+        {% if outlook %}{# copied by Send (review.js): Outlook links a pasted URL, not a prefilled one (#62) #}
+        <template id="mail-html">{{ mail_html | safe }}</template>
+        <textarea id="mail-text" hidden readonly>{{ card.draft.body }}</textarea>
+        {% endif %}
         <div class="body">{% for paragraph in card.draft.body.split("\n\n") %}<p>{{ paragraph }}</p>{% endfor %}</div>
         <footer>
-          <span>{% if outlook %}Opens in Outlook in a new tab{% else %}Opens in your mail client · {{ card.link_length }} of 2,000 link characters{% endif %}</span>
+          <span>{% if outlook %}Opens in Outlook in a new tab. For a clickable link, click into the text there and press ⌘A, then ⌘V: Send copies the mail with a real link.{% else %}Opens in your mail client · {{ card.link_length }} of 2,000 link characters{% endif %}</span>
           <span>draft@{{ card.draft.prompt_version }} · {{ card.draft.frame_version or 'no frame' }} · {{ card.draft.arm or '–' }} · {{ card.draft.model }}</span>
         </footer>
       </article>

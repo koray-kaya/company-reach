@@ -115,7 +115,9 @@ and the mail is rebuilt without asking the model again. **Send** records the
 decision and opens the draft in your own mail program — nothing is sent by
 the tool. With `MAIL_CLIENT=outlook` in `.env` it opens Outlook on the web
 instead, filled in, in a new tab; the card's tab then shows the recorded
-send, with **It was not sent** if you close Outlook without sending. Send stays locked until `SENDING_APPROVED=true` is set in `.env`
+send, with **It was not sent** if you close Outlook without sending. Outlook on the web makes a pasted address a link but not one its compose
+link fills in, so Send also copies the mail with the survey link as a real
+link: in Outlook, click into the text and press ⌘A, then ⌘V. Send stays locked until `SENDING_APPROVED=true` is set in `.env`
 and the profile's `survey_url` is real, and it refuses a draft that no
 longer matches the profile or the contact. The page runs next to the other
 commands, not in a container: it shares their SQLite database, and SQLite

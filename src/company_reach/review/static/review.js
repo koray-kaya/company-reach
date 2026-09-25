@@ -37,6 +37,21 @@
     });
   }
 
+  // Outlook on the web links a URL that is pasted, never one its compose
+  // link fills in (issue #62): Send also copies the mail with a real link,
+  // to paste over the prefilled text there (cmd-A, cmd-V).
+  var mailHtml = document.getElementById("mail-html");
+  var mailText = document.getElementById("mail-text");
+  if (send && mailHtml && mailText && navigator.clipboard && window.ClipboardItem) {
+    send.addEventListener("click", function () {
+      var item = new ClipboardItem({
+        "text/html": new Blob([mailHtml.innerHTML], { type: "text/html" }),
+        "text/plain": new Blob([mailText.value], { type: "text/plain" }),
+      });
+      navigator.clipboard.write([item]).catch(function (e) { console.warn("copy failed: " + e.name + ": " + e.message); });
+    });
+  }
+
   document.addEventListener("keydown", function (e) {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     var t = e.target;
