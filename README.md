@@ -113,7 +113,9 @@ written by code from the profile and the contact. You can switch the
 salutation (Frau / Herr / none) or write to another of the addresses found,
 and the mail is rebuilt without asking the model again. **Send** records the
 decision and opens the draft in your own mail program — nothing is sent by
-the tool. Send stays locked until `SENDING_APPROVED=true` is set in `.env`
+the tool. With `MAIL_CLIENT=outlook` in `.env` it opens Outlook on the web
+instead, filled in, in a new tab; the card's tab then shows the recorded
+send, with **It was not sent** if you close Outlook without sending. Send stays locked until `SENDING_APPROVED=true` is set in `.env`
 and the profile's `survey_url` is real, and it refuses a draft that no
 longer matches the profile or the contact. The page runs next to the other
 commands, not in a container: it shares their SQLite database, and SQLite

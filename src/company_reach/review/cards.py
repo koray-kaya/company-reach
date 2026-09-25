@@ -147,6 +147,8 @@ class Card:
     default_to: str | None = None
     # its bounce is the ledger's newest row: a mistaken click is undone
     can_undo_bounce: bool = False
+    # its send is the ledger's newest row: "It was not sent" takes it back
+    sent_id: int | None = None
 
 
 def safe_url(url: str | None) -> str | None:
@@ -402,9 +404,19 @@ def load_cards(
                 address_blocks=blocks,
                 default_to=default_to,
                 can_undo_bounce=undoable_bounce(conn, uid) is not None,
+                sent_id=latest["id"] if _newest_is(conn, latest, "sent") else None,
             )
         )
     return cards
+
+
+def _newest_is(conn: sqlite3.Connection, row: sqlite3.Row | None, status: str) -> bool:
+    """`row` is this status and the newest row of the whole ledger: nothing
+    else has been decided since."""
+    if row is None or row["status"] != status:
+        return False
+    newest = conn.execute("select max(id) from ledger").fetchone()[0]
+    return newest == row["id"]
 
 
 def first_undecided(cards: list[Card]) -> int:
