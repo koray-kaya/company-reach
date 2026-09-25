@@ -202,7 +202,6 @@ name = "company-reach"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "charset-normalizer" },
     { name = "fastapi", extra = ["standard"] },
     { name = "httpx" },
     { name = "langchain-openai" },
@@ -226,7 +225,6 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "charset-normalizer", specifier = ">=3.5" },
     { name = "fastapi", extras = ["standard"], specifier = ">=0.141" },
     { name = "httpx", specifier = ">=0.28" },
     { name = "langchain-openai", specifier = ">=1.6.2" },

@@ -358,7 +358,8 @@ async def test_a_declared_crawl_delay_is_honoured(settings: Settings, monkeypatc
 # httpx decodes a body without a charset in its Content-Type as UTF-8 and never
 # reads the page's own <meta charset>. An older SME site in Latin-1 then came
 # out with U+FFFD for every umlaut — in the greeting, or dropped as invented
-# (audit).
+# (audit). The order now: UTF-8 when the bytes are valid UTF-8, else the
+# declared charset, else Windows-1252.
 
 IMPRESSUM_TEXT = "Geschäftsführer: Hans Müller, Bahnhofstrasse 12a, 8000 Zürich"
 
@@ -393,39 +394,84 @@ async def test_an_http_equiv_charset_is_read_too(f: Fetcher):
 
 
 @respx.mock
-async def test_a_page_that_declares_nothing_is_detected(f: Fetcher):
+async def test_a_page_that_declares_nothing_is_read_as_windows_1252(f: Fetcher):
     allow_robots()
     respx.get(HOME).mock(return_value=answer(latin1_page()))
     assert IMPRESSUM_TEXT in (await f.get(HOME)).html
 
 
 @respx.mock
-async def test_the_header_charset_comes_first(f: Fetcher):
-    # the server's word outranks the page's: the meta tag here is stale
+async def test_a_french_page_that_declares_nothing_keeps_its_accents(f: Fetcher):
+    """Review of E3: charset_normalizer guessed Central European for a short
+    Latin-1 page, and "Genève" came out as "Genčve"."""
+    allow_robots()
+    text = "Administratrice: Hélène Dupré, Rue du Rhône 1, 1204 Genève"
+    body = f"<html><body><p>{text}</p></body></html>".encode("latin-1")
+    respx.get(HOME).mock(return_value=answer(body))
+    assert text in (await f.get(HOME)).html
+
+
+@respx.mock
+async def test_valid_utf8_comes_first(f: Fetcher):
+    # the bytes' own word outranks a declaration: the meta tag here is stale
     allow_robots()
     html = f'<html><head><meta charset="iso-8859-1"></head><p>{IMPRESSUM_TEXT}</p>'
-    respx.get(HOME).mock(
-        return_value=answer(html.encode("utf-8"), "text/html; charset=utf-8")
-    )
+    respx.get(HOME).mock(return_value=answer(html.encode("utf-8")))
     assert IMPRESSUM_TEXT in (await f.get(HOME)).html
 
 
 @respx.mock
-async def test_a_cached_page_with_broken_characters_is_fetched_again(f: Fetcher):
-    """Pages cached before the charset fix hold the U+FFFD already, and a
-    rerun would read them from the cache for good."""
+async def test_a_page_mislabelled_utf8_is_read_as_windows_1252(f: Fetcher):
+    allow_robots()
+    respx.get(HOME).mock(return_value=answer(latin1_page(), "text/html; charset=utf-8"))
+    assert IMPRESSUM_TEXT in (await f.get(HOME)).html
+
+
+@respx.mock
+async def test_a_declared_utf16_is_read_as_utf8(f: Fetcher):
+    # what browsers do: a page that says UTF-16 in its markup is not
+    allow_robots()
+    html = f'<html><head><meta charset="utf-16"></head><p>{IMPRESSUM_TEXT}</p>'
+    respx.get(HOME).mock(
+        return_value=answer(html.encode("utf-8"), "text/html; charset=utf-16")
+    )
+    assert IMPRESSUM_TEXT in (await f.get(HOME)).html
+
+
+def seed_cache(f: Fetcher, html: str, **meta) -> None:
+    f.cache_path(HOME).parent.mkdir(parents=True, exist_ok=True)
+    f.cache_path(HOME).write_text(html, encoding="utf-8")
+    side = {"url": HOME, "final_url": None, "status": 200} | meta
+    f.cache_path(HOME).with_suffix(".json").write_text(
+        json.dumps(side), encoding="utf-8"
+    )
+
+
+@respx.mock
+async def test_a_page_cached_by_the_old_decoder_is_fetched_again(f: Fetcher):
+    """Pages cached before the charset fix were decoded as UTF-8 whatever
+    they were, and a rerun would read them from the cache for good."""
     allow_robots()
     route = respx.get(HOME).mock(
         return_value=answer(latin1_page('<meta charset="iso-8859-1">'))
     )
-    f.cache_path(HOME).parent.mkdir(parents=True, exist_ok=True)
-    f.cache_path(HOME).write_text("<p>Hans M\ufffdller</p>", encoding="utf-8")
-    f.cache_path(HOME).with_suffix(".json").write_text(
-        json.dumps({"url": HOME, "final_url": None, "status": 200}), encoding="utf-8"
-    )
+    seed_cache(f, "<p>Hans M\ufffdller</p>")  # no decoder recorded
     page = await f.get(HOME)
     assert route.call_count == 1
     assert "Hans Müller" in page.html
+
+
+@respx.mock
+async def test_a_real_replacement_character_is_not_fetched_again(f: Fetcher):
+    """Review of E3: a page that really carries U+FFFD was fetched on every
+    get(). The side file now says which decoder wrote the page."""
+    allow_robots()
+    body = "<p>Kaputt: \ufffd</p>".encode()
+    route = respx.get(HOME).mock(return_value=answer(body))
+    await f.get(HOME)
+    page = await f.get(HOME)
+    assert route.call_count == 1
+    assert "\ufffd" in page.html
 
 
 # --- the cache ---------------------------------------------------------------
