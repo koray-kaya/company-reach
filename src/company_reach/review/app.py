@@ -147,6 +147,9 @@ def create_app(settings: Settings) -> FastAPI:
                 raise HTTPException(
                     409, "an address on another domain is never sent to"
                 )
+            if email in card.address_blocks:
+                # a mail rebuilt for a refused inbox would only be refused at Send
+                raise HTTPException(409, f"{email} is {card.address_blocks[email]}")
             if card.decision is not None:
                 raise HTTPException(409, f"already decided: {card.decision}")
             if not card.can_readdress:
@@ -218,6 +221,9 @@ def create_app(settings: Settings) -> FastAPI:
         if offered[to] == "third_party":
             # the way a hostile page plants a contact: shown, never sent to
             raise HTTPException(409, "an address on another domain is never sent to")
+        if to in card.address_blocks:
+            # the never-again list and "contacted once" hold per inbox too
+            raise HTTPException(409, f"{to} is {card.address_blocks[to]}")
         if to != card.contact.email:
             # the greeting, the first line and the privacy text describe the
             # address the mail was written for, and only that one

@@ -1104,6 +1104,29 @@ def is_suppressed(conn: sqlite3.Connection, key: str) -> bool:
     )
 
 
+def address_block(conn: sqlite3.Connection, address: str, *, uid: str) -> str | None:
+    """Why `address` may not be written to for company `uid`, or None.
+    The never-again list and "contacted once" hold for an inbox as well as
+    for a company: sister firms share a site and an info@, and a person who
+    asked to be forgotten through one of them must not hear from the other."""
+    row = conn.execute(
+        "select reason, added_at from suppression where key = ?", (_key(address),)
+    ).fetchone()
+    if row is not None:
+        return f"on the never-again list since {row['added_at'][:10]} ({row['reason']})"
+    row = conn.execute(
+        """select l.decided_at, coalesce(c.name, l.uid) as company
+             from ledger l left join companies c on c.uid = l.uid
+            where l.status = 'sent' and l.uid <> ?
+              and address_key(l.address) = ?
+            order by l.id limit 1""",
+        (uid, address_key(address)),
+    ).fetchone()
+    if row is not None:
+        return f"already written to on {row['decided_at'][:10]}, for {row['company']}"
+    return None
+
+
 def record_site(
     conn: sqlite3.Connection,
     run_id: str,

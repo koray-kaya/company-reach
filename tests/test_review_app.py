@@ -492,3 +492,45 @@ def test_send_to_a_row_the_mail_was_not_written_for_is_refused(two_seen):
 
 def test_a_third_party_row_cannot_be_chosen(client, review):
     assert choose(client, "studio@agentur.example").status_code == 409
+
+
+# --- the address, not only the company (audit: address-level suppression) ---
+
+
+def post_send(client: TestClient, to: str, *, uid: str = SEND, n: int = 0):
+    return client.post(
+        f"/decide/{RUN}/{uid}?n={n}", data={"action": "send", "to": to}, headers=SAME
+    )
+
+
+def test_an_address_already_mailed_is_refused(client, review):
+    """A sister company on the same site, with the same inbox, was written
+    to in an earlier run: one inbox, one invitation."""
+    from company_reach.tools.db import record_decision
+
+    with connect(review.db_path) as conn:
+        record_decision(
+            conn, "CHE999999999", "sent", address="Info@Muster-Metallbau.ch"
+        )
+    html = client.get(f"/review/{RUN}/0").text
+    assert 'value="info@muster-metallbau.ch" disabled' in html
+    assert "already written to" in html
+    r = post_send(client, "info@muster-metallbau.ch")
+    assert r.status_code == 409
+    assert "already written to" in r.text
+    assert ledger_rows(review) == 1  # the sister's row only
+
+
+def test_a_suppressed_address_is_refused(client, review):
+    """The inbox asked to be forgotten through another company's mail."""
+    from company_reach.tools.db import suppress
+
+    with connect(review.db_path) as conn:
+        suppress(conn, "info@muster-metallbau.ch", reason="forgotten on request")
+    html = client.get(f"/review/{RUN}/0").text
+    assert 'value="info@muster-metallbau.ch" disabled' in html
+    assert "never-again list" in html
+    r = post_send(client, "info@muster-metallbau.ch")
+    assert r.status_code == 409
+    assert "never-again list" in r.text
+    assert ledger_rows(review) == 0

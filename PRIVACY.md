@@ -86,7 +86,9 @@ gets it. Everything else is written by code (`tools/invitation.py`):
   SHAB is never given as the source of an address, and a guessed address
   is not said to come from anywhere.
 - **One mail only.** "Ich schreibe Ihnen nur dieses eine Mal." The ledger
-  keeps that promise. Only if the profile allows one reminder (which needs
+  keeps that promise, for the company and for the inbox: the review page
+  refuses an address that is on the never-again list or was already written
+  to for another company, such as a sister firm sharing one info@. Only if the profile allows one reminder (which needs
   ethics approval first) does the mail say "Ich erinnere Sie höchstens
   einmal daran" instead.
 - **How to be deleted.** When someone is named: "Ein kurzes «Nein» genügt,
