@@ -98,6 +98,47 @@ def test_a_footer_the_text_already_has_is_not_written_twice():
     assert text.count("8000 Musterstadt") == 1
 
 
+MAIN_SENTENCE = "Wir fertigen Metallteile fuer den Maschinenbau."
+
+
+def test_a_body_named_after_its_footer_is_not_a_footer():
+    """Review of E4: `<body class="has-sticky-footer">` matched, and the
+    whole page was appended to itself."""
+    html = long_page(f"<footer>{FOOTER}</footer>").replace(
+        "<body>", "<body class='has-sticky-footer'>"
+    )
+    text = textify(html)
+    assert text.count(MAIN_SENTENCE) == 20
+    assert "CHE-000.000.046" in text
+
+
+def test_a_wrapper_around_the_main_text_is_not_a_footer():
+    # an Impressum page's theme wraps its navigation and the text in one div
+    nav = "<nav><a href='/'>Home</a> <a href='/kontakt'>Kontakt</a></nav>"
+    html = (
+        long_page(f"<footer>{FOOTER}</footer>")
+        .replace("<main>", f"<div id='impressum'>{nav}<main>")
+        .replace("</main>", "</main></div>")
+    )
+    text = textify(html)
+    assert text.count(MAIN_SENTENCE) == 20
+    assert "CHE-000.000.046" in text
+
+
+def test_a_class_is_matched_on_whole_words():
+    # "prefooter" is a banner above the footer, not the footer
+    html = long_page(
+        "<div class='prefooter'><p>Jetzt Offerte anfragen und profitieren</p></div>"
+    )
+    assert "Offerte" not in textify(html)
+
+
+def test_the_footer_comes_before_the_main_text():
+    # so that a cut for length takes the main text's tail, never the Impressum
+    text = textify(long_page(f"<footer>{FOOTER}</footer>"))
+    assert text.index("CHE-000.000.046") < text.index(MAIN_SENTENCE)
+
+
 # --- addresses the text would otherwise lose ---------------------------------
 # Found in the M6 live run: a site whose Impressum carries its address only as
 # a mailto: link behind the word "E-Mail", and one whose contact page has it

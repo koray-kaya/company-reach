@@ -139,6 +139,30 @@ async def test_a_page_is_truncated_at_a_word(settings, monkeypatch):
 
 
 @respx.mock
+async def test_the_footer_survives_the_cut_on_a_long_page(settings):
+    """Review of E4: a one-page site with a long main text kept its footer
+    after textify, and the 8,000-character cut then took it off the end."""
+    allow_robots()
+    main = "<p>" + "Wir fertigen Metallteile fuer den Maschinenbau. " * 300 + "</p>"
+    footer = (
+        "<footer><p>Inhaber: Hans Muster</p>"
+        "<p>Beispielstrasse 1, 8000 Musterstadt</p>"
+        "<p>UID: CHE-000.000.046</p></footer>"
+    )
+    serve("/", f"<html><body><main>{main}</main>{footer}</body></html>")
+
+    out = await read_pages(
+        state([f"{SITE}/"]), settings=settings, fetcher=quick(settings)
+    )
+
+    text = out["page_texts"][f"{SITE}/"]
+    assert len(text) <= settings.max_chars_per_page
+    for line in ("Hans Muster", "8000 Musterstadt", "CHE-000.000.046"):
+        assert line in text
+    assert "Metallteile" in text
+
+
+@respx.mock
 async def test_a_shell_is_recorded_as_needing_javascript(settings):
     """The counter the Playwright service is judged by. It travels with the
     company; totalling it over a run is #20's business."""
