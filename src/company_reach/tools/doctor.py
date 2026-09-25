@@ -17,7 +17,7 @@ from company_reach.profile import load_profile
 from company_reach.settings import Settings
 from company_reach.tools import llm
 from company_reach.tools.db import connect, init_db
-from company_reach.tools.search import search
+from company_reach.tools.search import _brave, ask_searxng
 
 MARKER = "COMPANY-REACH-OK"
 # Every prompt a run loads, so a broken header fails here rather than at the
@@ -51,7 +51,7 @@ def _settings_check(settings: Settings) -> Check:
         f"model={settings.llm_model} effort={settings.llm_reasoning_effort} "
         f"max_tokens={settings.llm_max_tokens} concurrency={settings.llm_concurrency} "
         f"sending_approved={settings.sending_approved} "
-        f"paid_fallback={'serper' if settings.serper_api_key else 'none'}",
+        f"paid_fallback={'brave' if settings.brave_search_api_key else 'none'}",
     )
 
 
@@ -148,11 +148,16 @@ def _profile_check(settings: Settings) -> Check:
 
 async def _search_check(settings: Settings) -> Check:
     """The query probe_search asks before every run. Nothing back means the
-    run would stop there, after scoring was already paid for."""
+    run would stop there, after scoring was already paid for. SearXNG is
+    asked alone: through `search`, a working Brave would stand in for it and
+    hide that the free provider is down."""
     try:
-        results = await search(PROBE_QUERY, settings=settings, limit=3)
+        asked = await ask_searxng(PROBE_QUERY, settings=settings, limit=3)
     except Exception as e:  # a check reports; it never stops the others
         return Check("search", False, f"{type(e).__name__}: {str(e)[:200]}")
+    if asked.error is not None:
+        return Check("search", False, f"SearchError: {asked.error[:200]}")
+    results = asked.results
     if not results:
         return Check(
             "search",
@@ -181,6 +186,21 @@ async def _engines_check(settings: Settings) -> Check:
             "engines", False, f"baseline engines not enabled: {', '.join(missing)}"
         )
     return Check("engines", True, ", ".join(wanted))
+
+
+async def _brave_check(settings: Settings) -> Check:
+    """The paid provider, asked directly with the probe query. Through
+    `search` it would be asked only when SearXNG failed, so a rejected key
+    would stay hidden behind a working SearXNG (review focus 5)."""
+    if settings.brave_search_api_key is None:
+        return Check("brave", True, "not configured")
+    try:
+        results = await _brave(PROBE_QUERY, settings=settings, limit=3)
+    except Exception as e:  # a check reports; it never stops the others
+        return Check("brave", False, f"{type(e).__name__}: {str(e)[:200]}")
+    if not results:
+        return Check("brave", False, "the probe query returned nothing")
+    return Check("brave", True, f"{len(results)} results")
 
 
 RETENTION_DAYS = 365
@@ -215,6 +235,7 @@ async def run_checks(settings: Settings) -> list[Check]:
         _retention_check(settings),
         await _search_check(settings),
         await _engines_check(settings),
+        await _brave_check(settings),
         await _endpoint_check(settings),
         await _budget_check(settings),
     ]

@@ -32,7 +32,7 @@ Only on the machine that runs it, under `data/`:
 
 | Place | What |
 |---|---|
-| `data/company_reach.db` (SQLite) | companies, scores, site evidence, page text, profiles, contacts, drafts, results, the ledger of decisions, the never-again list |
+| `data/company_reach.db` (SQLite) | companies, scores, site evidence, the search log (each query, and SearXNG's first ten result URLs — never Brave's), page text, profiles, contacts, drafts, results, the ledger of decisions, the never-again list |
 | `data/cache/` | the HTML of every page fetched |
 | `data/runs/<run>/manifest.json` | each run's settings, prompt versions and counts — no personal data |
 
@@ -45,7 +45,8 @@ in the repository's history. The Docker image contains the code only;
 | Recipient | What it receives | When |
 |---|---|---|
 | **The language model endpoint** you configure (`LLM_BASE_URL`) | register purposes (scoring); the text of candidate and company pages, which can contain names and addresses (site choice, page choice, extraction); the company description, the contact's role and your `about_me` (drafting) | every run |
-| **Search engines**, through your SearXNG instance (and Serper, only if you set a key) | company names, UIDs and addresses; for a LinkedIn lead, a person's name with the company name | finding a site; a lead |
+| **Search engines**, through your SearXNG instance | company names, UIDs and addresses; for a LinkedIn lead, a person's name with the company name | finding a site; a lead |
+| **Brave Search API**, only if you set `BRAVE_SEARCH_API_KEY` | company names with their seat, and UIDs — never a person's name: the LinkedIn lead search goes to SearXNG only | only when SearXNG fails, when it answered nothing, and before a company is recorded as having no website. Brave's results are not stored: for a Brave query the tool keeps the query, the number of results and any error, and a candidate site only Brave found is never written down |
 | **Company websites** | ordinary page requests, identified by the tool's user agent and a link to this repository | reading a site |
 | **LINDAS and SHAB** | a municipality number or a company's UID | building the pool; SHAB only when a site names nobody |
 
@@ -71,11 +72,12 @@ that a short reply has them deleted and stops any further mail.
 
 - **On request:** `company-reach forget <uid|email>` removes the person
   from the database and the page cache — contacts and everyone named beside
-  them, drafts, profiles, site evidence, the name in the recommendation — and
-  vacuums the database so nothing stays in free pages. The company and the
-  address go on the never-again list, so they are never contacted again. The
-  ledger keeps the decision without the address. Files the tool did not
-  write are not edited; any that still name the person are listed.
+  them, drafts, profiles, site evidence, the search log, the name in the
+  recommendation — and vacuums the database so nothing stays in free pages.
+  The company and the address go on the never-again list, so they are never
+  contacted again. The ledger keeps the decision without the address. Files
+  the tool did not write are not edited; any that still name the person are
+  listed.
 - **After a year:** `company-reach purge --older-than 365` removes the same
   data for every company nobody has touched for that long. It keeps the
   ledger and the never-again list, including the address of a mail that was

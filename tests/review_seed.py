@@ -12,10 +12,12 @@ from company_reach.tools.db import (
     init_db,
     record_contact,
     record_draft,
+    record_searches,
     record_site,
     upsert_companies,
 )
 from company_reach.tools.llm import Provenance
+from company_reach.tools.search import Asked, Result
 
 RUN = "r1"
 SEND, HOLD, SKIP = "CHE000000046", "CHE123456788", "CHE111111118"
@@ -165,4 +167,34 @@ def seed(path: Path, *, link: str | None = None) -> None:
             url=None,
             queries=['"Exempel Druck" Musterstadt', "Exempel Druck Impressum"],
             candidates=[],
+        )
+        record_searches(
+            conn,
+            RUN,
+            SKIP,
+            [
+                Asked(
+                    '"Exempel Druck" Musterstadt',
+                    "searxng",
+                    unresponsive=["brave", "duckduckgo"],
+                ),
+                Asked(
+                    "Exempel Druck Impressum",
+                    "searxng",
+                    error="SearXNG answered HTTP 503",
+                ),
+                Asked(
+                    "Exempel Druck Impressum",
+                    "brave",
+                    [
+                        Result(
+                            "https://www.moneyhouse.ch/de/company/exempel",
+                            "t",
+                            "s",
+                            "brave-api",
+                            provider="brave",
+                        )
+                    ],
+                ),
+            ],
         )

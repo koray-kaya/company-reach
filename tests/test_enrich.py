@@ -138,3 +138,35 @@ def test_results_table_keeps_one_row_per_run_and_company(tmp_path: Path):
     with connect(db) as conn:
         pk = conn.execute("select sql from sqlite_master where name='results'")
         assert "PRIMARY KEY (run_id, uid)" in pk.fetchone()[0]
+
+
+async def test_the_previous_error_reaches_the_child(db_settings: Settings):
+    """A retried company's child is told how it failed last time, so a
+    refusal that repeats can be told from one that happened once."""
+    with connect(db_settings.db_path) as conn:
+        conn.execute(
+            "insert into results (run_id, uid, error_kind, error_text, finished_at)"
+            " values ('r1', ?, 'fetch', 'every candidate refused us (HTTP 403)', 't')",
+            (UID,),
+        )
+    seen: dict = {}
+
+    class Remembers(Child):
+        async def ainvoke(self, state, config=None):
+            seen.update(state)
+            return await super().ainvoke(state, config)
+
+    await run(Remembers(), db_settings)
+    assert seen["previous_error"] == "every candidate refused us (HTTP 403)"
+
+
+async def test_a_first_attempt_has_no_previous_error(db_settings: Settings):
+    seen: dict = {}
+
+    class Remembers(Child):
+        async def ainvoke(self, state, config=None):
+            seen.update(state)
+            return await super().ainvoke(state, config)
+
+    await run(Remembers(), db_settings)
+    assert seen["previous_error"] is None

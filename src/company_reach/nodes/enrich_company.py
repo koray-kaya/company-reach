@@ -42,7 +42,7 @@ def _kind(error: Exception) -> ErrorKind:
 
 
 async def enrich_company(
-    state: dict[str, Any], *, child: Any, settings: Settings
+    state: dict[str, Any], *, child: Any, settings: Settings, force: bool = False
 ) -> dict[str, list[CompanyResult]]:
     """Run the child graph for one company and return its result.
 
@@ -50,12 +50,15 @@ async def enrich_company(
     wire a stub today and the real child in M4, and so a test can hand it a
     double. The graph binds it with `functools.partial`, because a LangGraph
     node is called with the state alone.
+
+    `force` runs a company that already finished. Only `retry --no-site`
+    uses it, for a "no website" that a throttled search may have produced.
     """
     run_id, uid = state["run_id"], state["uid"]
 
     with connect(settings.db_path) as conn:
         done = result_for(conn, uid, run_id=run_id)
-    if done is not None and done.error_kind is None:
+    if done is not None and done.error_kind is None and not force:
         # Resume: this company is finished. Skip the child, but still return
         # the stored result — the superstep's accounting has to stay whole.
         return {"results": [done]}
@@ -67,6 +70,9 @@ async def enrich_company(
                 "uid": uid,
                 "goal": state["goal"],
                 "about_me": state["about_me"],
+                # how the last attempt failed, so a refusal that repeats can
+                # be told from one that happened once (find_site)
+                "previous_error": done.error_text if done and done.error_kind else None,
             }
         )
         result = CompanyResult(

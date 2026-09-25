@@ -18,7 +18,8 @@ import re
 from dataclasses import dataclass
 from urllib.parse import urljoin, urlsplit
 
-from company_reach.tools.fetcher import Fetcher
+from company_reach.errors import FetchError
+from company_reach.tools.fetcher import Fetcher, Page
 from company_reach.tools.textify import textify
 
 # Tried in this order, so an Impressum link beats a Kontakt link, and both
@@ -56,10 +57,14 @@ _PROMPT_CHARS = {"schema.org": 400, "home page": 1500, "impressum": 1000, "about
 
 @dataclass(frozen=True)
 class CandidatePages:
+    """`final_url` is where the home page landed after redirects, None when
+    it did not move."""
+
     home: str
     impressum: str = ""
     about: str = ""
     schema: str = ""
+    final_url: str | None = None
 
     def _parts(self) -> dict[str, str]:
         return {
@@ -161,6 +166,37 @@ def read_schema_org(html: str) -> str:
     return "\n".join(lines)
 
 
+# The answers a site gives the same way tomorrow. A 429, a 5xx or a timeout
+# may pass; these will not.
+_LASTING = {401, 403, 404, 410}
+
+
+class Refused(FetchError):
+    """A candidate's home page would not let us look. `reason` is short and
+    names no URL: it can end up in a result row, and the candidate may be
+    one only Brave produced, whose results may not be stored. `lasting`
+    marks a refusal that will not change on another day."""
+
+    def __init__(self, url: str, home: Page) -> None:
+        self.url = url
+        if home.no_such_host:
+            self.reason = "no such host"
+        elif home.status:
+            self.reason = f"HTTP {home.status}"
+        else:
+            self.reason = "unreachable"
+        self.lasting = home.no_such_host or home.status in _LASTING
+        super().__init__(f"{url} ({home.error})")
+
+
+EVERY_CANDIDATE_REFUSED = "every candidate refused us"
+
+
+class EveryCandidateRefused(FetchError):
+    """Every candidate refused us, each in a way that lasts. Still an error
+    the first time; the same again is the sites' answer (find_site)."""
+
+
 async def _first_with_text(urls: list[str], fetcher: Fetcher) -> str:
     """One after another, stopping at the first page that says anything.
     Same site, so they cannot run together without breaking the delay."""
@@ -174,12 +210,23 @@ async def _first_with_text(urls: list[str], fetcher: Fetcher) -> str:
 
 
 async def read_candidate(url: str, *, fetcher: Fetcher) -> CandidatePages | None:
-    """The four parts of one site, or None when its home page cannot be read."""
+    """The four parts of one site, or None when its home page had nothing to
+    read — or is one we refuse to ask.
+
+    A home page that answered HTTP 400 or more, or could not be reached,
+    raises instead. The site would not let us look, and that says nothing
+    about whether it is the company's: the audit found a 403 bot wall read
+    as "no website"."""
     home = await fetcher.get(url)
+    if home.unreachable or (home.status is not None and home.status >= 400):
+        raise Refused(url, home)
     if not home.html:
         return None
+    # Links are read where the home page landed: `muster.ch` answering from
+    # `www.muster.ch/de/` has its Impressum at `/de/impressum`.
+    base = home.final_url or url
     home_text = textify(home.html)
-    impressum_links, other_links, about = find_links(home.html, url)
+    impressum_links, other_links, about = find_links(home.html, base)
 
     # A real Impressum link first, then the usual Impressum addresses, and
     # only then Kontakt or Datenschutz. Measured on the golden set: a home
@@ -188,16 +235,17 @@ async def read_candidate(url: str, *, fetcher: Fetcher) -> CandidatePages | None
     impressum = (
         await _first_with_text(impressum_links, fetcher)
         or await _first_with_text(
-            [urljoin(url, path) for path in _LEGAL_PATHS], fetcher
+            [urljoin(base, path) for path in _LEGAL_PATHS], fetcher
         )
         or await _first_with_text(other_links, fetcher)
     )
     about_text = await _first_with_text(about, fetcher) or await _first_with_text(
-        [urljoin(url, path) for path in _ABOUT_PATHS], fetcher
+        [urljoin(base, path) for path in _ABOUT_PATHS], fetcher
     )
     return CandidatePages(
         home=home_text,
         impressum=impressum,
         about=about_text,
         schema=read_schema_org(home.html),
+        final_url=home.final_url,
     )

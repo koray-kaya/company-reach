@@ -123,7 +123,7 @@ def _delete_rows(
 ) -> int:
     marks = ",".join("?" * len(uids))
     deleted = 0
-    for table in ("contacts", "drafts", "profiles", "sites"):
+    for table in ("contacts", "drafts", "profiles", "sites", "searches"):
         deleted += conn.execute(
             f"delete from {table} where uid in ({marks})", uids
         ).rowcount
@@ -144,10 +144,13 @@ def _delete_cache(cache: Path, domains: set[str]) -> int:
     deleted = 0
     for side in cache.glob("*.json") if cache.is_dir() else []:
         try:
-            url = json.loads(side.read_text())["url"]
+            meta = json.loads(side.read_text())
+            # a page kept under the URL asked for may hold the text of the
+            # site it redirected to
+            urls = [meta["url"], meta.get("final_url") or meta["url"]]
         except (ValueError, KeyError):
             continue
-        if registered_domain(url) in domains:
+        if any(registered_domain(url) in domains for url in urls):
             for path in (side, side.with_suffix(".html")):
                 if path.exists():
                     path.unlink()
@@ -213,7 +216,9 @@ def stale_uids(conn: sqlite3.Connection, *, cutoff: str) -> list[str]:
                                where l.uid = s.uid and l.decided_at >= ?)
               and (exists (select 1 from contacts c where c.uid = s.uid)
                    or exists (select 1 from profiles p where p.uid = s.uid)
-                   or exists (select 1 from sites t where t.uid = s.uid))
+                   or exists (select 1 from sites t where t.uid = s.uid)
+                   -- a company whose search or site failed has only this
+                   or exists (select 1 from searches x where x.uid = s.uid))
             order by s.uid""",
         (cutoff, cutoff),
     )

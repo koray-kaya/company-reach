@@ -8,6 +8,7 @@ above it changes: the parent still only awaits `ainvoke` and reads
 import httpx
 import pytest
 import respx
+from search_fakes import as_outcome
 
 from company_reach.errors import CompanyReachError, LlmError
 from company_reach.graph import build_child
@@ -102,7 +103,7 @@ def seeded(settings: Settings, monkeypatch) -> Settings:
 
     monkeypatch.setattr("company_reach.tools.fetcher.resolve_host", resolve)
     monkeypatch.setattr(node, "resolving_domains", no_guesses)
-    monkeypatch.setattr(node, "search", one_candidate)
+    monkeypatch.setattr(node, "search_outcome", as_outcome(one_candidate))
     monkeypatch.setattr(node.llm, "ask", ask)
     return settings
 
@@ -134,7 +135,7 @@ async def test_a_company_without_a_site_ends_with_skip(seeded: Settings, monkeyp
     async def only_directories(query, *, settings, limit=10):
         return [Result("https://www.moneyhouse.ch/de/company/muster", "x", "y", "ddg")]
 
-    monkeypatch.setattr(node, "search", only_directories)
+    monkeypatch.setattr(node, "search_outcome", as_outcome(only_directories))
     out = await child(seeded).ainvoke(
         {"run_id": "r1", "uid": UID, "goal": "g", "about_me": "a"}
     )
@@ -207,7 +208,7 @@ async def test_a_company_without_a_site_still_stops_at_find_site(
     async def only_directories(query, *, settings, limit=10):
         return [Result("https://www.moneyhouse.ch/de/company/muster", "x", "y", "ddg")]
 
-    monkeypatch.setattr(node, "search", only_directories)
+    monkeypatch.setattr(node, "search_outcome", as_outcome(only_directories))
     out = await child(seeded).ainvoke(
         {"run_id": "r1", "uid": UID, "goal": "g", "about_me": "a"}
     )
@@ -284,3 +285,34 @@ async def test_until_contact_stops_before_the_model_drafts(seeded: Settings):
     ).ainvoke({"run_id": "r1", "uid": UID, "goal": "g", "about_me": "a"})
     assert out["recommendation"] == "send"
     assert out.get("draft") is None
+
+
+async def test_the_child_carries_the_previous_error_to_find_site(
+    settings: Settings, monkeypatch
+):
+    """A key missing from ChildState is dropped by LangGraph without a word,
+    and find_site would never learn that a refusal repeats."""
+    import company_reach.graph as graph_module
+
+    seen: dict = {}
+
+    async def load(state, *, settings):
+        return {}
+
+    async def find(state, *, settings, fetcher):
+        seen["previous_error"] = state.get("previous_error")
+        return {"site": None, "recommendation": "skip", "reason": "x"}
+
+    monkeypatch.setattr(graph_module, "load_company", load)
+    monkeypatch.setattr(graph_module, "find_site", find)
+    child = build_child(settings=settings, until="site")
+    await child.ainvoke(
+        {
+            "run_id": "r1",
+            "uid": UID,
+            "goal": "g",
+            "about_me": "a",
+            "previous_error": "every candidate refused us (HTTP 403)",
+        }
+    )
+    assert seen["previous_error"] == "every candidate refused us (HTTP 403)"

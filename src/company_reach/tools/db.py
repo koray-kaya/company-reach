@@ -25,6 +25,7 @@ from company_reach.models import (
 
 if TYPE_CHECKING:  # avoids pulling langchain into every db import
     from company_reach.tools.llm import Provenance
+    from company_reach.tools.search import Asked
 
 
 def _open(path: Path) -> sqlite3.Connection:
@@ -48,6 +49,8 @@ _ADDED_COLUMNS = {
     ("contacts", "source_date"): "TEXT",
     ("contacts", "alternatives"): "TEXT",
     ("contacts", "addresses"): "TEXT",
+    ("searches", "result_count"): "INTEGER",
+    ("searches", "error"): "TEXT",
 }
 
 
@@ -514,13 +517,37 @@ def delete_draft(conn: sqlite3.Connection, run_id: str, uid: str) -> None:
     conn.execute("delete from drafts where run_id = ? and uid = ?", (run_id, uid))
 
 
-def errored_uids(conn: sqlite3.Connection, run_id: str) -> list[str]:
-    """The companies of a run whose result is an error: what `retry` redoes."""
+def no_site_uids(conn: sqlite3.Connection, run_id: str) -> list[str]:
+    """The companies of a run written off as having no website, that no
+    reviewer has decided about and nobody asked never to hear from: what
+    `retry --no-site` redoes after a run whose search turned out to have
+    been throttled (#20)."""
     return [
         r["uid"]
         for r in conn.execute(
-            "select uid from results where run_id = ? and error_kind is not null "
-            "order by uid",
+            """select uid from results
+                where run_id = ? and recommendation = 'skip'
+                  and reason like 'no website found%'
+                  and uid not in (select uid from ledger)
+                  and uid not in (select key from suppression)
+                order by uid""",
+            (run_id,),
+        )
+    ]
+
+
+def errored_uids(conn: sqlite3.Connection, run_id: str) -> list[str]:
+    """The companies of a run whose result is an error: what `retry` redoes.
+    Not one a reviewer decided about or that is on the never-again list —
+    retrying it would collect data about it for nothing."""
+    return [
+        r["uid"]
+        for r in conn.execute(
+            """select uid from results
+                where run_id = ? and error_kind is not null
+                  and uid not in (select uid from ledger)
+                  and uid not in (select key from suppression)
+                order by uid""",
             (run_id,),
         )
     ]
@@ -643,3 +670,56 @@ def site_record(conn: sqlite3.Connection, run_id: str, uid: str) -> sqlite3.Row 
     return conn.execute(
         "select * from sites where run_id = ? and uid = ?", (run_id, uid)
     ).fetchone()
+
+
+# --- the search log (#20) ----------------------------------------------------
+
+_LOGGED_URLS = 10
+
+
+def record_searches(
+    conn: sqlite3.Connection, run_id: str, uid: str, asked: "list[Asked]"
+) -> None:
+    """One row per provider asked for one of find_site's queries, errors
+    included. A new attempt replaces the company's log for the run, as its
+    site record and contact are replaced.
+
+    URLs are kept for SearXNG only, the first ten. Brave's terms forbid
+    storing its results, so a Brave row keeps the query, the count and any
+    error — enough to see what a "no website" rests on."""
+    conn.execute("delete from searches where run_id = ? and uid = ?", (run_id, uid))
+    conn.executemany(
+        """INSERT INTO searches (run_id, uid, query, provider, results,
+             unresponsive, result_count, error, at) VALUES (?,?,?,?,?,?,?,?,?)""",
+        [
+            (
+                run_id,
+                uid,
+                a.query,
+                a.provider,
+                json.dumps([r.url for r in a.results[:_LOGGED_URLS]])
+                if a.provider == "searxng"
+                else None,
+                json.dumps(a.unresponsive),
+                len(a.results),
+                a.error,
+                now(),
+            )
+            for a in asked
+        ],
+    )
+
+
+def search_log(conn: sqlite3.Connection, run_id: str, uid: str) -> list[sqlite3.Row]:
+    return conn.execute(
+        "select * from searches where run_id = ? and uid = ? order by id",
+        (run_id, uid),
+    ).fetchall()
+
+
+def count_brave_queries(conn: sqlite3.Connection, run_id: str) -> int:
+    """Brave is paid by the query; a run reports what it spent."""
+    return conn.execute(
+        "select count(*) from searches where run_id = ? and provider = 'brave'",
+        (run_id,),
+    ).fetchone()[0]

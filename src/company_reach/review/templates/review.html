@@ -73,6 +73,10 @@
 
         {% if card.site_url and card.evidence %}
         <p class="proof"><q>{{ card.evidence }}</q><span>{{ card.evidence_label }}{% if card.evidence_url %} · {{ card.evidence_url }}{% endif %}</span></p>
+        {% elif card.searches %}
+        <div class="empty">Searched:
+          <ul class="queries">{% for q in card.searches %}<li>{{ q }}</li>{% endfor %}</ul>
+        </div>
         {% elif card.queries %}
         <div class="empty">Tried:
           <ul class="queries">{% for q in card.queries %}<li>{{ q }}</li>{% endfor %}</ul>

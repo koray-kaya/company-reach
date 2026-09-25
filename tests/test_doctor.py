@@ -11,6 +11,7 @@ from company_reach.tools.doctor import run_checks
 URL = "https://api.openai.com/v1/chat/completions"
 runner = CliRunner()
 SEARX = "http://searxng:8080"
+BRAVE = "https://api.search.brave.com/res/v1/web/search"
 REAL_SURVEY = "https://umfrage.beispiel-hochschule.ch/kmu"
 
 
@@ -93,6 +94,7 @@ async def test_all_checks_pass(settings):
         "retention",
         "search",
         "engines",
+        "brave",
         "endpoint",
         "token budget",
     ]
@@ -103,7 +105,7 @@ async def test_all_checks_pass(settings):
 async def test_a_failing_check_does_not_stop_the_others(settings):
     respx.post(URL).mock(return_value=httpx.Response(401, json={"error": "nope"}))
     checks = await run_checks(settings)
-    assert len(checks) == 9  # every check still ran
+    assert len(checks) == 10  # every check still ran
     by_name = {c.name: c for c in checks}
     assert by_name["settings"].ok
     assert by_name["database"].ok
@@ -166,7 +168,7 @@ async def test_a_missing_profile_fails_without_stopping_the_others(settings):
     respx.post(URL).mock(side_effect=[probe_ok(), probe_truncated()])
     settings.profile_path.unlink()
     checks = await run_checks(settings)
-    assert len(checks) == 9
+    assert len(checks) == 10
     assert not next(c for c in checks if c.name == "profile").ok
 
 
@@ -234,3 +236,94 @@ async def test_the_settings_line_shows_the_gates(settings):
     checks = {c.name: c for c in await run_checks(settings)}
     assert "sending_approved=False" in checks["settings"].detail
     assert "paid_fallback=none" in checks["settings"].detail
+
+
+def test_the_settings_line_names_brave_when_a_key_is_set(settings):
+    from pydantic import SecretStr
+
+    from company_reach.tools.doctor import _settings_check
+
+    keyed = settings.model_copy(update={"brave_search_api_key": SecretStr("k")})
+    assert "paid_fallback=brave" in _settings_check(keyed).detail
+
+
+@respx.mock
+async def test_without_a_brave_key_the_check_says_so(settings):
+    respx.post(URL).mock(side_effect=[probe_ok(), probe_truncated()])
+    brave = respx.get(BRAVE)
+    checks = {c.name: c for c in await run_checks(settings)}
+    assert checks["brave"].ok
+    assert checks["brave"].detail == "not configured"
+    assert not brave.called
+
+
+@respx.mock
+async def test_an_invalid_brave_key_fails(settings):
+    """Review focus 5. The key is asked directly, not through search: a
+    SearXNG that answers would otherwise hide a rejected key until the first
+    company Brave has to confirm."""
+    from pydantic import SecretStr
+
+    keyed = settings.model_copy(update={"brave_search_api_key": SecretStr("bad")})
+    respx.post(URL).mock(side_effect=[probe_ok(), probe_truncated()])
+    _search_ok()
+    _config(["duckduckgo", "mojeek", "brave"])
+    respx.get(BRAVE).mock(return_value=httpx.Response(401))
+    checks = {c.name: c for c in await run_checks(keyed)}
+    assert checks["search"].ok
+    assert checks["brave"].ok is False
+    assert "BRAVE_SEARCH_API_KEY" in checks["brave"].detail
+
+
+@respx.mock
+async def test_a_working_brave_key_passes(settings):
+    from pydantic import SecretStr
+
+    keyed = settings.model_copy(update={"brave_search_api_key": SecretStr("good")})
+    respx.post(URL).mock(side_effect=[probe_ok(), probe_truncated()])
+    respx.get(BRAVE).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "web": {
+                    "results": [
+                        {"url": "https://www.example-register.ch/", "title": "t"}
+                    ]
+                }
+            },
+        )
+    )
+    checks = {c.name: c for c in await run_checks(keyed)}
+    assert checks["brave"].ok
+    assert checks["brave"].detail == "1 results"
+
+
+@respx.mock
+async def test_brave_answering_nothing_fails(settings):
+    from pydantic import SecretStr
+
+    keyed = settings.model_copy(update={"brave_search_api_key": SecretStr("good")})
+    respx.post(URL).mock(side_effect=[probe_ok(), probe_truncated()])
+    respx.get(BRAVE).mock(return_value=httpx.Response(200, json={"web": {}}))
+    checks = {c.name: c for c in await run_checks(keyed)}
+    assert checks["brave"].ok is False
+
+
+@respx.mock
+async def test_the_search_check_asks_searxng_alone(settings):
+    """Through `search`, a working Brave would stand in for a broken SearXNG
+    and the check would pass while the free provider is down."""
+    from pydantic import SecretStr
+
+    keyed = settings.model_copy(update={"brave_search_api_key": SecretStr("good")})
+    respx.post(URL).mock(side_effect=[probe_ok(), probe_truncated()])
+    respx.get(f"{SEARX}/search").mock(return_value=httpx.Response(503))
+    respx.get(BRAVE).mock(
+        return_value=httpx.Response(
+            200,
+            json={"web": {"results": [{"url": "https://www.example-register.ch/"}]}},
+        )
+    )
+    checks = {c.name: c for c in await run_checks(keyed)}
+    assert checks["search"].ok is False
+    assert "503" in checks["search"].detail

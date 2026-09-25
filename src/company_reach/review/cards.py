@@ -22,7 +22,12 @@ from dataclasses import dataclass
 from urllib.parse import urlsplit
 
 from company_reach.models import CompanyProfile, Contact, dotted_uid
-from company_reach.tools.db import company_by_uid, decision_for, is_suppressed
+from company_reach.tools.db import (
+    company_by_uid,
+    decision_for,
+    is_suppressed,
+    search_log,
+)
 from company_reach.tools.mailto import build
 
 _LEGAL_FORMS = {"0106": "AG", "0107": "GmbH"}
@@ -63,6 +68,7 @@ class Card:
     evidence_url: str | None
     evidence_label: str | None
     queries: list[str]
+    searches: list[str]
     recommendation: str | None
     reason: str
     contact: Contact | None
@@ -78,6 +84,19 @@ def safe_url(url: str | None) -> str | None:
     if not url:
         return None
     return url if urlsplit(url).scheme in ("http", "https") else None
+
+
+def _search_line(row: sqlite3.Row) -> str:
+    """`"Muster Metallbau" Musterstadt — searxng · 0 results · down: brave`"""
+    if row["error"]:
+        outcome = f"error: {row['error']}"
+    else:
+        n = row["result_count"] or 0
+        outcome = "1 result" if n == 1 else f"{n} results"
+    down = json.loads(row["unresponsive"] or "[]")
+    if down:
+        outcome += f" · down: {', '.join(down)}"
+    return f"{row['query']} — {row['provider']} · {outcome}"
 
 
 def _contact(conn: sqlite3.Connection, run_id: str, uid: str) -> Contact | None:
@@ -210,6 +229,7 @@ def load_cards(
                 if site and site["tier"]
                 else None,
                 queries=json.loads(site["queries"] or "[]") if site else [],
+                searches=[_search_line(row) for row in search_log(conn, run_id, uid)],
                 recommendation=r["recommendation"],
                 reason=reason,
                 contact=contact,

@@ -11,7 +11,7 @@ import json
 from pathlib import Path
 
 import pytest
-from review_seed import SEND, seed
+from review_seed import SEND, SKIP, seed
 
 from company_reach.forget import forget
 from company_reach.tools.db import connect, is_suppressed, record_decision
@@ -120,3 +120,33 @@ def test_a_company_from_before_the_site_record_still_loses_its_cache(settings, d
     forget(settings, SEND)
     assert not (data / "cache" / "a1.html").exists()
     assert (data / "cache" / "b2.html").exists()
+
+
+def test_forget_removes_the_search_log(settings, data):
+    """Search results can name people — a directory listing, a profile URL —
+    so the log goes with everything else."""
+    forget(settings, SKIP)
+    with connect(settings.db_path) as conn:
+        left = conn.execute(
+            "select count(*) from searches where uid = ?", (SKIP,)
+        ).fetchone()[0]
+    assert left == 0
+
+
+def test_a_home_page_that_moved_is_deleted_from_the_cache(settings, data):
+    """The cache keeps a page under the URL that was asked for. When that
+    URL redirected to the company's site, the text is the site's, so it goes
+    too."""
+    cache = settings.data_dir / "cache"
+    (cache / "c3.html").write_text(f"<p>{NAME}</p>")
+    (cache / "c3.json").write_text(
+        json.dumps(
+            {
+                "url": "https://muster-alt.ch/",
+                "final_url": "https://muster-metallbau.ch/",
+                "status": 200,
+            }
+        )
+    )
+    forget(settings, SEND)
+    assert not (cache / "c3.html").exists()
