@@ -4,17 +4,14 @@
 #     curl 'http://127.0.0.1:8080/search?q=test&format=json'
 #
 # The port is published on the loopback interface only: not reachable from
-# outside this machine, and publishing it is what lets the app run under
-# `uv run` against the same instance a container would use. Without it,
-# SEARXNG_URL would have to differ between the two.
+# outside this machine, and it is what the tool, run under `uv` on the host,
+# reaches as SEARXNG_URL (http://127.0.0.1:8080, the default).
 #
-# The review page (M7) is the `app` service:
-#
-#     docker compose up -d app
-#     open http://127.0.0.1:8000/
-#
-# `playwright` (an optional fallback, only if the JavaScript counter ever
-# says we need one) joins this file when its Dockerfile exists.
+# SearXNG is the only container. Every command, the review page included
+# (`uv run company-reach review`), runs under `uv` on the host: the page and
+# the CLI share one SQLite file in WAL mode, and SQLite requires every
+# process using such a file to be on the same host — which a container
+# across Docker Desktop's VM boundary is not (decided 2026-09-25).
 
 services:
   searxng:
@@ -32,17 +29,3 @@ services:
     # The official template also runs valkey for the rate limiter. The
     # limiter is off (see searxng/settings.yml), so it would be a container
     # doing nothing.
-
-  app:
-    build: .
-    # Inside the container uvicorn binds 0.0.0.0 (see the Dockerfile); this
-    # publishes it on the host's loopback only (audit:226). The page reads
-    # and writes data/, reads the profile, and takes SENDING_APPROVED and the
-    # model settings from .env. None of them is in the image.
-    ports:
-      - "127.0.0.1:8000:8000"
-    env_file: .env
-    volumes:
-      - ./data:/app/data
-      - ./profile.toml:/app/profile.toml:ro
-    restart: unless-stopped

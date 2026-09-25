@@ -37,7 +37,7 @@ from company_reach.tools.search import Result
 
 UID = "CHE000000046"
 SITE = "https://muster-metallbau.ch"
-SEARXNG = "http://searxng:8080/search"
+SEARXNG = "http://127.0.0.1:8080/search"
 BRAVE = "https://api.search.brave.com/res/v1/web/search"
 DIRECTORY = "https://www.moneyhouse.ch/de/company/muster"
 

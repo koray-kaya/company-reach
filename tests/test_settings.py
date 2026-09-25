@@ -17,6 +17,20 @@ def test_defaults_and_env(monkeypatch, tmp_path: Path):
     assert s.db_path == tmp_path / "company_reach.db"
 
 
+def test_search_defaults_to_the_published_searxng_port(monkeypatch, tmp_path: Path):
+    """Every command runs under `uv` on the host since the review page left
+    Docker (decided 2026-09-25), and the container's name resolves only
+    inside Docker: the default is the port compose publishes on loopback."""
+    monkeypatch.setenv("LLM_API_KEY", "abc")
+    monkeypatch.setenv("LLM_MODEL", "m")
+    monkeypatch.delenv("SEARXNG_URL", raising=False)
+    assert Settings(_env_file=None, data_dir=tmp_path).searxng_url == (
+        "http://127.0.0.1:8080"
+    )
+    example = Settings(_env_file=".env.example", data_dir=tmp_path)
+    assert example.searxng_url == "http://127.0.0.1:8080"
+
+
 def test_drawing_defaults(monkeypatch, tmp_path: Path):
     """Ten because review starts once ten candidates are ready (design §31);
     seven because it is the gap between what Koray rated well (model 9) and

@@ -645,7 +645,8 @@ def review(
         str | None, typer.Argument(help="The run to open; omit to pick one by URL.")
     ] = None,
     host: Annotated[
-        str, typer.Option(help="127.0.0.1 outside Docker; the container uses 0.0.0.0.")
+        str,
+        typer.Option(help="127.0.0.1, the default, keeps the page off the network."),
     ] = "127.0.0.1",
     port: int = 8000,
 ) -> None:

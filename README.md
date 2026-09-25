@@ -52,8 +52,9 @@ offer, no login, a reminder). Every switch is off until you set it: the mail
 says only what you have confirmed. Pooling and scoring run without them;
 `doctor` names what is missing.
 
-When running with `uv run`, set `SEARXNG_URL=http://127.0.0.1:8080` in
-`.env`; the container name only resolves inside Docker.
+SearXNG is the only thing that runs in Docker. Every command, the review
+page included, runs with `uv run` on your machine and reaches it at
+`http://127.0.0.1:8080` (`SEARXNG_URL`, the default).
 
 Then, for one town:
 
@@ -98,8 +99,9 @@ and the mail is rebuilt without asking the model again. **Send** records the
 decision and opens the draft in your own mail program — nothing is sent by
 the tool. Send stays locked until `SENDING_APPROVED=true` is set in `.env`
 and the profile's `survey_url` is real, and it refuses a draft that no
-longer matches the profile or the contact. The page also runs in Docker:
-`docker compose up -d app`.
+longer matches the profile or the contact. The page runs next to the other
+commands, not in a container: it shares their SQLite database, and SQLite
+needs every process that writes it on the same machine.
 
 When you change the profile after drafting — the survey link, a closing
 date, the supervisor line — the cards say so, and one command brings them up

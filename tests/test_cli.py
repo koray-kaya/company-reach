@@ -759,7 +759,7 @@ def test_import_v0_reports_what_it_added(settings, monkeypatch):
 
 
 def test_review_serves_on_the_loopback_interface_by_default(settings, monkeypatch):
-    # outside Docker the page must not be reachable from the network
+    # the page must not be reachable from the network
     monkeypatch.setattr(cli, "get_settings", lambda: settings)
     served: dict = {}
     monkeypatch.setattr(cli.uvicorn, "run", lambda app, **kw: served.update(kw))

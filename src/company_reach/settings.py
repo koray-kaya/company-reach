@@ -47,7 +47,7 @@ class Settings(BaseSettings):
     # without raising throughput.
     llm_concurrency: int = 3
 
-    searxng_url: str = "http://searxng:8080"
+    searxng_url: str = "http://127.0.0.1:8080"
     # The paid second opinion (decided 2026-09-25): asked when SearXNG fails,
     # when it answered nothing at all, and before any "no website" verdict.
     # Unset, search is SearXNG alone.

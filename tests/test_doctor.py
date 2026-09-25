@@ -13,7 +13,7 @@ from company_reach.tools.doctor import run_checks
 
 URL = "https://api.openai.com/v1/chat/completions"
 runner = CliRunner()
-SEARX = "http://searxng:8080"
+SEARX = "http://127.0.0.1:8080"
 BRAVE = "https://api.search.brave.com/res/v1/web/search"
 REAL_SURVEY = "https://umfrage.beispiel-hochschule.ch/kmu"
 

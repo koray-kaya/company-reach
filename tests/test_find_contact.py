@@ -818,7 +818,7 @@ async def test_the_lead_search_never_asks_brave(db_settings):
     keyed = db_settings.model_copy(
         update={"brave_search_api_key": SecretStr("brave-test-key"), "search_gap_s": 0}
     )
-    respx.get("http://searxng:8080/search").mock(return_value=httpx.Response(503))
+    respx.get("http://127.0.0.1:8080/search").mock(return_value=httpx.Response(503))
     brave = respx.get("https://api.search.brave.com/res/v1/web/search").mock(
         return_value=httpx.Response(
             200,
