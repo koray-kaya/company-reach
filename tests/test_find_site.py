@@ -29,7 +29,7 @@ from company_reach.nodes.find_site import (
     prune_page_urls,
 )
 from company_reach.settings import Settings
-from company_reach.tools.db import connect, site_record
+from company_reach.tools.db import connect, search_log, site_record
 from company_reach.tools.fetcher import Fetcher
 from company_reach.tools.search import Result
 
@@ -989,3 +989,55 @@ async def test_candidates_that_said_nothing_are_still_a_finding(
     out = await find_site(state(), settings=settings, fetcher=quick(settings))
     assert out["site"] is None
     assert out["recommendation"] == "skip"
+
+
+# --- the search log (#20) ----------------------------------------------------
+
+
+@respx.mock
+async def test_every_query_is_logged(armed):
+    """A "no website" has to be able to show what it rests on: each query,
+    whom it was put to, what came back and which engines were down."""
+    respx.get(SEARXNG).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "results": [{"url": DIRECTORY, "title": "t", "engine": "duckduckgo"}],
+                "unresponsive_engines": [["brave", "CAPTCHA"]],
+            },
+        )
+    )
+    brave_says(DIRECTORY)
+
+    out = await find_site(state(), settings=armed, fetcher=quick(armed))
+    assert out["site"] is None
+
+    with connect(armed.db_path) as conn:
+        rows = search_log(conn, "r1", UID)
+    queries = build_queries(company())
+    assert [(r["query"], r["provider"]) for r in rows] == [
+        (queries[0], "searxng"),
+        (queries[1], "searxng"),
+        (queries[2], "searxng"),
+        (node.narrowing_query(company()), "searxng"),
+        (queries[0], "brave"),
+    ]
+    assert json.loads(rows[0]["results"]) == [DIRECTORY]
+    assert json.loads(rows[0]["unresponsive"]) == ["brave"]
+    assert rows[-1]["results"] is None
+    assert rows[-1]["result_count"] == 1
+
+
+@respx.mock
+async def test_a_failed_search_is_logged_too(armed):
+    """The errors are what #20 could not see afterwards."""
+    respx.get(SEARXNG).mock(return_value=httpx.Response(503))
+    respx.get(BRAVE).mock(return_value=httpx.Response(429))
+    with pytest.raises(SearchError):
+        await find_site(state(), settings=armed, fetcher=quick(armed))
+    with connect(armed.db_path) as conn:
+        rows = search_log(conn, "r1", UID)
+    assert [(r["provider"], r["error"]) for r in rows] == [
+        ("searxng", "SearXNG answered HTTP 503"),
+        ("brave", "Brave answered HTTP 429"),
+    ]

@@ -54,7 +54,7 @@ from company_reach.settings import Settings
 from company_reach.tools import llm
 from company_reach.tools.blocklist import is_blocked
 from company_reach.tools.candidate_pages import CandidatePages, read_candidate
-from company_reach.tools.db import connect, record_site
+from company_reach.tools.db import connect, record_searches, record_site
 from company_reach.tools.fetcher import Fetcher, resolve_host
 from company_reach.tools.search import (
     Asked,
@@ -446,9 +446,26 @@ async def find_site(
     """`fetcher` is passed in so that every node of one child graph shares
     it. Sharing is not a convenience: the per-host delay and the robots cache
     are per-instance, so a fetcher per node would forget the delay between
-    find_site's pages and the next node's, and re-read robots.txt each time."""
-    record: CompanyRecord = state["company"]
+    find_site's pages and the next node's, and re-read robots.txt each time.
+
+    Every query asked is logged whatever happens next, errors included: a
+    search that failed is exactly what #20 could not see afterwards."""
     log: list[Asked] = []
+    try:
+        return await _find(state, log, settings=settings, fetcher=fetcher)
+    finally:
+        with connect(settings.db_path) as conn:
+            record_searches(conn, state["run_id"], state["company"].uid, log)
+
+
+async def _find(
+    state: dict[str, Any],
+    log: list[Asked],
+    *,
+    settings: Settings,
+    fetcher: Fetcher | None,
+) -> dict:
+    record: CompanyRecord = state["company"]
     results = await search_results(record, settings=settings, log=log)
     candidates = choose_candidates(results)
 

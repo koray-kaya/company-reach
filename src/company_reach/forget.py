@@ -123,7 +123,7 @@ def _delete_rows(
 ) -> int:
     marks = ",".join("?" * len(uids))
     deleted = 0
-    for table in ("contacts", "drafts", "profiles", "sites"):
+    for table in ("contacts", "drafts", "profiles", "sites", "searches"):
         deleted += conn.execute(
             f"delete from {table} where uid in ({marks})", uids
         ).rowcount

@@ -313,6 +313,73 @@ def test_retry_re_enriches_the_errors_of_a_run(settings, monkeypatch):
     assert "1 retried · 1 recovered · 0 still failing" in r.output
 
 
+def test_retry_no_site_redoes_the_skips(settings, monkeypatch):
+    """`retry --no-site` also redoes the companies written off as having no
+    website — after a run whose search turned out to have been throttled
+    (#20). Other skips, and the companies a reviewer already decided about,
+    stay as they are."""
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    init_db(settings.db_path)
+    rows = [
+        ("CHE000000001", None, None, "search"),
+        ("CHE000000002", "skip", "no website found after 3 searches", None),
+        ("CHE000000003", "skip", "distributor only", None),
+        ("CHE000000004", "send", "because", None),
+        ("CHE000000005", "skip", "no website found after 3 searches", None),
+    ]
+    with connect(settings.db_path) as conn:
+        for uid, rec, reason, kind in rows:
+            conn.execute(
+                "insert into results (run_id, uid, recommendation, reason,"
+                " error_kind, finished_at)"
+                " values ('r1', ?, ?, ?, ?, '2026-09-24T00:00:00+00:00')",
+                (uid, rec, reason, kind),
+            )
+        conn.execute(
+            "insert into ledger (uid, status, decided_at)"
+            " values ('CHE000000005', 'skipped', '2026-09-24T01:00:00+00:00')"
+        )
+    child = _Sends()
+    monkeypatch.setattr(cli, "build_child", lambda settings: child)
+
+    async def search_works(state, *, settings):
+        return {}
+
+    monkeypatch.setattr("company_reach.graph.probe_search", search_works)
+
+    r = runner.invoke(cli.app, ["retry", "r1", "--no-site"])
+    assert r.exit_code == 0, r.output
+    assert sorted(child.seen) == ["CHE000000001", "CHE000000002"]
+    assert "2 retried" in r.output
+
+    child.seen.clear()
+    runner.invoke(cli.app, ["retry", "r1"])
+    assert child.seen == []  # both are finished now; plain retry redoes errors only
+
+
+def test_run_prints_how_many_brave_queries_it_made(settings, monkeypatch):
+    """Brave is paid by the query: each run says how many it spent."""
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    _seed_scored_pool(settings, {"CHE000000001": 9})
+
+    async def spends_two(state, **kwargs):
+        with connect(settings.db_path) as conn:
+            for provider in ("searxng", "brave", "searxng", "brave"):
+                conn.execute(
+                    "insert into searches (run_id, uid, query, provider, at)"
+                    " values ('r3', 'CHE000000001', 'q', ?, 't')",
+                    (provider,),
+                )
+        return state | {"pool_exhausted": True}
+
+    monkeypatch.setattr(cli, "run_graph", spends_two)
+    r = runner.invoke(cli.app, ["run", "--goal", "make and sell", "--run-id", "r3"])
+    assert r.exit_code == 0, r.output
+    assert "2 Brave queries" in r.output
+    manifest = json.loads(manifest_path("r3", settings=settings).read_text())
+    assert manifest["counts"]["brave_queries"] == 2
+
+
 def test_retry_with_nothing_to_retry_says_so(settings, monkeypatch):
     monkeypatch.setattr(cli, "get_settings", lambda: settings)
     init_db(settings.db_path)

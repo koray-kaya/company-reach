@@ -32,7 +32,7 @@ Only on the machine that runs it, under `data/`:
 
 | Place | What |
 |---|---|
-| `data/company_reach.db` (SQLite) | companies, scores, site evidence, page text, profiles, contacts, drafts, results, the ledger of decisions, the never-again list |
+| `data/company_reach.db` (SQLite) | companies, scores, site evidence, the search log (each query, and SearXNG's first ten result URLs — never Brave's), page text, profiles, contacts, drafts, results, the ledger of decisions, the never-again list |
 | `data/cache/` | the HTML of every page fetched |
 | `data/runs/<run>/manifest.json` | each run's settings, prompt versions and counts — no personal data |
 
@@ -72,11 +72,12 @@ that a short reply has them deleted and stops any further mail.
 
 - **On request:** `company-reach forget <uid|email>` removes the person
   from the database and the page cache — contacts and everyone named beside
-  them, drafts, profiles, site evidence, the name in the recommendation — and
-  vacuums the database so nothing stays in free pages. The company and the
-  address go on the never-again list, so they are never contacted again. The
-  ledger keeps the decision without the address. Files the tool did not
-  write are not edited; any that still name the person are listed.
+  them, drafts, profiles, site evidence, the search log, the name in the
+  recommendation — and vacuums the database so nothing stays in free pages.
+  The company and the address go on the never-again list, so they are never
+  contacted again. The ledger keeps the decision without the address. Files
+  the tool did not write are not edited; any that still name the person are
+  listed.
 - **After a year:** `company-reach purge --older-than 365` removes the same
   data for every company nobody has touched for that long. It keeps the
   ledger and the never-again list, including the address of a mail that was

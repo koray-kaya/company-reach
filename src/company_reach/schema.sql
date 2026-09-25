@@ -14,9 +14,13 @@ CREATE TABLE IF NOT EXISTS scores (
   PRIMARY KEY (uid, goal_hash, prompt_version, model));
 CREATE TABLE IF NOT EXISTS seen (
   uid TEXT PRIMARY KEY, run_id TEXT NOT NULL, batch_no INTEGER NOT NULL, drawn_at TEXT NOT NULL);
+-- The search log (#20): one row per provider asked for one of find_site's
+-- queries, errors included. `results` holds SearXNG's first ten URLs and is
+-- NULL for Brave, whose terms forbid storing its results.
 CREATE TABLE IF NOT EXISTS searches (
   id INTEGER PRIMARY KEY, run_id TEXT, uid TEXT, query TEXT, provider TEXT,
-  results TEXT, unresponsive TEXT, chosen_url TEXT, tier TEXT, evidence TEXT, at TEXT);
+  results TEXT, unresponsive TEXT, chosen_url TEXT, tier TEXT, evidence TEXT, at TEXT,
+  result_count INTEGER, error TEXT);
 CREATE TABLE IF NOT EXISTS pages (
   url TEXT PRIMARY KEY, fetched_at TEXT, status INTEGER, text TEXT, raw_path TEXT);
 CREATE TABLE IF NOT EXISTS profiles (

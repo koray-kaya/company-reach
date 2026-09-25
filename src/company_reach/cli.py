@@ -26,7 +26,13 @@ from company_reach.nodes.screen_pool import screen_pool
 from company_reach.nodes.write_criteria import format_criteria, write_criteria
 from company_reach.profile import goal_hash, load_profile
 from company_reach.settings import get_settings
-from company_reach.tools.db import connect, errored_uids, init_db, record_run
+from company_reach.tools.db import (
+    connect,
+    count_brave_queries,
+    errored_uids,
+    init_db,
+    record_run,
+)
 from company_reach.tools.doctor import run_checks
 
 V0_DIR = Path("data/v0")
@@ -196,17 +202,20 @@ def run(
         # From the table, not this call's children: a company an earlier,
         # crashed attempt left unfinished belongs in the count too.
         errors = len(errored_uids(conn, rid))
+        brave = count_brave_queries(conn, rid)
     counts = {
         "batches_drawn": out["batches_drawn"],
         "results": len(out["results"]),
         "sendable": out["sendable_count"],
         "errors": errors,
+        "brave_queries": brave,
     }
     finish_manifest(rid, settings=s, status="done", counts=counts)
 
     typer.echo(
         f"{counts['batches_drawn']} batches · {counts['results']} companies · "
-        f"{counts['errors']} errors · {counts['sendable']} sendable"
+        f"{counts['errors']} errors · {counts['sendable']} sendable · "
+        f"{brave} Brave queries"
         + ("  · pool exhausted" if out["pool_exhausted"] else "")
     )
     typer.echo(f"manifest: {manifest_path(rid, settings=s)}")
@@ -300,17 +309,28 @@ def purge(
 @app.command()
 def retry(
     run_id: Annotated[str, typer.Argument(help="The run whose errors to redo.")],
+    no_site: Annotated[
+        bool,
+        typer.Option(
+            "--no-site",
+            help="Also redo the companies written off as having no website.",
+        ),
+    ] = False,
 ) -> None:
     """Re-enrich the companies of a run whose result is an error.
 
     An error means the tool could not look — search, a site, the model or
     SHAB failed — not that it looked and found nothing. Those companies were
     drawn, never contacted, and are redone here without drawing anything new.
+    `--no-site` redoes the "no website" skips too, for a run whose search log
+    shows it was throttled; a company a reviewer decided about stays as it is.
     """
     s = get_settings()
     try:
         results = asyncio.run(
-            retry_errors(run_id, settings=s, child=build_child(settings=s))
+            retry_errors(
+                run_id, settings=s, child=build_child(settings=s), no_site=no_site
+            )
         )
     except CompanyReachError as error:
         typer.echo(str(error), err=True)

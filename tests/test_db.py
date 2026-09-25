@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from pathlib import Path
 
@@ -7,9 +8,12 @@ from company_reach.tools.db import (
     init_db,
     profile_by_uid,
     record_page,
+    record_searches,
+    search_log,
     upsert_companies,
     upsert_profile,
 )
+from company_reach.tools.search import Asked, Result
 
 
 def rec(uid: str) -> CompanyRecord:
@@ -203,3 +207,88 @@ def test_any_connection_brings_an_older_database_up_to_date(tmp_path: Path):
     with connect(path) as c:
         columns = {row[1] for row in c.execute("pragma table_info(contacts)")}
     assert "addresses" in columns
+
+
+# --- the search log (#20) ----------------------------------------------------
+
+QUERY = '"Muster Metallbau" Musterstadt'
+
+
+def test_record_search_keeps_no_brave_urls(tmp_path: Path):
+    """Brave's terms forbid storing its results. For a Brave query the log
+    keeps the query, the count and any error — never a URL."""
+    db = tmp_path / "t.db"
+    asked = [
+        Asked(
+            QUERY,
+            "searxng",
+            [
+                Result(f"https://muster-{n}.ch/", "t", "s", "duckduckgo")
+                for n in range(12)
+            ],
+            unresponsive=["brave", "mojeek"],
+        ),
+        Asked(
+            QUERY,
+            "brave",
+            [
+                Result(
+                    "https://muster-metallbau.ch/",
+                    "t",
+                    "s",
+                    "brave-api",
+                    provider="brave",
+                )
+            ],
+        ),
+        Asked(
+            "Muster Metallbau Impressum", "searxng", error="SearXNG answered HTTP 503"
+        ),
+    ]
+    with connect(db) as conn:
+        record_searches(conn, "r1", "CHE000000046", asked)
+    with connect(db) as conn:
+        rows = search_log(conn, "r1", "CHE000000046")
+
+    assert [
+        (r["query"], r["provider"], r["result_count"], r["error"]) for r in rows
+    ] == [
+        (QUERY, "searxng", 12, None),
+        (QUERY, "brave", 1, None),
+        ("Muster Metallbau Impressum", "searxng", 0, "SearXNG answered HTTP 503"),
+    ]
+    assert len(json.loads(rows[0]["results"])) == 10
+    assert json.loads(rows[0]["unresponsive"]) == ["brave", "mojeek"]
+    assert rows[1]["results"] is None
+    assert all(r["at"] for r in rows)
+    assert "muster-metallbau.ch" not in json.dumps([dict(r) for r in rows])
+
+
+def test_a_new_attempt_replaces_the_log(tmp_path: Path):
+    """A retried company shows the searches of its last attempt, the way its
+    site record and contact are replaced."""
+    db = tmp_path / "t.db"
+    with connect(db) as conn:
+        record_searches(
+            conn, "r1", "CHE000000046", [Asked(QUERY, "searxng", error="x")]
+        )
+        record_searches(conn, "r1", "CHE000000046", [Asked(QUERY, "searxng")])
+        rows = search_log(conn, "r1", "CHE000000046")
+    assert [r["error"] for r in rows] == [None]
+
+
+def test_an_older_searches_table_gains_count_and_error(tmp_path: Path):
+    path = tmp_path / "old.db"
+    conn = sqlite3.connect(path)
+    conn.execute(
+        """CREATE TABLE searches (
+             id INTEGER PRIMARY KEY, run_id TEXT, uid TEXT, query TEXT,
+             provider TEXT, results TEXT, unresponsive TEXT, chosen_url TEXT,
+             tier TEXT, evidence TEXT, at TEXT)"""
+    )
+    conn.close()
+    init_db(path)
+    conn = sqlite3.connect(path)
+    columns = {row[1] for row in conn.execute("pragma table_info(searches)")}
+    conn.close()
+    assert {"result_count", "error"} <= columns

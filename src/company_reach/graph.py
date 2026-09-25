@@ -45,6 +45,7 @@ from company_reach.tools.db import (
     connect,
     count_sendable,
     errored_uids,
+    no_site_uids,
     record_pending,
     record_seen,
 )
@@ -382,7 +383,12 @@ async def run_graph(
 
 
 async def retry_errors(
-    run_id: str, *, settings: Settings, child, dry: bool = False
+    run_id: str,
+    *,
+    settings: Settings,
+    child,
+    dry: bool = False,
+    no_site: bool = False,
 ) -> list[CompanyResult]:
     """Re-enrich exactly the companies of `run_id` whose result is an error.
 
@@ -392,11 +398,16 @@ async def retry_errors(
     through `enrich_company` again, which replaces its results row, so a
     recovered company leaves no error behind.
 
+    `no_site` adds the companies written off as having no website (#20):
+    finished rows, so they are forced through the child again.
+
     Search is probed first, as a run does: retrying while search is down
     would only record the same errors again.
     """
     with connect(settings.db_path) as conn:
         uids = errored_uids(conn, run_id)
+        if no_site:
+            uids += no_site_uids(conn, run_id)
     if not uids:
         return []
     if not dry:
@@ -409,6 +420,7 @@ async def retry_errors(
                 {"run_id": run_id, "uid": uid, "goal": "", "about_me": about_me},
                 child=child,
                 settings=settings,
+                force=no_site,
             )
             for uid in uids
         )

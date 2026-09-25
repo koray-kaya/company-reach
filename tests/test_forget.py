@@ -11,7 +11,7 @@ import json
 from pathlib import Path
 
 import pytest
-from review_seed import SEND, seed
+from review_seed import SEND, SKIP, seed
 
 from company_reach.forget import forget
 from company_reach.tools.db import connect, is_suppressed, record_decision
@@ -120,3 +120,14 @@ def test_a_company_from_before_the_site_record_still_loses_its_cache(settings, d
     forget(settings, SEND)
     assert not (data / "cache" / "a1.html").exists()
     assert (data / "cache" / "b2.html").exists()
+
+
+def test_forget_removes_the_search_log(settings, data):
+    """Search results can name people — a directory listing, a profile URL —
+    so the log goes with everything else."""
+    forget(settings, SKIP)
+    with connect(settings.db_path) as conn:
+        left = conn.execute(
+            "select count(*) from searches where uid = ?", (SKIP,)
+        ).fetchone()[0]
+    assert left == 0

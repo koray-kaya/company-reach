@@ -117,3 +117,14 @@ def test_a_contact_written_before_the_address_list_offers_its_one_address(db: Pa
     assert [(a.email, a.kind) for a in card.contact.addresses] == [
         ("info@muster-metallbau.ch", "generic")
     ]
+
+
+def test_a_no_site_card_shows_the_search_log(db: Path):
+    """#20: a "no website" says what it rests on — each query, whom it was
+    put to, and what came back."""
+    card = by_uid(db)[SKIP]
+    assert card.searches == [
+        '"Exempel Druck" Musterstadt — searxng · 0 results · down: brave, duckduckgo',
+        "Exempel Druck Impressum — searxng · error: SearXNG answered HTTP 503",
+        "Exempel Druck Impressum — brave · 1 result",
+    ]

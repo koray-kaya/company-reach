@@ -63,7 +63,10 @@ command is safe to run again: nothing already done is repeated, and scoring
 is incremental. `run` finds each company's site, reads it, chooses who to
 write to and drafts an invitation; a company whose search or site failed is
 recorded as an error, not as "no website", and `company-reach retry <run>`
-does it again. To look at one company on its own:
+does it again. Every search query is logged, and a "no website" card on the
+review page lists them; if they show search was throttled,
+`company-reach retry <run> --no-site` redoes those companies too. To look at
+one company on its own:
 `uv run company-reach enrich --uid CHE123456789 --until draft`.
 
 `review` opens the page on `http://127.0.0.1:8000/`. It shows one company
