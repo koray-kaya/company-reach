@@ -8,6 +8,7 @@ above it changes: the parent still only awaits `ainvoke` and reads
 import httpx
 import pytest
 import respx
+from search_fakes import as_outcome
 
 from company_reach.errors import CompanyReachError, LlmError
 from company_reach.graph import build_child
@@ -102,7 +103,7 @@ def seeded(settings: Settings, monkeypatch) -> Settings:
 
     monkeypatch.setattr("company_reach.tools.fetcher.resolve_host", resolve)
     monkeypatch.setattr(node, "resolving_domains", no_guesses)
-    monkeypatch.setattr(node, "search", one_candidate)
+    monkeypatch.setattr(node, "search_outcome", as_outcome(one_candidate))
     monkeypatch.setattr(node.llm, "ask", ask)
     return settings
 
@@ -134,7 +135,7 @@ async def test_a_company_without_a_site_ends_with_skip(seeded: Settings, monkeyp
     async def only_directories(query, *, settings, limit=10):
         return [Result("https://www.moneyhouse.ch/de/company/muster", "x", "y", "ddg")]
 
-    monkeypatch.setattr(node, "search", only_directories)
+    monkeypatch.setattr(node, "search_outcome", as_outcome(only_directories))
     out = await child(seeded).ainvoke(
         {"run_id": "r1", "uid": UID, "goal": "g", "about_me": "a"}
     )
@@ -207,7 +208,7 @@ async def test_a_company_without_a_site_still_stops_at_find_site(
     async def only_directories(query, *, settings, limit=10):
         return [Result("https://www.moneyhouse.ch/de/company/muster", "x", "y", "ddg")]
 
-    monkeypatch.setattr(node, "search", only_directories)
+    monkeypatch.setattr(node, "search_outcome", as_outcome(only_directories))
     out = await child(seeded).ainvoke(
         {"run_id": "r1", "uid": UID, "goal": "g", "about_me": "a"}
     )

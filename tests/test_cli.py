@@ -3,6 +3,7 @@ from pathlib import Path
 
 import httpx
 import respx
+from search_fakes import as_outcome
 from typer.testing import CliRunner
 
 from company_reach import cli
@@ -153,7 +154,7 @@ def test_enrich_until_site_prints_the_site_and_its_tier(settings, monkeypatch):
 
     monkeypatch.setattr("company_reach.tools.fetcher.resolve_host", resolve)
     monkeypatch.setattr(find_site_node, "resolving_domains", no_guesses)
-    monkeypatch.setattr(find_site_node, "search", one_candidate)
+    monkeypatch.setattr(find_site_node, "search_outcome", as_outcome(one_candidate))
     monkeypatch.setattr(find_site_node.llm, "ask", ask)
 
     html = (
@@ -223,7 +224,7 @@ def test_enrich_until_profile_prints_the_checked_profile(settings, monkeypatch):
 
     monkeypatch.setattr("company_reach.tools.fetcher.resolve_host", resolve)
     monkeypatch.setattr(find_site_node, "resolving_domains", no_guesses)
-    monkeypatch.setattr(find_site_node, "search", one_candidate)
+    monkeypatch.setattr(find_site_node, "search_outcome", as_outcome(one_candidate))
     monkeypatch.setattr(find_site_node.llm, "ask", ask)
 
     html = (

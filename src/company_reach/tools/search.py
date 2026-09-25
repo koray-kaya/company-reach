@@ -13,10 +13,17 @@ error for a later run to recover from.
 So: the engines worked and found nothing → `[]`. Nothing was asked →
 `SearchError`, which the wrapper turns into an error result, which a later
 run retries.
+
+Two providers answer. SearXNG, self-hosted and free, is always asked first.
+The Brave Search API is paid and optional: `search` asks it only when
+SearXNG could not answer a query, and find_site asks it in the two further
+cases it decides (silence, and before any "no website"). `search_outcome`
+reports every provider asked, with SearXNG's unresponsive engines and any
+error, because a "no website" must be able to show what it rests on (#20).
 """
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 import httpx
@@ -45,6 +52,19 @@ class Result:
     provider: Literal["searxng", "brave", "guess"] = "searxng"
 
 
+@dataclass(frozen=True)
+class Asked:
+    """One query put to one provider, and what came back. `error` set means
+    the provider could not answer, and `results` is then empty; an empty
+    `results` without an error is an answer."""
+
+    query: str
+    provider: Literal["searxng", "brave"]
+    results: list[Result] = field(default_factory=list)
+    unresponsive: list[str] = field(default_factory=list)
+    error: str | None = None
+
+
 def _gate(concurrency: int) -> asyncio.Semaphore:
     """Search's cap for the running event loop (`tools/gates.py`), kept apart
     from the model's."""
@@ -63,7 +83,9 @@ def _unresponsive(payload: dict) -> set[str]:
     return names
 
 
-async def _searxng(query: str, *, settings: Settings, limit: int) -> list[Result]:
+async def _searxng(query: str, *, settings: Settings, limit: int) -> Asked:
+    """One SearXNG request. Failures come back inside the `Asked` rather than
+    raised, so the engines that did not answer are kept either way."""
     url = f"{settings.searxng_url.rstrip('/')}/search"
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
@@ -78,13 +100,16 @@ async def _searxng(query: str, *, settings: Settings, limit: int) -> list[Result
                 },
             )
     except httpx.HTTPError as error:
-        raise SearchError(f"SearXNG unreachable: {error}") from error
+        return Asked(query, "searxng", error=f"SearXNG unreachable: {error}")
 
     if answer.status_code != 200:
-        raise SearchError(f"SearXNG answered HTTP {answer.status_code}")
+        return Asked(
+            query, "searxng", error=f"SearXNG answered HTTP {answer.status_code}"
+        )
 
     payload = answer.json()
     results = payload.get("results") or []
+    down = sorted(_unresponsive(payload))
 
     if not results:
         baseline = {
@@ -92,22 +117,40 @@ async def _searxng(query: str, *, settings: Settings, limit: int) -> list[Result
             for name in settings.baseline_engines.split(",")
             if name.strip()
         }
-        if baseline and baseline <= _unresponsive(payload):
-            raise SearchError(
-                "every baseline engine was unresponsive "
-                f"({', '.join(sorted(baseline))}); the empty result is not an answer"
+        if baseline and baseline <= set(down):
+            return Asked(
+                query,
+                "searxng",
+                unresponsive=down,
+                error="every baseline engine was unresponsive "
+                f"({', '.join(sorted(baseline))}); the empty result is not an answer",
             )
 
-    return [
-        Result(
-            url=item.get("url", ""),
-            title=item.get("title", ""),
-            snippet=item.get("content", ""),
-            engine=item.get("engine", ""),
-        )
-        for item in results[:limit]
-        if item.get("url")
-    ]
+    return Asked(
+        query,
+        "searxng",
+        [
+            Result(
+                url=item.get("url", ""),
+                title=item.get("title", ""),
+                snippet=item.get("content", ""),
+                engine=item.get("engine", ""),
+            )
+            for item in results[:limit]
+            if item.get("url")
+        ],
+        unresponsive=down,
+    )
+
+
+async def ask_searxng(query: str, *, settings: Settings, limit: int = 10) -> Asked:
+    """One SearXNG query, through the gate."""
+    async with _gate(settings.search_concurrency):
+        asked = await _searxng(query, settings=settings, limit=limit)
+        # Inside the gate: the gap is between queries leaving, not between
+        # callers arriving, or two waiting tasks would fire back to back.
+        await asyncio.sleep(settings.search_gap_s)
+        return asked
 
 
 async def _brave(query: str, *, settings: Settings, limit: int) -> list[Result]:
@@ -162,11 +205,37 @@ async def _brave(query: str, *, settings: Settings, limit: int) -> list[Result]:
     ]
 
 
+async def ask_brave(query: str, *, settings: Settings, limit: int = 10) -> Asked:
+    """`_brave`, with its failure kept as a value like SearXNG's."""
+    try:
+        results = await _brave(query, settings=settings, limit=limit)
+    except SearchError as error:
+        return Asked(query, "brave", error=str(error))
+    return Asked(query, "brave", results)
+
+
+async def search_outcome(
+    query: str, *, settings: Settings, limit: int = 10
+) -> list[Asked]:
+    """Every provider asked for one query, in order: SearXNG, then Brave
+    **only** when SearXNG could not answer and a key is set. Never after an
+    empty result: that would spend paid queries on precisely the companies
+    that have no website — the ones where the free search was already
+    right."""
+    asked = [await ask_searxng(query, settings=settings, limit=limit)]
+    if asked[0].error is not None and settings.brave_search_api_key is not None:
+        asked.append(await ask_brave(query, settings=settings, limit=limit))
+    return asked
+
+
+def results_of(asked: list[Asked]) -> list[Result]:
+    """The answer the last provider gave, or a `SearchError` naming every
+    provider's failure when none could answer."""
+    if asked[-1].error is not None:
+        raise SearchError("; ".join(a.error for a in asked if a.error))
+    return asked[-1].results
+
+
 async def search(query: str, *, settings: Settings, limit: int = 10) -> list[Result]:
-    """One query, through the gate."""
-    async with _gate(settings.search_concurrency):
-        results = await _searxng(query, settings=settings, limit=limit)
-        # Inside the gate: the gap is between queries leaving, not between
-        # callers arriving, or two waiting tasks would fire back to back.
-        await asyncio.sleep(settings.search_gap_s)
-        return results
+    """One query's results, for a caller that does not keep a search log."""
+    return results_of(await search_outcome(query, settings=settings, limit=limit))

@@ -307,3 +307,23 @@ async def test_brave_answering_nothing_fails(settings):
     respx.get(BRAVE).mock(return_value=httpx.Response(200, json={"web": {}}))
     checks = {c.name: c for c in await run_checks(keyed)}
     assert checks["brave"].ok is False
+
+
+@respx.mock
+async def test_the_search_check_asks_searxng_alone(settings):
+    """Through `search`, a working Brave would stand in for a broken SearXNG
+    and the check would pass while the free provider is down."""
+    from pydantic import SecretStr
+
+    keyed = settings.model_copy(update={"brave_search_api_key": SecretStr("good")})
+    respx.post(URL).mock(side_effect=[probe_ok(), probe_truncated()])
+    respx.get(f"{SEARX}/search").mock(return_value=httpx.Response(503))
+    respx.get(BRAVE).mock(
+        return_value=httpx.Response(
+            200,
+            json={"web": {"results": [{"url": "https://www.example-register.ch/"}]}},
+        )
+    )
+    checks = {c.name: c for c in await run_checks(keyed)}
+    assert checks["search"].ok is False
+    assert "503" in checks["search"].detail

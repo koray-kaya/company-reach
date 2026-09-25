@@ -17,7 +17,7 @@ from company_reach.profile import load_profile
 from company_reach.settings import Settings
 from company_reach.tools import llm
 from company_reach.tools.db import connect, init_db
-from company_reach.tools.search import _brave, search
+from company_reach.tools.search import _brave, ask_searxng
 
 MARKER = "COMPANY-REACH-OK"
 # Every prompt a run loads, so a broken header fails here rather than at the
@@ -148,11 +148,16 @@ def _profile_check(settings: Settings) -> Check:
 
 async def _search_check(settings: Settings) -> Check:
     """The query probe_search asks before every run. Nothing back means the
-    run would stop there, after scoring was already paid for."""
+    run would stop there, after scoring was already paid for. SearXNG is
+    asked alone: through `search`, a working Brave would stand in for it and
+    hide that the free provider is down."""
     try:
-        results = await search(PROBE_QUERY, settings=settings, limit=3)
+        asked = await ask_searxng(PROBE_QUERY, settings=settings, limit=3)
     except Exception as e:  # a check reports; it never stops the others
         return Check("search", False, f"{type(e).__name__}: {str(e)[:200]}")
+    if asked.error is not None:
+        return Check("search", False, f"SearchError: {asked.error[:200]}")
+    results = asked.results
     if not results:
         return Check(
             "search",

@@ -82,7 +82,9 @@ async def capture(row: dict, *, settings, fetcher: Fetcher, reread: bool) -> dic
     candidates = choose_candidates(results)
     read = await read_candidates(candidates, fetcher=fetcher)
 
-    write_json(folder / "search.json", [asdict(r) for r in results])
+    # Brave's terms forbid storing its results; only the free ones are kept.
+    kept = [asdict(r) for r in results if r.provider != "brave"]
+    write_json(folder / "search.json", kept)
     write_json(
         folder / "candidates.json",
         [{"url": url, **asdict(pages)} for url, pages in read.items()],

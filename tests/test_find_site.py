@@ -8,11 +8,14 @@ evaluation calls it in every case and a test that exercises a path production
 does not take is measuring nothing.
 """
 
+import asyncio
 import json
 
 import httpx
 import pytest
 import respx
+from pydantic import SecretStr
+from search_fakes import as_outcome
 
 from company_reach.errors import SearchError
 from company_reach.models import CompanyRecord
@@ -32,6 +35,9 @@ from company_reach.tools.search import Result
 
 UID = "CHE000000046"
 SITE = "https://muster-metallbau.ch"
+SEARXNG = "http://searxng:8080/search"
+BRAVE = "https://api.search.brave.com/res/v1/web/search"
+DIRECTORY = "https://www.moneyhouse.ch/de/company/muster"
 
 
 def company(**over) -> CompanyRecord:
@@ -227,7 +233,7 @@ def wired(settings: Settings, monkeypatch):
     async def one_candidate(query, *, settings, limit=10):
         return [Result(f"{SITE}/", "Muster Metallbau AG", "Metallteile", "duckduckgo")]
 
-    monkeypatch.setattr(node, "search", one_candidate)
+    monkeypatch.setattr(node, "search_outcome", as_outcome(one_candidate))
     return settings
 
 
@@ -357,7 +363,7 @@ async def test_no_candidate_at_all_is_a_finding_not_an_error(
     async def no_guesses(names, **kw):
         return []
 
-    monkeypatch.setattr(node, "search", only_directories)
+    monkeypatch.setattr(node, "search_outcome", as_outcome(only_directories))
     monkeypatch.setattr(node, "resolving_domains", no_guesses)
 
     out = await find_site(state(), settings=settings, fetcher=quick(settings))
@@ -375,7 +381,7 @@ async def test_search_failing_is_an_error_not_a_finding(
     async def broken(query, *, settings, limit=10):
         raise SearchError("every baseline engine was unresponsive")
 
-    monkeypatch.setattr(node, "search", broken)
+    monkeypatch.setattr(node, "search_outcome", as_outcome(broken))
     with pytest.raises(SearchError):
         await find_site(state(), settings=settings, fetcher=quick(settings))
 
@@ -398,7 +404,7 @@ async def test_every_query_empty_twice_is_an_error_not_a_finding(
     async def no_guesses(names, **kw):
         return []
 
-    monkeypatch.setattr(node, "search", silent)
+    monkeypatch.setattr(node, "search_outcome", as_outcome(silent))
     monkeypatch.setattr(node, "resolving_domains", no_guesses)
     with pytest.raises(SearchError):
         await find_site(state(), settings=settings, fetcher=quick(settings))
@@ -425,7 +431,7 @@ async def test_an_answer_on_the_second_round_is_used(settings: Settings, monkeyp
 
     monkeypatch.setattr("company_reach.tools.fetcher.resolve_host", resolve)
     monkeypatch.setattr(node, "resolving_domains", no_guesses)
-    monkeypatch.setattr(node, "search", silent_at_first)
+    monkeypatch.setattr(node, "search_outcome", as_outcome(silent_at_first))
     serve(IMPRESSUM_WITH_UID)
     model_says(monkeypatch, f"{SITE}/", "Muster Metallbau AG")
 
@@ -445,7 +451,7 @@ async def test_a_resolving_guess_does_not_excuse_a_silent_search(
     async def one_guess(names, **kw):
         return [f"{SITE}/"]
 
-    monkeypatch.setattr(node, "search", silent)
+    monkeypatch.setattr(node, "search_outcome", as_outcome(silent))
     monkeypatch.setattr(node, "resolving_domains", one_guess)
     with pytest.raises(SearchError):
         await find_site(state(), settings=settings, fetcher=quick(settings))
@@ -536,7 +542,7 @@ async def test_a_fourth_query_runs_when_everything_was_a_directory(
 
     monkeypatch.setattr("company_reach.tools.fetcher.resolve_host", resolve)
     monkeypatch.setattr(node, "resolving_domains", no_guesses)
-    monkeypatch.setattr(node, "search", searcher)
+    monkeypatch.setattr(node, "search_outcome", as_outcome(searcher))
     serve(IMPRESSUM_WITH_UID)
     model_says(monkeypatch, f"{SITE}/", "Muster Metallbau AG")
 
@@ -565,7 +571,7 @@ async def test_no_fourth_query_when_a_real_candidate_was_found(
 
     monkeypatch.setattr("company_reach.tools.fetcher.resolve_host", resolve)
     monkeypatch.setattr(node, "resolving_domains", no_guesses)
-    monkeypatch.setattr(node, "search", searcher)
+    monkeypatch.setattr(node, "search_outcome", as_outcome(searcher))
     serve(IMPRESSUM_WITH_UID)
     model_says(monkeypatch, f"{SITE}/", "Muster Metallbau AG")
 
@@ -587,7 +593,7 @@ async def test_domain_guesses_come_before_search_results(
         return [f"{SITE}/"]
 
     monkeypatch.setattr(node, "resolving_domains", guesses)
-    monkeypatch.setattr(node, "search", searcher)
+    monkeypatch.setattr(node, "search_outcome", as_outcome(searcher))
 
     results = await node.search_results(company(), settings=settings)
     assert choose_candidates(results)[0] == f"{SITE}/"
@@ -606,7 +612,7 @@ async def test_a_guess_does_not_stop_the_fourth_query(settings: Settings, monkey
         return [f"{SITE}/"]
 
     monkeypatch.setattr(node, "resolving_domains", guesses)
-    monkeypatch.setattr(node, "search", searcher)
+    monkeypatch.setattr(node, "search_outcome", as_outcome(searcher))
 
     await node.search_results(company(), settings=settings)
     assert any("site:.ch" in q for q in asked)
@@ -711,3 +717,209 @@ async def test_no_site_is_recorded_with_the_searches_tried(wired, monkeypatch):
     assert row["url"] is None
     assert json.loads(row["queries"]) == build_queries(company())
     assert json.loads(row["candidates"]) == [f"{SITE}/"]
+
+
+# --- Brave, the second opinion (decided 2026-09-25) --------------------------
+# These go through the real search layer, mocked at HTTP, so that what is
+# asked of SearXNG and of Brave is what the code actually sends.
+
+
+@pytest.fixture
+def armed(settings: Settings, monkeypatch) -> Settings:
+    """A Brave key, no gap between queries, public DNS, no domain guesses."""
+
+    async def resolve(host: str) -> list[str]:
+        return ["93.184.216.34"]
+
+    async def no_guesses(names, **kw):
+        return []
+
+    monkeypatch.setattr("company_reach.tools.fetcher.resolve_host", resolve)
+    monkeypatch.setattr(node, "resolving_domains", no_guesses)
+    return settings.model_copy(
+        update={
+            "search_gap_s": 0.0,
+            "brave_search_api_key": SecretStr("brave-test-key"),
+        }
+    )
+
+
+def searxng_says(*urls: str) -> respx.Route:
+    return respx.get(SEARXNG).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "results": [
+                    {"url": u, "title": "t", "content": "c", "engine": "duckduckgo"}
+                    for u in urls
+                ],
+                "unresponsive_engines": [],
+            },
+        )
+    )
+
+
+def brave_says(*urls: str) -> respx.Route:
+    return respx.get(BRAVE).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "web": {
+                    "results": [
+                        {"url": u, "title": "Muster Metallbau AG", "description": "d"}
+                        for u in urls
+                    ]
+                }
+            },
+        )
+    )
+
+
+@respx.mock
+async def test_no_site_needs_brave_to_agree(armed, monkeypatch):
+    """SearXNG found nothing but a directory. Before the company is written
+    off Brave is asked the first query once, and it knows the site."""
+    searxng_says(DIRECTORY)
+    brave = brave_says(f"{SITE}/")
+    serve(IMPRESSUM_WITH_UID)
+    model_says(monkeypatch, f"{SITE}/", "Muster Metallbau AG")
+
+    out = await find_site(state(), settings=armed, fetcher=quick(armed))
+
+    assert out["site"].url == f"{SITE}/"
+    assert brave.call_count == 1
+    assert brave.calls.last.request.url.params["q"] == build_queries(company())[0]
+
+
+@respx.mock
+async def test_brave_agreeing_is_a_no_site_that_says_so(armed, monkeypatch):
+    searxng_says(DIRECTORY)
+    brave = brave_says(DIRECTORY)
+    out = await find_site(state(), settings=armed, fetcher=quick(armed))
+    assert out["site"] is None
+    assert out["recommendation"] == "skip"
+    assert "Brave" in out["reason"]
+    assert brave.call_count == 1
+
+
+@respx.mock
+async def test_silence_asks_brave_instead_of_waiting(armed, monkeypatch):
+    """Every SearXNG query answered nothing: the engines were probably
+    throttled. With a key, Brave is asked the first two queries at once
+    rather than after a pause."""
+    patient = armed.model_copy(update={"search_retry_pause_s": 600.0})
+    searxng_says()
+    brave = brave_says(f"{SITE}/")
+    serve(IMPRESSUM_WITH_UID)
+    model_says(monkeypatch, f"{SITE}/", "Muster Metallbau AG")
+
+    out = await asyncio.wait_for(
+        find_site(state(), settings=patient, fetcher=quick(patient)), timeout=10
+    )
+
+    assert out["site"].url == f"{SITE}/"
+    assert [c.request.url.params["q"] for c in brave.calls] == build_queries(company())[
+        :2
+    ]
+
+
+@respx.mock
+async def test_brave_answering_nothing_after_silence_is_an_answer(armed):
+    """Brave heard the question and found nothing: the company has no web
+    presence. That is a finding, and Brave is not asked a third time."""
+    patient = armed.model_copy(update={"search_retry_pause_s": 600.0})
+    searxng_says()
+    brave = brave_says()
+    out = await asyncio.wait_for(
+        find_site(state(), settings=patient, fetcher=quick(patient)), timeout=10
+    )
+    assert out["site"] is None
+    assert "Brave" in out["reason"]
+    assert brave.call_count == 2
+
+
+@respx.mock
+async def test_both_down_is_a_search_error(armed):
+    """Review focus 2: SearXNG suspended and the Brave quota spent at once.
+    The company is an error a later run retries, never "no website"."""
+    respx.get(SEARXNG).mock(return_value=httpx.Response(503))
+    respx.get(BRAVE).mock(return_value=httpx.Response(429))
+    with pytest.raises(SearchError, match="429"):
+        await find_site(state(), settings=armed, fetcher=quick(armed))
+    with connect(armed.db_path) as conn:
+        assert site_record(conn, "r1", UID) is None
+
+
+@respx.mock
+async def test_brave_failing_at_the_last_check_is_a_search_error(armed):
+    searxng_says(DIRECTORY)
+    respx.get(BRAVE).mock(return_value=httpx.Response(402))
+    with pytest.raises(SearchError, match="402"):
+        await find_site(state(), settings=armed, fetcher=quick(armed))
+
+
+@respx.mock
+async def test_a_candidate_only_brave_found_is_not_stored(armed, monkeypatch):
+    """Brave's terms forbid storing its results. The chosen site is stored —
+    it is our own finding, read from the site — but not Brave's list."""
+    searxng_says(DIRECTORY, "https://muster-andere.ch/")
+    respx.get("https://muster-andere.ch/").mock(return_value=httpx.Response(200))
+    respx.get(host="muster-andere.ch").mock(return_value=httpx.Response(404))
+    brave_says(f"{SITE}/", "https://nur-bei-brave.ch/")
+    respx.get(host="nur-bei-brave.ch").mock(return_value=httpx.Response(404))
+    serve(IMPRESSUM_WITH_UID)
+    model_says(monkeypatch, f"{SITE}/", "Muster Metallbau AG")
+
+    await find_site(state(), settings=armed, fetcher=quick(armed))
+
+    with connect(armed.db_path) as conn:
+        row = site_record(conn, "r1", UID)
+    assert row["url"] == f"{SITE}/"
+    assert json.loads(row["candidates"]) == ["https://muster-andere.ch/"]
+
+
+@respx.mock
+async def test_without_a_key_the_old_pause_and_retry_holds(
+    settings: Settings, monkeypatch
+):
+    """No paid provider: silence is still waited out once, then an error."""
+    paused: list[float] = []
+
+    async def pause(seconds: float) -> None:
+        paused.append(seconds)
+
+    async def silent(query, *, settings, limit=10):
+        return []
+
+    async def no_guesses(names, **kw):
+        return []
+
+    waiting = settings.model_copy(update={"search_retry_pause_s": 30.0})
+    monkeypatch.setattr(node.asyncio, "sleep", pause)
+    monkeypatch.setattr(node, "search_outcome", as_outcome(silent))
+    monkeypatch.setattr(node, "resolving_domains", no_guesses)
+    brave = respx.get(BRAVE)
+
+    with pytest.raises(SearchError):
+        await find_site(state(), settings=waiting, fetcher=quick(waiting))
+    assert paused == [30.0]
+    assert not brave.called
+
+
+@respx.mock
+async def test_without_a_key_brave_is_not_asked_before_no_site(
+    settings: Settings, monkeypatch
+):
+    async def only_directories(query, *, settings, limit=10):
+        return [Result(DIRECTORY, "x", "y", "ddg")]
+
+    async def no_guesses(names, **kw):
+        return []
+
+    monkeypatch.setattr(node, "search_outcome", as_outcome(only_directories))
+    monkeypatch.setattr(node, "resolving_domains", no_guesses)
+    brave = respx.get(BRAVE)
+    out = await find_site(state(), settings=settings, fetcher=quick(settings))
+    assert out["site"] is None
+    assert "Brave" not in out["reason"]
+    assert not brave.called

@@ -31,6 +31,13 @@ website, and that is a fact about the population. Search being broken is an
 written down as "this company has no website". Search answering nothing at
 all, to every query and again after a pause, counts as broken: such a
 company still has its directory entries, so silence means we were not heard.
+
+With a Brave key (decided 2026-09-25) "no website" needs a second opinion:
+a provider that answered and found no candidate. Brave is asked in place of
+the pause when SearXNG was silent, and once more before any "no website" —
+unless it has already answered for this company. Brave failing is an
+error like any other. Its results are used, never stored: its terms forbid
+keeping them, so a candidate only Brave found is left out of the record.
 """
 
 import asyncio
@@ -49,7 +56,13 @@ from company_reach.tools.blocklist import is_blocked
 from company_reach.tools.candidate_pages import CandidatePages, read_candidate
 from company_reach.tools.db import connect, record_site
 from company_reach.tools.fetcher import Fetcher, resolve_host
-from company_reach.tools.search import Result, search
+from company_reach.tools.search import (
+    Asked,
+    Result,
+    ask_brave,
+    results_of,
+    search_outcome,
+)
 from company_reach.tools.textify import normalise
 from company_reach.tools.uid import uid_match
 from company_reach.tools.untrusted import as_data
@@ -316,46 +329,78 @@ def narrowing_query(record: CompanyRecord) -> str:
     return f'site:.ch "{name}" {seat}'
 
 
-async def search_results(record: CompanyRecord, *, settings: Settings) -> list[Result]:
+async def search_results(
+    record: CompanyRecord, *, settings: Settings, log: list[Asked] | None = None
+) -> list[Result]:
     """Every result, before dedupe and the cap. Kept apart from the choice of
     candidates so the golden-set capture can save what search returned —
     directories included, which is what the candidates exist to leave out.
+    `log` collects every provider asked, errors included.
 
     Domain guesses come first. A guess that resolves is built from the
     company's own name, which no search result can say; put last, it lost
     its place to whatever search ranked above it."""
+    log = [] if log is None else log
     guessed = await resolving_domains(guess_domains(record.name))
-    searched = await _ask_every_query(record, settings=settings)
+    searched = await _ask_every_query(record, settings=settings, log=log)
 
     # Silence from every query is not an answer. A real company almost always
     # has at least a directory entry, and a throttled engine can return
-    # nothing without listing itself as unresponsive (#17). Ask once more
-    # after a pause; still nothing, and it is an error a later run retries —
-    # never "no website". A resolving guess does not change that: it is
-    # built from the name and says nothing about whether search was heard.
-    if not searched:
+    # nothing without listing itself as unresponsive (#17). With a Brave key,
+    # Brave is asked instead of waiting, and its answer — even an empty one —
+    # is an answer. Without one, ask once more after a pause; still nothing,
+    # and it is an error a later run retries — never "no website". A
+    # resolving guess does not change that: it is built from the name and
+    # says nothing about whether search was heard.
+    if not searched and settings.brave_search_api_key is not None:
+        if not _brave_asked(log):
+            for query in build_queries(record)[:2]:
+                searched.extend(await _ask_brave(query, settings=settings, log=log))
+    elif not searched:
         await asyncio.sleep(settings.search_retry_pause_s)
-        searched = await _ask_every_query(record, settings=settings)
-    if not searched:
-        raise SearchError(
-            "every query returned nothing, twice; search was probably "
-            "throttled, and the company is not recorded as having no website"
-        )
+        searched = await _ask_every_query(record, settings=settings, log=log)
+        if not searched:
+            raise SearchError(
+                "every query returned nothing, twice; search was probably "
+                "throttled, and the company is not recorded as having no website"
+            )
 
     # Search came back, and every single result was a directory or a social
     # profile. Narrowing to .ch is the one cheap thing left.
     if not dedupe_candidates(searched):
-        searched.extend(await search(narrowing_query(record), settings=settings))
+        searched.extend(await _ask(narrowing_query(record), settings=settings, log=log))
 
-    return [Result(url, "", "", "guess") for url in guessed] + searched
+    guesses = [Result(url, "", "", "guess", provider="guess") for url in guessed]
+    return guesses + searched
+
+
+async def _ask(query: str, *, settings: Settings, log: list[Asked]) -> list[Result]:
+    """One query: SearXNG, and Brave in its place when it fails."""
+    asked = await search_outcome(query, settings=settings)
+    log.extend(asked)
+    return results_of(asked)
+
+
+async def _ask_brave(
+    query: str, *, settings: Settings, log: list[Asked]
+) -> list[Result]:
+    asked = await ask_brave(query, settings=settings)
+    log.append(asked)
+    return results_of([asked])
+
+
+def _brave_asked(log: list[Asked]) -> bool:
+    """Brave answered for this company — found something or found nothing.
+    A Brave error is not an answer, but it has already raised by then."""
+    return any(a.provider == "brave" and a.error is None for a in log)
 
 
 async def _ask_every_query(
-    record: CompanyRecord, *, settings: Settings
+    record: CompanyRecord, *, settings: Settings, log: list[Asked]
 ) -> list[Result]:
     results: list[Result] = []
     for query in build_queries(record):
-        results.extend(await search(query, settings=settings))
+        results.extend(await _ask(query, settings=settings, log=log))
     return results
 
 
@@ -390,23 +435,66 @@ async def find_site(
     are per-instance, so a fetcher per node would forget the delay between
     find_site's pages and the next node's, and re-read robots.txt each time."""
     record: CompanyRecord = state["company"]
-    candidates = choose_candidates(await search_results(record, settings=settings))
+    log: list[Asked] = []
+    results = await search_results(record, settings=settings, log=log)
+    candidates = choose_candidates(results)
 
     fetcher = fetcher or Fetcher(settings)
-    pages = await read_candidates(candidates, fetcher=fetcher)
-    if not pages:
-        decided = _no_site(record, candidates)
-    else:
-        texts = {url: read.full_text() for url, read in pages.items()}
-        answer = await _ask_model(record, pages, settings=settings)
-        decided = _decide(record, texts, answer, candidates)
+    site = await _choose(record, candidates, settings=settings, fetcher=fetcher)
 
-    _record(state, record, decided["site"], candidates, settings=settings)
-    if decided["site"] is not None:
+    # "No website" needs a provider that answered and found no candidate.
+    # With a key, that is Brave's to confirm, once, with the strongest query.
+    if (
+        site is None
+        and settings.brave_search_api_key is not None
+        and not _brave_asked(log)
+    ):
+        more = await _ask_brave(build_queries(record)[0], settings=settings, log=log)
+        results += more
+        considered = {registered_domain(url) for url in candidates}
+        new = [
+            url
+            for url in choose_candidates(more)
+            if registered_domain(url) not in considered
+        ]
+        if new:
+            candidates += new
+            site = await _choose(record, new, settings=settings, fetcher=fetcher)
+
+    if site is None:
+        decided = _no_site(record, candidates, brave=_brave_asked(log))
+    else:
+        decided = {"site": site, "recommendation": None, "reason": None}
+
+    _record(state, record, site, _storable(candidates, results), settings=settings)
+    if site is not None:
         decided["page_urls"] = await list_pages(
-            decided["site"].url, fetcher=fetcher, limit=settings.max_page_urls
+            site.url, fetcher=fetcher, limit=settings.max_page_urls
         )
     return decided
+
+
+async def _choose(
+    record: CompanyRecord,
+    candidates: list[str],
+    *,
+    settings: Settings,
+    fetcher: Fetcher,
+) -> SiteChoice | None:
+    """Read the candidates and let the model choose among those it can read."""
+    pages = await read_candidates(candidates, fetcher=fetcher)
+    if not pages:
+        return None
+    texts = {url: read.full_text() for url, read in pages.items()}
+    answer = await _ask_model(record, pages, settings=settings)
+    return _decide(record, texts, answer)
+
+
+def _storable(candidates: list[str], results: list[Result]) -> list[str]:
+    """The candidates the record may keep: those some provider other than
+    Brave also produced. Brave's terms forbid storing its results."""
+    free = {registered_domain(r.url) for r in results if r.provider != "brave"}
+    return [url for url in candidates if registered_domain(url) in free]
 
 
 def _record(
@@ -486,11 +574,8 @@ async def _ask_model(
 
 
 def _decide(
-    record: CompanyRecord,
-    texts: dict[str, str],
-    answer: SiteAnswer,
-    candidates: list[str],
-) -> dict:
+    record: CompanyRecord, texts: dict[str, str], answer: SiteAnswer
+) -> SiteChoice | None:
     """The model is the gate; the tiers are the label.
 
     An earlier version let a UID match stand against a "none of these", on
@@ -506,12 +591,12 @@ def _decide(
     whether there is a site at all.
     """
     if answer.chosen_url is None or answer.chosen_url not in texts:
-        return _no_site(record, candidates)
+        return None
 
     chosen = answer.chosen_url
     quote = answer.quote or ""
     if not quote_found(quote, texts[chosen]):
-        return _no_site(record, candidates)
+        return None
 
     tier, evidence = verify(record, texts[chosen])
     if tier is None:
@@ -525,21 +610,19 @@ def _decide(
     ]
     note = f"the register UID is also on {elsewhere[0]}" if elsewhere else ""
 
-    return {
-        "site": SiteChoice(chosen, tier, evidence, chosen, note),
-        "recommendation": None,
-        "reason": None,
-    }
+    return SiteChoice(chosen, tier, evidence, chosen, note)
 
 
-def _no_site(record: CompanyRecord, candidates: list[str]) -> dict:
+def _no_site(record: CompanyRecord, candidates: list[str], *, brave: bool) -> dict:
     """The verdict is written here, where the finding is produced. The
     design put it in `recommend`, but the child ends before `recommend` when
     there is no site, so nothing would have written it at all."""
     tried = len(build_queries(record))
     looked = f", {len(candidates)} candidate(s) checked" if candidates else ""
+    asked = "; Brave was also asked" if brave else ""
     return {
         "site": None,
         "recommendation": "skip",
-        "reason": f"no website found after {tried} searches and a domain guess{looked}",
+        "reason": f"no website found after {tried} searches and a domain "
+        f"guess{looked}{asked}",
     }

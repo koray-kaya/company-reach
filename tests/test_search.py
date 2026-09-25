@@ -249,6 +249,51 @@ async def test_brave_is_never_asked_without_a_key(s: Settings):
     assert not route.called
 
 
+@respx.mock
+async def test_brave_takes_over_after_a_search_error(s: Settings):
+    respx.get(SEARXNG).mock(return_value=httpx.Response(503))
+    respx.get(BRAVE).mock(
+        return_value=httpx.Response(
+            200, json=brave_body("https://muster-metallbau.ch/")
+        )
+    )
+    found = await search("anything", settings=keyed(s))
+    assert [(r.url, r.provider) for r in found] == [
+        ("https://muster-metallbau.ch/", "brave")
+    ]
+
+
+@respx.mock
+async def test_brave_is_not_asked_for_an_empty_result(s: Settings):
+    """Asking on every empty list would spend paid queries on exactly the
+    companies that have no website. find_site decides when silence is
+    suspicious; `search` only replaces a provider that failed."""
+    respx.get(SEARXNG).mock(return_value=httpx.Response(200, json=searxng_body([])))
+    route = respx.get(BRAVE)
+    assert await search("anything", settings=keyed(s)) == []
+    assert not route.called
+
+
+@respx.mock
+async def test_brave_is_not_asked_when_searxng_answers(s: Settings):
+    respx.get(SEARXNG).mock(
+        return_value=httpx.Response(200, json=searxng_body([one_result()]))
+    )
+    route = respx.get(BRAVE)
+    await search("anything", settings=keyed(s))
+    assert not route.called
+
+
+@respx.mock
+async def test_both_failing_names_both(s: Settings):
+    respx.get(SEARXNG).mock(return_value=httpx.Response(503))
+    respx.get(BRAVE).mock(return_value=httpx.Response(429))
+    with pytest.raises(SearchError) as caught:
+        await search("anything", settings=keyed(s))
+    assert "503" in str(caught.value)
+    assert "429" in str(caught.value)
+
+
 # --- rate control ------------------------------------------------------------
 
 
