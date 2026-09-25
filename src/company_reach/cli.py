@@ -170,7 +170,8 @@ def run(
     state = initial_state(
         run_id=rid,
         goal=text,
-        about_me=load_profile(s.profile_path).about_me if goal is None else "",
+        # --goal overrides the goal only; the drafts still say who writes
+        about_me=load_profile(s.profile_path).about_me,
         municipality="",
         settings=s,
         seed=seed,
@@ -180,7 +181,9 @@ def run(
         child = build_stub_child() if dry else build_child(settings=s)
         out = asyncio.run(run_graph(state, settings=s, child=child, dry=dry))
     except Exception as error:
-        finish_manifest(rid, settings=s, status="failed", counts={})
+        reason = f"{type(error).__name__}: {error}"
+        finish_manifest(rid, settings=s, status="failed", counts={}, reason=reason)
+        typer.echo(f"run {rid} failed — {reason}", err=True)
         raise typer.Exit(1) from error
 
     counts = {

@@ -117,12 +117,17 @@ def finish_manifest(
     status: str,
     counts: dict[str, int],
     criteria: Any = None,
+    reason: str | None = None,
 ) -> Path:
     fields: dict[str, Any] = {
         "status": status,
         "finished_at": now(),
         "counts": counts,
     }
+    if reason:
+        # why a failed run stopped, so the file answers what the terminal
+        # showed once and then scrolled away
+        fields["reason"] = reason
     if criteria is not None:
         fields["criteria"] = (
             criteria.model_dump() if hasattr(criteria, "model_dump") else criteria

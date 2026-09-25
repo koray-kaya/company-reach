@@ -6,6 +6,7 @@ import respx
 from typer.testing import CliRunner
 
 from company_reach import cli
+from company_reach.errors import SearchError
 from company_reach.manifest import manifest_path
 from company_reach.models import CompanyRecord, RawPerson, Score
 from company_reach.nodes import find_site as find_site_node
@@ -354,3 +355,45 @@ def test_purge_says_what_it_removed(settings, monkeypatch):
     r = runner.invoke(cli.app, ["purge", "--older-than", "365"])
     assert r.exit_code == 0, r.output
     assert "0 companies older than 365 days purged" in r.output
+
+
+def test_a_failed_run_says_why(settings, monkeypatch):
+    """Audit K1: `raise typer.Exit(1) from error` printed nothing at all."""
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    _seed_scored_pool(settings, {"CHE000000001": 9})
+
+    async def boom(*args, **kwargs):
+        raise SearchError("SearXNG unreachable: connection refused")
+
+    monkeypatch.setattr(cli, "run_graph", boom)
+    r = runner.invoke(cli.app, ["run", "--goal", "make and sell", "--run-id", "r1"])
+
+    assert r.exit_code == 1
+    assert "SearXNG unreachable" in r.output
+    manifest = json.loads(manifest_path("r1", settings=settings).read_text())
+    assert "SearXNG unreachable" in manifest["reason"]
+
+
+def test_run_with_a_goal_keeps_about_me(settings, monkeypatch):
+    """Audit H9: --goal blanked about_me, and the drafts said nothing about
+    who writes."""
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    settings.profile_path.write_text(
+        'goal = "Firms that make things."\n'
+        'about_me = "Eine Studentin der Beispiel-Hochschule."\n'
+        'survey_url = "https://survey.example/form"\n'
+    )
+    _seed_scored_pool(settings, {"CHE000000001": 9})
+    captured: dict = {}
+
+    async def fake_run_graph(state, **kwargs):
+        captured.update(state)
+        return state | {"pool_exhausted": True}
+
+    monkeypatch.setattr(cli, "run_graph", fake_run_graph)
+    r = runner.invoke(
+        cli.app, ["run", "--dry", "--goal", "make and sell", "--run-id", "r2"]
+    )
+
+    assert r.exit_code == 0, r.output
+    assert captured["about_me"] == "Eine Studentin der Beispiel-Hochschule."

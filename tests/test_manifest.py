@@ -80,3 +80,12 @@ def test_the_git_commit_is_recorded_or_explicitly_absent(settings: Settings):
     start(settings)
     m = read(settings)
     assert "git_commit" in m  # None outside a repository, never missing
+
+
+def test_a_failed_run_records_its_reason(settings: Settings):
+    start_manifest("r1", settings=settings, goal="g", seed=0)
+    finish_manifest(
+        "r1", settings=settings, status="failed", counts={}, reason="SearchError: down"
+    )
+    data = json.loads(manifest_path("r1", settings=settings).read_text())
+    assert data["reason"] == "SearchError: down"
