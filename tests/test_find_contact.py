@@ -16,10 +16,10 @@ from pydantic import SecretStr
 
 from company_reach.errors import SearchError, ShabError
 from company_reach.models import CompanyProfile, CompanyRecord, Person, ShabPerson
-from company_reach.nodes.draft import greeting
 from company_reach.nodes.find_contact import find_contact
 from company_reach.nodes.find_site import SiteChoice
 from company_reach.tools.db import init_db
+from company_reach.tools.invitation import greeting
 from company_reach.tools.search import Result
 
 SITE = "https://muster-metallbau.ch/"
@@ -618,7 +618,9 @@ async def test_a_firm_named_after_its_owner_greets_the_owner(db_settings):
     )
     out = await run(st, db_settings, shab)
     contact = out["contact"]
-    assert greeting(contact) == "Guten Tag Hans Muster"
+    # frame@1: a masculine SHAB role proposes "Herr" (flagged for review)
+    assert contact.name == "Hans Muster"
+    assert greeting(contact) == "Guten Tag Herr Muster"
     assert contact.alternatives == []
 
 
