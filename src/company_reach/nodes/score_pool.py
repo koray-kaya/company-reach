@@ -24,8 +24,8 @@ import random
 import time
 from dataclasses import dataclass
 
-from company_reach.models import CompanyRecord, Score, ScoreBatch, SelectionCriteria
-from company_reach.nodes.write_criteria import criteria_hash, format_criteria
+from company_reach.models import CompanyRecord, Score, ScoreBatch, StoredCriteria
+from company_reach.nodes.write_criteria import format_criteria
 from company_reach.profile import goal_hash
 from company_reach.settings import Settings
 from company_reach.tools import llm
@@ -121,19 +121,23 @@ async def _score_batch(
 async def score_pool(
     run_id: str,
     goal: str,
-    criteria: SelectionCriteria,
+    criteria: StoredCriteria,
     *,
     settings: Settings,
     limit: int | None = None,
     seed: int = 0,
 ) -> ScoreReport:
+    """`criteria` is the stored record, and its hash is the one the scores
+    carry. Recomputing it here would give two sources for one key: a change
+    to how criteria are formatted would score the pool under a hash that
+    `draw_batch`, which reads the stored one, never draws."""
     started = time.monotonic()
     prompt_version, _ = llm.load_prompt("score")
     key = dict(
         goal_hash=goal_hash(goal),
         prompt_version=prompt_version,
         model=settings.llm_model,
-        criteria_hash=criteria_hash(criteria),
+        criteria_hash=criteria.criteria_hash,
     )
 
     with connect(settings.db_path) as conn:
@@ -145,7 +149,7 @@ async def score_pool(
 
     size = settings.score_batch_size
     batches = [candidates[i : i + size] for i in range(0, len(candidates), size)]
-    criteria_text = format_criteria(criteria)
+    criteria_text = format_criteria(criteria.criteria)
 
     results = await asyncio.gather(
         *[

@@ -267,7 +267,7 @@ def score(
 
     record_run(s.db_path, rid, text, stored, seed=seed)
     report = asyncio.run(
-        score_pool(rid, text, stored.criteria, settings=s, limit=limit, seed=seed)
+        score_pool(rid, text, stored, settings=s, limit=limit, seed=seed)
     )
     typer.echo(
         f"{report.scored} newly scored · {report.cached} already scored, skipped"

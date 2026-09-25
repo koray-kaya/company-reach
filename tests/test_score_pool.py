@@ -5,15 +5,33 @@ import respx
 from typer.testing import CliRunner
 
 from company_reach import cli
-from company_reach.models import CompanyRecord, RawScore, ScoreBatch, SelectionCriteria
+from company_reach.models import (
+    CompanyRecord,
+    RawScore,
+    ScoreBatch,
+    SelectionCriteria,
+    StoredCriteria,
+)
 from company_reach.nodes.score_pool import score_pool
+from company_reach.profile import goal_hash
 from company_reach.tools import llm
-from company_reach.tools.db import connect, init_db, upsert_companies
+from company_reach.tools.db import (
+    connect,
+    current_criteria_hash,
+    draw_batch,
+    init_db,
+    store_criteria,
+    upsert_companies,
+)
 
 URL = "https://api.openai.com/v1/chat/completions"
 
-CRITERIA = SelectionCriteria(
-    must=["makes"], must_not=["holds"], positive_signals=["Montage"]
+CRITERIA = StoredCriteria(
+    criteria=SelectionCriteria(
+        must=["makes"], must_not=["holds"], positive_signals=["Montage"]
+    ),
+    criteria_hash="c1",
+    created_at="2026-09-25T00:00:00+00:00",
 )
 
 
@@ -269,3 +287,44 @@ def test_a_new_criteria_rescores(settings, monkeypatch):
     assert "sells software" in r.output
     after = criteria_hashes(settings)
     assert len(after) == 1 and after != before
+
+
+def test_scores_carry_the_stored_hash(settings, monkeypatch):
+    """Review of Phase F: score_pool recomputed the hash from the formatted
+    text while the draw read the stored one, so a change to the formatting
+    alone re-scored the pool under a hash nothing draws, and stranded it."""
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    seed(settings, 2)
+    fake_model(monkeypatch, "makes things")
+    rules = SelectionCriteria(
+        must=["makes things"], must_not=["holds"], positive_signals=[]
+    )
+    key = goal_hash("goal")
+    with connect(settings.db_path) as conn:
+        store_criteria(
+            conn,
+            key,
+            rules,
+            criteria_hash="by-older-code",  # not what criteria_hash() gives now
+            model="test-model",
+            prompt_version="1",
+            adopt_unlinked=True,
+        )
+
+    r = runner.invoke(cli.app, ["score", "--goal", "goal"])
+
+    assert r.exit_code == 0, r.output
+    assert criteria_hashes(settings) == {"by-older-code"}
+    with connect(settings.db_path) as conn:
+        drawn = draw_batch(
+            conn,
+            run_id="r1",
+            batch_no=1,
+            goal_hash=key,
+            prompt_version=llm.load_prompt("score")[0],
+            model=settings.llm_model,
+            criteria_hash=current_criteria_hash(conn, key),
+            min_score=7,
+            limit=10,
+        )
+    assert len(drawn) == 2
