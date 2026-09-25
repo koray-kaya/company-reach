@@ -16,7 +16,7 @@ form no layout can scramble.
 import json
 import re
 from dataclasses import dataclass
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import unquote, urljoin, urlsplit
 
 from company_reach.errors import FetchError
 from company_reach.tools.fetcher import Fetcher, Page
@@ -126,6 +126,19 @@ def find_links(html: str, base: str) -> tuple[list[str], list[str], list[str]]:
     by_kind = sorted(ranked, key=lambda pair: pair[0])
     other = [url for kind, url in by_kind if kind > 0]
     return impressum[:3], other[:3], about[:3]
+
+
+def page_kind(url: str) -> int | None:
+    """0 for an Impressum, 1 for a Kontakt page, 2 for Über uns or Team,
+    None for anything else — judged on the URL's path with the patterns
+    `find_links` uses on a link. These are the pages that name people and
+    say where the company is, and `pick_pages` reads every one it is
+    offered."""
+    path = unquote(urlsplit(url).path)
+    for kind, pattern in enumerate((_LEGAL_KINDS[0], _LEGAL_KINDS[1], _ABOUT)):
+        if pattern.search(path):
+            return kind
+    return None
 
 
 def read_schema_org(html: str) -> str:

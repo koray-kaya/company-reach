@@ -3,7 +3,8 @@
 The node's whole job is to hand `read_pages` a short list, so the tests are
 about what it refuses to pass on: a URL the model invented, more than the
 cap, and — the cheapest case — a site small enough that there is nothing to
-choose.
+choose. And about what it never leaves out: the home page and the pages that
+name people, whatever the model answers.
 """
 
 import pytest
@@ -76,7 +77,7 @@ async def test_a_long_list_is_handed_to_the_model(settings, monkeypatch):
     out = await pick_pages(state(urls), settings=settings)
 
     assert calls == ["pick_pages"]
-    assert out["pages_to_read"] == [f"{SITE}/impressum", f"{SITE}/team"]
+    assert out["pages_to_read"] == [SITE, f"{SITE}/impressum", f"{SITE}/team"]
 
 
 async def test_a_url_the_model_did_not_get_offered_is_dropped(settings, monkeypatch):
@@ -89,7 +90,7 @@ async def test_a_url_the_model_did_not_get_offered_is_dropped(settings, monkeypa
 
     out = await pick_pages(state(urls), settings=settings)
 
-    assert out["pages_to_read"] == [f"{SITE}/impressum"]
+    assert out["pages_to_read"] == [SITE, f"{SITE}/impressum"]
 
 
 async def test_an_empty_answer_still_reads_the_home_page(settings, monkeypatch):
@@ -112,11 +113,56 @@ async def test_more_pages_than_the_cap_are_trimmed(settings, monkeypatch):
 
     out = await pick_pages(state(offered), settings=settings)
 
-    assert out["pages_to_read"] == offered[:3]
+    assert out["pages_to_read"] == [SITE, *offered[:2]]
 
 
 async def test_a_site_with_one_page_asks_nobody(settings, monkeypatch):
     calls = model_returns(monkeypatch, [])
     out = await pick_pages(state([SITE]), settings=settings)
     assert out["pages_to_read"] == [SITE]
+    assert calls == []
+
+
+# --- the floor ---------------------------------------------------------------
+# Whether the Impressum was read depended on the model alone: offered the
+# home page, /impressum, /kontakt and /team among twenty product pages, a
+# model answering ten product pages left the profile with nobody named
+# (audit). The pages `find_site` reads for the same reason are read here too.
+
+PRODUCTS = [f"{SITE}/produkte/p{n}" for n in range(20)]
+FLOOR = [f"{SITE}/", f"{SITE}/impressum", f"{SITE}/kontakt", f"{SITE}/team"]
+
+
+async def test_the_impressum_is_always_read(settings, monkeypatch):
+    model_returns(monkeypatch, PRODUCTS[:10])
+
+    out = await pick_pages(state(PRODUCTS + FLOOR), settings=settings)
+
+    assert out["pages_to_read"] == FLOOR + PRODUCTS[:6]
+
+
+async def test_a_page_the_floor_has_is_not_read_twice(settings, monkeypatch):
+    model_returns(monkeypatch, [f"{SITE}/impressum", PRODUCTS[0]])
+
+    out = await pick_pages(state(PRODUCTS + FLOOR), settings=settings)
+
+    assert out["pages_to_read"] == [*FLOOR, PRODUCTS[0]]
+
+
+async def test_an_ueber_uns_page_is_part_of_the_floor(settings, monkeypatch):
+    model_returns(monkeypatch, [])
+    about = f"{SITE}/unternehmen/ueber-uns"
+
+    out = await pick_pages(state([*PRODUCTS, about]), settings=settings)
+
+    assert out["pages_to_read"] == [SITE, about]
+
+
+async def test_a_floor_that_fills_the_cap_asks_nobody(settings, monkeypatch):
+    monkeypatch.setattr(settings, "max_pages_per_site", 3)
+    calls = model_returns(monkeypatch, PRODUCTS[:3])
+
+    out = await pick_pages(state(PRODUCTS + FLOOR), settings=settings)
+
+    assert out["pages_to_read"] == FLOOR[:3]
     assert calls == []
