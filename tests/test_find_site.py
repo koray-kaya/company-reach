@@ -10,6 +10,7 @@ does not take is measuring nothing.
 
 import asyncio
 import json
+import re
 import socket
 
 import httpx
@@ -116,6 +117,50 @@ def test_one_candidate_per_registered_domain():
         Result("https://www.muster-metallbau.ch/kontakt", "x", "y", "e"),
     ]
     assert dedupe_candidates(results) == [f"{SITE}/"]
+
+
+def test_a_subdomain_is_the_same_candidate():
+    # the registered domain, not the host: shop. and de. are the company's
+    results = [
+        Result(f"{SITE}/", "x", "y", "e"),
+        Result("https://shop.muster-metallbau.ch/produkte", "x", "y", "e"),
+        Result("https://de.muster-metallbau.ch/", "x", "y", "e"),
+    ]
+    assert dedupe_candidates(results) == [f"{SITE}/"]
+
+
+def test_a_subdomain_ranked_first_gives_way_to_the_apex():
+    """Review of E6: merging kept whichever host search ranked first, and a
+    shop subdomain was read in place of the company's own site."""
+    results = [
+        Result("https://shop.muster-metallbau.ch/produkte", "x", "y", "e"),
+        Result("https://directory.example/muster", "x", "y", "e"),
+        Result(f"{SITE}/impressum", "x", "y", "e"),
+    ]
+    assert dedupe_candidates(results) == [
+        f"{SITE}/",  # still in the place the domain was first ranked
+        "https://directory.example/",
+    ]
+
+
+def test_the_www_host_counts_as_the_apex_too():
+    results = [
+        Result("https://de.muster-metallbau.ch/", "x", "y", "e"),
+        Result("https://www.muster-metallbau.ch/kontakt", "x", "y", "e"),
+        Result(f"{SITE}/", "x", "y", "e"),
+    ]
+    assert dedupe_candidates(results) == ["https://www.muster-metallbau.ch/"]
+
+
+def test_two_customers_of_one_site_builder_are_two_candidates():
+    results = [
+        Result("https://muster-metallbau.wixsite.com/home", "x", "y", "e"),
+        Result("https://beispiel-holzbau.wixsite.com/home", "x", "y", "e"),
+    ]
+    assert dedupe_candidates(results) == [
+        "https://muster-metallbau.wixsite.com/",
+        "https://beispiel-holzbau.wixsite.com/",
+    ]
 
 
 def test_non_http_results_are_dropped():
@@ -683,7 +728,7 @@ async def test_a_page_cannot_forge_the_end_of_its_own_block(wired, monkeypatch):
     monkeypatch.setattr(node.llm, "ask", ask)
     await find_site(state(), settings=wired, fetcher=quick(wired))
 
-    assert seen["candidates"].count("<<<END>>>") == 1
+    assert len(re.findall(r"<<<END", seen["candidates"])) == 1
     assert "Ignore the pages above" in seen["candidates"]
 
 

@@ -8,11 +8,14 @@ Damen und Herren".
 1. Someone the site names, with their own address on the site's domain.
 2. Someone the site names, without one: greeted by name at the site's
    general inbox — the one it publishes, or info@ constructed and marked as
-   such when it publishes none (M6 open point 2).
+   such when it publishes none (M6 open point 2). Only on a domain of the
+   site's own: on a subdomain or a site builder's host there is no inbox to
+   guess, and the person is kept without an address (`urls.inbox_domain`).
 3. Only when the site named nobody: the newest current person SHAB names,
    at the site's general inbox or a constructed info@, as in 2. SHAB is not
    asked at all otherwise (open point 3): it describes a past state, the
-   site today.
+   site today. A person counts once, as the newest notice naming them has
+   it, and not at all when that notice struck them out (`shab.current`).
 4. Nobody named anywhere: the general inbox alone. Never a constructed one —
    an unnamed mail to a guessed inbox is the one that gets forwarded.
 
@@ -21,11 +24,11 @@ then the one who runs the company, then the board's chair, then everyone
 else; a tie keeps the order of the page. Everyone not chosen is kept on the
 contact as an alternative, so the reviewer can see who else was named.
 
-When the tool saw no address — it constructed info@, or found nothing at
-all — one web search restricted to LinkedIn profiles looks for a lead: the
-person's name and the company, or the company alone. It goes to SearXNG
-only, never to Brave: the lead is stored, and Brave's results may not be.
-A result counts only if its title carries the company (and the surname,
+When the tool saw no address — it constructed info@, could not, or found
+nothing at all — one web search restricted to LinkedIn profiles looks for a
+lead: the person's name and the company, or the company alone. It goes to
+SearXNG only, never to Brave: the lead is stored, and Brave's results may not
+be. A result counts only if its title carries the company (and the surname,
 when there is one), because a name alone matches namesakes elsewhere. The
 lead is a URL for a human to check; it is never an address and LinkedIn
 itself is never asked.
@@ -58,7 +61,7 @@ from company_reach.nodes.find_site import SiteChoice, strip_legal_form
 from company_reach.settings import Settings
 from company_reach.tools import search as search_tool
 from company_reach.tools import shab as shab_tool
-from company_reach.tools.checks import appears_in, is_noise
+from company_reach.tools.checks import appears_in, is_noise, names_a_person
 from company_reach.tools.db import connect, record_contact
 from company_reach.tools.invitation import (
     can_be_addressed,
@@ -67,7 +70,7 @@ from company_reach.tools.invitation import (
 )
 from company_reach.tools.search import Result
 from company_reach.tools.textify import normalise
-from company_reach.tools.urls import email_domain, registered_domain
+from company_reach.tools.urls import email_domain, inbox_domain, registered_domain
 
 Shab = Callable[..., Awaitable[list[ShabPerson]]]
 Search = Callable[..., Awaitable[list[Result]]]
@@ -117,8 +120,11 @@ def other_ending(email_domain_: str, site: str | None) -> bool:
 
 
 def _on_site(email: str, site: str | None) -> bool:
-    found = email_domain(email)
-    return found == site or other_ending(found, site)
+    # the same registered domain (`mail.muster.ch` is `muster.ch`), or the
+    # site's own name under another ending — asked of the address's host as
+    # written, since #25 admits no subdomain there
+    host = email.rsplit("@", 1)[-1].lower().removeprefix("www.")
+    return email_domain(email) == site or other_ending(host, site)
 
 
 def _own_address(person: Person) -> bool:
@@ -230,6 +236,7 @@ def _from_site(
     texts: dict[str, str],
     addresses: list[tuple[str, str]],
     domain: str | None,
+    guess: str | None,
     site_url: str,
 ) -> Contact:
     found_at = _page_with(person.name, texts, site_url)
@@ -252,8 +259,10 @@ def _from_site(
         return Contact(
             **base, email=person.email, email_kind="third_party", source_url=found_at
         )
+    if guess is None:  # no domain of the site's own to guess an inbox on
+        return Contact(**base, source_url=found_at)
     return Contact(
-        **base, email=f"info@{domain}", email_kind="constructed", source_url=found_at
+        **base, email=f"info@{guess}", email_kind="constructed", source_url=found_at
     )
 
 
@@ -262,11 +271,12 @@ def _without_site_names(
     *,
     addresses: list[tuple[str, str]],
     domain: str | None,
+    guess: str | None = None,
 ) -> Contact | None:
-    current = [p for p in shab_persons if not p.departed]
-    # SHAB answers newest notice first; sorted() is stable, so within a rank
-    # the newest claim stays in front
-    ranked = sorted(current, key=lambda p: rank(p.role))
+    """`guess` is where an info@ may be constructed; None constructs none."""
+    # each person once, as the newest notice naming them has it; sorted() is
+    # stable, so within a rank the newest claim stays in front
+    ranked = sorted(shab_tool.current(shab_persons), key=lambda p: rank(p.role))
     chosen = ranked[0] if ranked else None
     inbox = _inbox(addresses, domain)
 
@@ -275,8 +285,10 @@ def _without_site_names(
         # info@ guessed and marked (widened to SHAB names on 2026-09-24)
         if inbox:
             email, kind = inbox[0], "generic"
+        elif guess is not None:
+            email, kind = f"info@{guess}", "constructed"
         else:
-            email, kind = f"info@{domain}", "constructed"
+            email, kind = None, None
         return Contact(
             name=chosen.name,
             role=chosen.role,
@@ -375,6 +387,7 @@ async def find_contact(
     profile: CompanyProfile = state["profile"]
     texts: dict[str, str] = state.get("page_texts") or {}
     domain = registered_domain(site.url)
+    guess = inbox_domain(site.url)
     addresses = page_addresses(texts)
 
     # A lone first name cannot be greeted, and the mail treats it as nobody
@@ -387,14 +400,21 @@ async def find_contact(
             texts=texts,
             addresses=addresses,
             domain=domain,
+            guess=guess,
             site_url=site.url,
         )
         contact.alternatives = [_describe(p.name, p.role, p.email) for p in ranked[1:]]
     else:
         found = await shab(state["uid"], settings=settings)
-        contact = _without_site_names(found, addresses=addresses, domain=domain)
+        # the rule check_profile applies to the site's names
+        people = [
+            p for p in found if names_a_person(p.name, company=state["company"].name)
+        ]
+        contact = _without_site_names(
+            people, addresses=addresses, domain=domain, guess=guess
+        )
 
-    if contact is None or contact.email_kind == "constructed":
+    if contact is None or contact.email_kind in ("constructed", None):
         name = contact.name if contact else None
         lead = await linkedin_lead(
             state["company"].name, name, settings=settings, search=search

@@ -15,6 +15,14 @@ Both run again on every redirect. httpx following redirects itself checked
 only the first URL, so a public page answering 302 to a private address
 reached our own network (audit: SSRF on redirect).
 
+A page is decoded here, not by httpx. httpx reads the charset from the
+Content-Type header only and falls back to UTF-8, so an older Latin-1 site
+that names its charset in `<meta>` lost every umlaut to U+FFFD (audit).
+The order: UTF-8 when the bytes are valid UTF-8, which a page in any other
+charset almost never is; else the charset the header or the page's `<meta>`
+declares; else Windows-1252, the charset of the older sites that declare
+nothing. A guessing library was tried and read "Genève" as "Genčve".
+
 The other rule worth stating: a single page that fails is not an error. It
 returns a `Page` carrying what went wrong, because the company may still be
 identifiable from another page. Only a home page that cannot be reached at
@@ -23,9 +31,11 @@ as "this company has no website".
 """
 
 import asyncio
+import codecs
 import hashlib
 import ipaddress
 import json
+import re
 import socket
 import time
 from dataclasses import dataclass, replace
@@ -44,6 +54,20 @@ _HOME_ATTEMPTS = 2
 _BACKOFF_S = (2.0, 4.0)
 # Enough for http → https → www → a language path, with room to spare.
 _MAX_REDIRECTS = 5
+# `<meta charset="…">` and `<meta http-equiv="Content-Type" content="…;
+# charset=…">` alike. The standard wants them in the first 1024 bytes; a
+# little more room costs nothing.
+_META_CHARSET = re.compile(
+    rb"""<meta[^>]+?charset\s*=\s*["']?\s*([A-Za-z0-9._:-]+)""", re.IGNORECASE
+)
+_SNIFF_BYTES = 4096
+# What browsers do with these labels: pages that say Latin-1 are written in
+# Windows-1252, whose curly quotes and dashes Latin-1 does not have.
+_AS_WINDOWS_1252 = {"iso8859-1", "ascii"}
+# Written into every cache side file. A page cached without it was decoded
+# as UTF-8 whatever its charset, and is fetched again; a page cached with it
+# is kept, even when it really carries U+FFFD.
+_DECODER = 2
 
 
 @dataclass(frozen=True)
@@ -92,6 +116,36 @@ def _is_public(address: str) -> bool:
     )
 
 
+def _codec(label: str | None) -> str | None:
+    """The Python codec for a declared charset, or None when unknown."""
+    if not label:
+        return None
+    try:
+        name = codecs.lookup(label.strip()).name
+    except LookupError:
+        return None
+    return "cp1252" if name in _AS_WINDOWS_1252 else name
+
+
+def decode(content: bytes, header_charset: str | None) -> str:
+    """A page's bytes as text: UTF-8 when they are valid UTF-8, else the
+    header's charset or the page's own `<meta>`, else Windows-1252. A
+    declared UTF-8 the bytes are not falls through, and a declared UTF-16
+    counts as UTF-8, as browsers read it. A byte the charset cannot read
+    becomes U+FFFD rather than an error."""
+    try:
+        return content.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        pass
+    meta = _META_CHARSET.search(content[:_SNIFF_BYTES])
+    declared = meta.group(1).decode("ascii") if meta else None
+    for label in (header_charset, declared):
+        codec = _codec(label)
+        if codec and not codec.startswith("utf"):
+            return content.decode(codec, errors="replace")
+    return content.decode("cp1252", errors="replace")
+
+
 def _cache_key(url: str) -> str:
     return hashlib.sha1(url.encode("utf-8")).hexdigest()
 
@@ -136,6 +190,10 @@ class Fetcher:
         if not (body.is_file() and side.is_file()):
             return None
         meta = json.loads(side.read_text(encoding="utf-8"))
+        if meta.get("decoder") != _DECODER:
+            # decoded before pages were read by their charset: the
+            # characters may already be lost, and only the site has them
+            return None
         return Page(
             url=url,
             status=meta.get("status"),
@@ -158,6 +216,7 @@ class Fetcher:
                     "final_url": page.final_url,
                     "status": page.status,
                     "fetched_at": time.time(),
+                    "decoder": _DECODER,
                 }
             ),
             encoding="utf-8",
@@ -317,7 +376,8 @@ class Fetcher:
                 status=answer.status_code,
                 error=f"too large: {len(answer.content)} bytes",
             )
-        return Page(url=url, status=answer.status_code, html=answer.text)
+        html = decode(answer.content, answer.charset_encoding)
+        return Page(url=url, status=answer.status_code, html=html)
 
     async def get_home(self, url: str) -> Page:
         """The site's home page, retried, and an error if it stays out of

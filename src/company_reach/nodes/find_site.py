@@ -192,22 +192,33 @@ def site_root(url: str) -> str:
     return urlunsplit((parts.scheme.lower(), parts.netloc.lower(), "/", "", ""))
 
 
+def _on_apex(url: str, domain: str) -> bool:
+    """`muster.ch` or `www.muster.ch` for the domain `muster.ch`."""
+    host = (urlsplit(url).hostname or "").removeprefix("www.")
+    return host == domain
+
+
 def dedupe_candidates(results: list[Result]) -> list[str]:
     """One root URL per registered domain, blocklisted domains dropped,
-    order preserved. Three pages of the same site are one candidate."""
-    seen: set[str] = set()
-    kept: list[str] = []
+    order preserved. Three pages of the same site are one candidate, and so
+    are `shop.muster.ch` and `muster.ch`: the domain keeps the place its
+    first result was ranked, and the company's own host — the domain
+    itself, or www — when search found it at all (review: a shop subdomain
+    ranked first was read in place of the site)."""
+    kept: dict[str, str] = {}
     for result in results:
         if urlsplit(result.url).scheme not in ("http", "https"):
             continue
         if is_blocked(result.url):
             continue
         domain = registered_domain(result.url)
-        if domain is None or domain in seen:
+        if domain is None:
             continue
-        seen.add(domain)
-        kept.append(site_root(result.url))
-    return kept
+        if domain not in kept or (
+            _on_apex(result.url, domain) and not _on_apex(kept[domain], domain)
+        ):
+            kept[domain] = site_root(result.url)
+    return list(kept.values())
 
 
 # --- page listing ------------------------------------------------------------

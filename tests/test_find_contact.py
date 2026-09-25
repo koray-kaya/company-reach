@@ -19,6 +19,7 @@ from company_reach.models import CompanyProfile, CompanyRecord, Person, ShabPers
 from company_reach.nodes.find_contact import find_contact
 from company_reach.nodes.find_site import SiteChoice
 from company_reach.tools.db import init_db
+from company_reach.tools.invitation import greeting
 from company_reach.tools.search import Result
 
 SITE = "https://muster-metallbau.ch/"
@@ -48,22 +49,29 @@ class Shab:
         return self.answer
 
 
-def shab_person(name: str, role: str | None, *, departed: bool = False) -> ShabPerson:
+def shab_person(
+    name: str,
+    role: str | None,
+    *,
+    departed: bool = False,
+    published: str = "2024-03-20",
+    notice: str = NOTICE,
+) -> ShabPerson:
     return ShabPerson(
         name=name,
         role=role,
         departed=departed,
-        published="2024-03-20",
-        source_url=NOTICE,
+        published=published,
+        source_url=notice,
     )
 
 
-def state(persons: list[Person], pages: dict[str, str]) -> dict:
+def state(persons: list[Person], pages: dict[str, str], site: str = SITE) -> dict:
     return {
         "run_id": "run-1",
         "uid": UID,
         "company": COMPANY,
-        "site": SiteChoice(SITE, "uid", "CHE-000.000.046", SITE),
+        "site": SiteChoice(site, "uid", "CHE-000.000.046", site),
         "profile": CompanyProfile(description="Baut Metallteile.", persons=persons),
         "page_texts": pages,
     }
@@ -466,6 +474,156 @@ async def test_only_departed_people_in_shab_is_nobody(db_settings):
     )
 
 
+# --- one person, many notices (audit K2) ------------------------------------
+# Every notice names people as they stood on its date, so one person turns up
+# once per notice. The newest notice that mentions someone decides: struck out
+# there, they are gone, whatever an older notice said.
+
+OLD_NOTICE = "https://shab.test/api/v1/publications/0/xml"
+
+
+async def test_a_person_struck_out_later_is_not_chosen(db_settings):
+    """The audit's probe: entered in 2012, struck out in 2024. The older
+    entry alone reads as current, and it was chosen over the current board
+    member because its role ranks higher."""
+    shab = Shab(
+        [
+            shab_person(
+                "Nina Neu", "Mitglied des Verwaltungsrates", published="2024-05-01"
+            ),
+            shab_person(
+                "Otto Alt", "Geschäftsführer", departed=True, published="2024-05-01"
+            ),
+            shab_person(
+                "Otto Alt", "Geschäftsführer", published="2012-03-01", notice=OLD_NOTICE
+            ),
+        ]
+    )
+    out = await run(
+        state([], {SITE: "Kontakt: info@muster-metallbau.ch"}), db_settings, shab
+    )
+    contact = out["contact"]
+    assert contact.name == "Nina Neu"
+    assert contact.alternatives == []  # nor is he offered as someone else
+
+
+async def test_the_newest_notice_decides_whatever_order_shab_answers_in(db_settings):
+    # SHAB happens to answer newest first today, but nothing asks it to
+    shab = Shab(
+        [
+            shab_person(
+                "Otto Alt", "Geschäftsführer", published="2012-03-01", notice=OLD_NOTICE
+            ),
+            shab_person(
+                "Otto Alt", "Geschäftsführer", departed=True, published="2024-05-01"
+            ),
+            shab_person(
+                "Nina Neu", "Mitglied des Verwaltungsrates", published="2024-05-01"
+            ),
+        ]
+    )
+    out = await run(state([], {SITE: "Willkommen"}), db_settings, shab)
+    assert out["contact"].name == "Nina Neu"
+    assert out["contact"].alternatives == []
+
+
+async def test_a_changed_role_is_the_newest_and_the_person_is_named_once(db_settings):
+    """A former managing director who now only sits on the board: the old
+    role was put in the invitation, and the card listed them as their own
+    alternative."""
+    shab = Shab(
+        [
+            shab_person(
+                "Peter Muster", "Mitglied des Verwaltungsrates", published="2025-01-10"
+            ),
+            shab_person(
+                "Peter Muster",
+                "Geschäftsführer",
+                published="2019-03-01",
+                notice=OLD_NOTICE,
+            ),
+        ]
+    )
+    out = await run(state([], {SITE: "Willkommen"}), db_settings, shab)
+    contact = out["contact"]
+    assert (contact.name, contact.role) == (
+        "Peter Muster",
+        "Mitglied des Verwaltungsrates",
+    )
+    assert (contact.source_url, contact.source_date) == (NOTICE, "2025-01-10")
+    assert contact.alternatives == []
+
+
+async def test_a_person_named_again_after_leaving_is_current(db_settings):
+    shab = Shab(
+        [
+            shab_person("Anna Muster", "Geschäftsführerin", published="2025-02-01"),
+            shab_person(
+                "Anna Muster",
+                "Geschäftsführerin",
+                departed=True,
+                published="2020-06-01",
+                notice=OLD_NOTICE,
+            ),
+        ]
+    )
+    out = await run(state([], {SITE: "Willkommen"}), db_settings, shab)
+    assert out["contact"].name == "Anna Muster"
+
+
+async def test_the_same_name_written_differently_is_one_person(db_settings):
+    shab = Shab(
+        [
+            shab_person(
+                "Otto  ALT", "Geschäftsführer", departed=True, published="2024-05-01"
+            ),
+            shab_person(
+                "Otto Alt", "Geschäftsführer", published="2012-03-01", notice=OLD_NOTICE
+            ),
+        ]
+    )
+    out = await run(
+        state([], {SITE: "Kontakt: info@muster-metallbau.ch"}), db_settings, shab
+    )
+    assert out["contact"].name is None
+
+
+async def test_a_firm_or_a_single_word_in_shab_is_not_a_person(db_settings):
+    """The same rule as for a name read off the site: a register entry that
+    is the firm itself, or one word, is no one to greet."""
+    shab = Shab(
+        [
+            shab_person("Muster Metallbau AG", "Gesellschafterin"),
+            shab_person("Muster", "Geschäftsführer"),
+            shab_person("Anna Muster", "Mitglied des Verwaltungsrates"),
+        ]
+    )
+    out = await run(state([], {SITE: "Willkommen"}), db_settings, shab)
+    assert out["contact"].name == "Anna Muster"
+    assert out["contact"].alternatives == []
+
+
+async def test_a_firm_named_after_its_owner_greets_the_owner(db_settings):
+    """Review of E2: at "Hans Muster GmbH", SHAB names Hans Muster and the
+    holding that owns the shares — the parser keeps a firm written without
+    its CHE number. The short-name rule dropped Hans, and the mail greeted
+    "Guten Tag Muster Holding AG"."""
+    st = state([], {SITE: "Kontakt: info@muster-metallbau.ch"})
+    st["company"] = COMPANY.model_copy(update={"name": "Hans Muster GmbH"})
+    shab = Shab(
+        [
+            shab_person("Muster Holding AG", "Gesellschafterin"),
+            shab_person("Hans Muster", "Vorsitzender der Geschäftsführung"),
+        ]
+    )
+    out = await run(st, db_settings, shab)
+    contact = out["contact"]
+    # frame@1: a masculine SHAB role proposes "Herr" (flagged for review)
+    assert contact.name == "Hans Muster"
+    assert greeting(contact) == "Guten Tag Herr Muster"
+    assert contact.alternatives == []
+
+
 async def test_nothing_anywhere_is_a_finding(db_settings):
     out = await run(state([], {SITE: "Willkommen"}), db_settings)
     assert out["contact"] is None
@@ -784,3 +942,68 @@ async def test_a_persons_address_under_another_ending_keeps_the_strict_rule(
         db_settings,
     )
     assert out["contact"].email_kind == "third_party"
+
+
+# --- subdomains and site builders (audit) -----------------------------------
+# A site is compared on its registered domain: de.muster-metallbau.ch and
+# mail.muster-metallbau.ch are the company's, muster-metallbau.wixsite.com is
+# a customer of Wix. An inbox is guessed only on a domain of the site's own.
+
+
+async def test_a_subdomain_site_greets_at_the_inbox_on_its_apex(db_settings):
+    site = "https://de.muster-metallbau.ch/"
+    out = await run(
+        state(
+            [Person(name="Anna Muster", role="Inhaberin")],
+            {site: "Anna Muster, Inhaberin. info@muster-metallbau.ch"},
+            site=site,
+        ),
+        db_settings,
+    )
+    contact = out["contact"]
+    assert (contact.email, contact.email_kind) == (
+        "info@muster-metallbau.ch",
+        "generic",
+    )
+    assert pairs(contact) == [("info@muster-metallbau.ch", "generic")]
+
+
+async def test_an_inbox_on_a_mail_subdomain_is_the_sites_own(db_settings):
+    out = await run(
+        state([], {SITE: "Kontakt: info@mail.muster-metallbau.ch"}), db_settings
+    )
+    assert out["contact"].email_kind == "generic"
+
+
+async def test_no_inbox_is_guessed_on_a_subdomain(db_settings):
+    site = "https://shop.muster-metallbau.ch/"
+    search = Search()
+    out = await run(
+        state(
+            [Person(name="Anna Muster", role="Inhaberin")], {site: "Anna Muster"}, site
+        ),
+        db_settings,
+        search=search,
+    )
+    contact = out["contact"]
+    assert (contact.name, contact.email, contact.email_kind) == (
+        "Anna Muster",
+        None,
+        None,
+    )
+    assert search.queries  # no address seen, so a lead is looked for
+
+
+async def test_no_inbox_is_guessed_on_a_site_builder_host(db_settings):
+    site = "https://muster-metallbau.wixsite.com/metallbau"
+    out = await run(
+        state([], {site: "Willkommen"}, site),
+        db_settings,
+        Shab([shab_person("Anna Muster", "Geschäftsführerin")]),
+    )
+    contact = out["contact"]
+    assert (contact.name, contact.email, contact.email_kind) == (
+        "Anna Muster",
+        None,
+        None,
+    )

@@ -5,7 +5,7 @@ wiring: the state field that downstream nodes read carries the checked
 profile, and the table never sees the unchecked one.
 """
 
-from company_reach.models import RawPerson, RawProfile
+from company_reach.models import CompanyRecord, RawPerson, RawProfile
 from company_reach.nodes.check_profile import check_profile
 from company_reach.nodes.find_site import SiteChoice
 from company_reach.tools.db import connect, init_db, profile_by_uid
@@ -23,6 +23,14 @@ def state(persons: list[RawPerson]) -> dict:
     return {
         "run_id": "run-1",
         "uid": UID,
+        "company": CompanyRecord(
+            uid=UID,
+            name="Muster Metallbau AG",
+            legal_form="0106",
+            municipality="3203",
+            purpose="Metallbau.",
+            purpose_head="Metallbau.",
+        ),
         "site": SiteChoice(SITE, "uid", "CHE-000.000.046", SITE),
         "page_texts": {f"{SITE}impressum": IMPRESSUM},
         "raw_profile": RawProfile(

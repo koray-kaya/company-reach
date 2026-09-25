@@ -1,4 +1,5 @@
 from company_reach.tools.blocklist import is_blocked, load_blocklist
+from company_reach.tools.urls import registered_domain
 
 
 def test_a_listed_domain_is_blocked():
@@ -29,3 +30,16 @@ def test_the_list_is_complete():
     assert "linkedin.com" in entries
     assert "cylex-swiss.ch" in entries
     assert "cylex.ch" not in entries  # redirects to cylex-swiss.ch
+
+
+def test_the_federal_registers_are_blocked():
+    # the UID register and Zefix live under admin.ch
+    assert is_blocked("https://www.uid.admin.ch/Detail.aspx?uid_id=CHE000000046")
+    assert is_blocked("https://www.zefix.admin.ch/de/search/entity/list")
+
+
+def test_every_entry_is_a_registered_domain():
+    """Review of E6: a host is judged by its registered domain, so an entry
+    below one — `uid.admin.ch` — could never match and blocked nothing."""
+    for entry in load_blocklist():
+        assert registered_domain(f"https://{entry}/") == entry, entry

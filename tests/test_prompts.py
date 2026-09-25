@@ -282,7 +282,7 @@ async def _profile_for(row: dict, settings: Settings):
     raw = (await extract({"company": record, "page_texts": texts}, settings=settings))[
         "raw_profile"
     ]
-    return checked(raw, texts=texts, site_url=site)
+    return checked(raw, texts=texts, site_url=site, company=record.name)
 
 
 def _subset_record(row: dict) -> CompanyRecord:

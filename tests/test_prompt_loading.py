@@ -1,3 +1,5 @@
+import re
+
 import pytest
 
 from company_reach.errors import PromptError
@@ -92,10 +94,12 @@ def test_draft_v5_renders_with_the_eight_variables():
     assert "Ich schreibe Ihnen, weil" in text
     # the role is a block of its own, like the profile: page data, never
     # part of our sentence (audit K4)
-    assert "\n<<<ROLE>>>\nInhaberin\n<<<END>>>\n" in text
+    assert re.search(r"\n<<<ROLE-(\w+)>>>\nInhaberin\n<<<END-\1>>>\n", text)
     # the survey's length and the thesis topic come from the profile, not
     # from the prompt: v4 said "15 minutes" and the first owner's topic
     assert "20 minutes" in text
     assert "15 minutes" not in text
-    assert "\n<<<TOPIC>>>\nwie KMU Personal finden\n<<<END>>>\n" in text
+    assert re.search(
+        r"\n<<<TOPIC-(\w+)>>>\nwie KMU Personal finden\n<<<END-\1>>>\n", text
+    )
     assert "customers and suppliers" not in text

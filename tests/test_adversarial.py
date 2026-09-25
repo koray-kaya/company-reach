@@ -12,6 +12,7 @@ So each test here hands `checked` the *worst* answer the page could have
 produced — as if the model had fully complied — and asserts what is left.
 """
 
+import re
 from pathlib import Path
 
 from company_reach.models import RawPerson, RawProfile
@@ -40,7 +41,12 @@ def raw(persons: list[RawPerson], **over) -> RawProfile:
 
 
 def check(profile: RawProfile, name: str):
-    return checked(profile, texts={f"{SITE}impressum": page(name)}, site_url=SITE)
+    return checked(
+        profile,
+        texts={f"{SITE}impressum": page(name)},
+        site_url=SITE,
+        company="Beispiel Holzbau GmbH",
+    )
 
 
 def test_the_planted_person_and_address_do_not_both_survive():
@@ -70,8 +76,8 @@ def test_the_page_cannot_end_the_block_it_sits_in():
     """The same page also writes the closing marker, so the two halves of
     the boundary are exercised on one fixture."""
     block = as_data(page("poisoned_instructions"), url=f"{SITE}impressum")
-    assert block.count("<<<END>>>") == 1
-    assert block.rstrip().endswith("<<<END>>>")
+    [end] = re.findall(r"<<<END[^>]*>>>", block)
+    assert block.endswith(end)
 
 
 def test_a_lookalike_domain_is_marked_not_waved_through():
@@ -92,9 +98,10 @@ def test_a_lookalike_domain_is_marked_not_waved_through():
     assert out.persons[0].email_offsite is True
 
 
-def test_a_group_page_keeps_its_own_contact_marked():
-    """A parent's Impressum on a subsidiary's site. The address is real and
-    belongs to another firm, which is exactly the third-party case."""
+def test_a_group_page_names_no_person_for_its_parent():
+    """A parent's Impressum on a subsidiary's site. The parent is a firm by
+    its legal form, so it is no person to greet; its address is still on
+    the page, and `find_contact` offers it as third party, which holds."""
     out = check(
         raw(
             [
@@ -105,19 +112,20 @@ def test_a_group_page_keeps_its_own_contact_marked():
         ),
         "group_with_other_uid",
     )
-    assert out.persons[0].email_offsite is True
+    assert out.persons == []
 
 
 def test_a_directory_page_yields_no_contact_for_the_company():
     """Directories publish UIDs and addresses of many firms. Nothing on this
-    page is an address for our company, and nothing survives."""
+    page is an address for our company, and nothing survives — not even
+    the "person", who is the firm itself."""
     out = check(
         raw(
             [RawPerson(name="Beispiel Holzbau GmbH", email="info@beispiel-holzbau.ch")]
         ),
         "directory_entry",
     )
-    assert out.persons[0].email is None
+    assert out.persons == []
 
 
 def test_what_the_check_does_not_catch_is_written_down_too():

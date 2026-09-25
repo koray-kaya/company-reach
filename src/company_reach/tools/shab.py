@@ -15,6 +15,7 @@ mention the company is dropped.
 
 What the register says is a past state. Every person carries the date of the
 notice that named them, and entries a notice strikes out are marked as such.
+`current` turns the notices into one answer: who the register still names.
 """
 
 import re
@@ -27,6 +28,7 @@ from company_reach import __version__
 from company_reach.errors import ShabError
 from company_reach.models import ShabPerson, dotted_uid
 from company_reach.settings import Settings
+from company_reach.tools.textify import normalise
 
 _UA = f"company-reach/{__version__} (+https://github.com/koray-kaya/company-reach)"
 _TIMEOUT = httpx.Timeout(30.0, connect=10.0)
@@ -193,3 +195,31 @@ async def persons(
     finally:
         if own:
             await client.aclose()
+
+
+def current(found: list[ShabPerson]) -> list[ShabPerson]:
+    """Who the register still names, each person once, newest notice first.
+
+    Every notice names people as they stood on its date, so one person turns
+    up once per notice. The newest notice that mentions someone decides
+    (audit K2): struck out there, they are gone, whatever an older notice
+    said; named there, that entry — with that notice's role and date — is
+    the one kept. Notices of the same day count as one, and a person one of
+    them still names is kept.
+
+    Sorted here rather than trusted: SHAB answers newest first today, but
+    nothing in the request asks it to.
+    """
+    # sorted() is stable with reverse=True too: one notice keeps its order
+    newest_first = sorted(found, key=lambda p: p.published, reverse=True)
+    by_name: dict[str, list[ShabPerson]] = {}
+    for person in newest_first:
+        by_name.setdefault(normalise(person.name), []).append(person)
+
+    kept: list[ShabPerson] = []
+    for entries in by_name.values():
+        newest = [e for e in entries if e.published == entries[0].published]
+        still_named = next((e for e in newest if not e.departed), None)
+        if still_named is not None:
+            kept.append(still_named)
+    return kept

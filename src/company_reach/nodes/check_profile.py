@@ -24,7 +24,12 @@ def check_profile(state: dict[str, Any], *, settings: Settings) -> dict:
     raw: RawProfile = state["raw_profile"]
     site: SiteChoice = state["site"]
 
-    profile = checked(raw, texts=state["page_texts"], site_url=site.url)
+    profile = checked(
+        raw,
+        texts=state["page_texts"],
+        site_url=site.url,
+        company=state["company"].name,
+    )
 
     with connect(settings.db_path) as conn:
         upsert_profile(conn, state["run_id"], state["uid"], profile)
