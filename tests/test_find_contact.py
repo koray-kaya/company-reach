@@ -48,13 +48,20 @@ class Shab:
         return self.answer
 
 
-def shab_person(name: str, role: str | None, *, departed: bool = False) -> ShabPerson:
+def shab_person(
+    name: str,
+    role: str | None,
+    *,
+    departed: bool = False,
+    published: str = "2024-03-20",
+    notice: str = NOTICE,
+) -> ShabPerson:
     return ShabPerson(
         name=name,
         role=role,
         departed=departed,
-        published="2024-03-20",
-        source_url=NOTICE,
+        published=published,
+        source_url=notice,
     )
 
 
@@ -464,6 +471,120 @@ async def test_only_departed_people_in_shab_is_nobody(db_settings):
         "info@muster-metallbau.ch",
         "generic",
     )
+
+
+# --- one person, many notices (audit K2) ------------------------------------
+# Every notice names people as they stood on its date, so one person turns up
+# once per notice. The newest notice that mentions someone decides: struck out
+# there, they are gone, whatever an older notice said.
+
+OLD_NOTICE = "https://shab.test/api/v1/publications/0/xml"
+
+
+async def test_a_person_struck_out_later_is_not_chosen(db_settings):
+    """The audit's probe: entered in 2012, struck out in 2024. The older
+    entry alone reads as current, and it was chosen over the current board
+    member because its role ranks higher."""
+    shab = Shab(
+        [
+            shab_person(
+                "Nina Neu", "Mitglied des Verwaltungsrates", published="2024-05-01"
+            ),
+            shab_person(
+                "Otto Alt", "Geschäftsführer", departed=True, published="2024-05-01"
+            ),
+            shab_person(
+                "Otto Alt", "Geschäftsführer", published="2012-03-01", notice=OLD_NOTICE
+            ),
+        ]
+    )
+    out = await run(
+        state([], {SITE: "Kontakt: info@muster-metallbau.ch"}), db_settings, shab
+    )
+    contact = out["contact"]
+    assert contact.name == "Nina Neu"
+    assert contact.alternatives == []  # nor is he offered as someone else
+
+
+async def test_the_newest_notice_decides_whatever_order_shab_answers_in(db_settings):
+    # SHAB happens to answer newest first today, but nothing asks it to
+    shab = Shab(
+        [
+            shab_person(
+                "Otto Alt", "Geschäftsführer", published="2012-03-01", notice=OLD_NOTICE
+            ),
+            shab_person(
+                "Otto Alt", "Geschäftsführer", departed=True, published="2024-05-01"
+            ),
+            shab_person(
+                "Nina Neu", "Mitglied des Verwaltungsrates", published="2024-05-01"
+            ),
+        ]
+    )
+    out = await run(state([], {SITE: "Willkommen"}), db_settings, shab)
+    assert out["contact"].name == "Nina Neu"
+    assert out["contact"].alternatives == []
+
+
+async def test_a_changed_role_is_the_newest_and_the_person_is_named_once(db_settings):
+    """A former managing director who now only sits on the board: the old
+    role was put in the invitation, and the card listed them as their own
+    alternative."""
+    shab = Shab(
+        [
+            shab_person(
+                "Peter Muster", "Mitglied des Verwaltungsrates", published="2025-01-10"
+            ),
+            shab_person(
+                "Peter Muster",
+                "Geschäftsführer",
+                published="2019-03-01",
+                notice=OLD_NOTICE,
+            ),
+        ]
+    )
+    out = await run(state([], {SITE: "Willkommen"}), db_settings, shab)
+    contact = out["contact"]
+    assert (contact.name, contact.role) == (
+        "Peter Muster",
+        "Mitglied des Verwaltungsrates",
+    )
+    assert (contact.source_url, contact.source_date) == (NOTICE, "2025-01-10")
+    assert contact.alternatives == []
+
+
+async def test_a_person_named_again_after_leaving_is_current(db_settings):
+    shab = Shab(
+        [
+            shab_person("Anna Muster", "Geschäftsführerin", published="2025-02-01"),
+            shab_person(
+                "Anna Muster",
+                "Geschäftsführerin",
+                departed=True,
+                published="2020-06-01",
+                notice=OLD_NOTICE,
+            ),
+        ]
+    )
+    out = await run(state([], {SITE: "Willkommen"}), db_settings, shab)
+    assert out["contact"].name == "Anna Muster"
+
+
+async def test_the_same_name_written_differently_is_one_person(db_settings):
+    shab = Shab(
+        [
+            shab_person(
+                "Otto  ALT", "Geschäftsführer", departed=True, published="2024-05-01"
+            ),
+            shab_person(
+                "Otto Alt", "Geschäftsführer", published="2012-03-01", notice=OLD_NOTICE
+            ),
+        ]
+    )
+    out = await run(
+        state([], {SITE: "Kontakt: info@muster-metallbau.ch"}), db_settings, shab
+    )
+    assert out["contact"].name is None
 
 
 async def test_nothing_anywhere_is_a_finding(db_settings):

@@ -12,7 +12,8 @@ Damen und Herren".
 3. Only when the site named nobody: the newest current person SHAB names,
    at the site's general inbox or a constructed info@, as in 2. SHAB is not
    asked at all otherwise (open point 3): it describes a past state, the
-   site today.
+   site today. A person counts once, as the newest notice naming them has
+   it, and not at all when that notice struck them out (`shab.current`).
 4. Nobody named anywhere: the general inbox alone. Never a constructed one —
    an unnamed mail to a guessed inbox is the one that gets forwarded.
 
@@ -263,10 +264,9 @@ def _without_site_names(
     addresses: list[tuple[str, str]],
     domain: str | None,
 ) -> Contact | None:
-    current = [p for p in shab_persons if not p.departed]
-    # SHAB answers newest notice first; sorted() is stable, so within a rank
-    # the newest claim stays in front
-    ranked = sorted(current, key=lambda p: rank(p.role))
+    # each person once, as the newest notice naming them has it; sorted() is
+    # stable, so within a rank the newest claim stays in front
+    ranked = sorted(shab_tool.current(shab_persons), key=lambda p: rank(p.role))
     chosen = ranked[0] if ranked else None
     inbox = _inbox(addresses, domain)
 
