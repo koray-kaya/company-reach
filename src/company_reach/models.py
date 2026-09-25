@@ -194,10 +194,16 @@ class Contact(BaseModel):
 
     `name` is None when nobody is named anywhere and only an inbox is known;
     `email` is None when a name is known and no address is.
+
+    `salutation` is stated, never guessed from a name: "Frau" or "Herr" when
+    the page writes it before the surname, or when the reviewer chose it on
+    the card; "ohne" when the reviewer chose no salutation, which overrides
+    what a role would propose. `tools/invitation.salutation` reads it first.
     """
 
     name: str | None = None
     role: str | None = None
+    salutation: Literal["Frau", "Herr", "ohne"] | None = None
     email: str | None = None
     email_kind: EmailKind | None = None
     source: Literal["site", "shab"]

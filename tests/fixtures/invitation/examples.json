@@ -1,0 +1,86 @@
+{
+ "_comment": "The five example mails of the frame@1 study. Every person, company and address is fictional.",
+ "survey_url": "https://umfrage.example-hochschule.ch/kmu",
+ "uid": "CHE000000046",
+ "sender": {
+  "name": "Lena Brunner",
+  "affiliation": "Masterstudentin, OST Ostschweizer Fachhochschule",
+  "school_short": "OST",
+  "place": "St. Gallen",
+  "supervisor": "Prof. Dr. Hans Vorbild"
+ },
+ "invitation": {
+  "topic": "wie KMU zu Kunden und Lieferanten kommen",
+  "minutes": 15,
+  "closes": "2026-10-30",
+  "offer_results": true,
+  "no_login": true,
+  "reminder": false
+ },
+ "mails": [
+  {
+   "kind": "seen",
+   "contact": {
+    "name": "Reto Muster",
+    "role": "Inhaber",
+    "email": "reto.muster@beispiel-blech.example",
+    "email_kind": "seen",
+    "source": "site",
+    "salutation": "Herr"
+   },
+   "sentence": "Ich schreibe Ihnen, weil Ihr Betrieb Blechteile nach Kundenzeichnung für Maschinenbauer fertigt.",
+   "subject": "Masterarbeit an der OST: Bitte um 15 Minuten",
+   "body": "Guten Tag Herr Muster\n\nIch heisse Lena Brunner und studiere an der OST in St. Gallen. Für meine Masterarbeit wäre ich froh um Ihre Hilfe: Hätten Sie 15 Minuten für einen Fragebogen?\n\nEs geht darum, wie KMU zu Kunden und Lieferanten kommen. Ich schreibe Ihnen, weil Ihr Betrieb Blechteile nach Kundenzeichnung für Maschinenbauer fertigt.\n\nAls Dank können Sie am Schluss die Ergebnisse anfordern.\nZum Fragebogen (ohne Anmeldung, offen bis Freitag, 30. Oktober):\nhttps://umfrage.example-hochschule.ch/kmu/?c=CHE000000046&l=de\nDer Link enthält die UID Ihrer Firma; veröffentlicht werden nur zusammengefasste Ergebnisse.\n\nIhren Namen und Ihre Adresse habe ich von Ihrer Website und nutze beides nur für diese Anfrage. Ich schreibe Ihnen nur dieses eine Mal. Ein kurzes «Nein» genügt, dann lösche ich Ihren Namen.\n\nVielen Dank und freundliche Grüsse\nLena Brunner\nMasterstudentin, OST Ostschweizer Fachhochschule\nBetreut von Prof. Dr. Hans Vorbild"
+  },
+  {
+   "kind": "generic, named on the site",
+   "contact": {
+    "name": "Dr. Sandra Beispiel-Keller",
+    "role": "Geschäftsführerin",
+    "email": "info@muster-medtech.example",
+    "email_kind": "generic",
+    "source": "site"
+   },
+   "sentence": "Ich schreibe Ihnen, weil Muster Medtech im Auftrag von Medizintechnik-Firmen Präzisionsteile fertigt.",
+   "subject": "Für Frau Dr. Beispiel-Keller: Masterarbeit an der OST",
+   "body": "Zuhanden Frau Dr. Beispiel-Keller – besten Dank fürs Weiterleiten\n\nGuten Tag Frau Dr. Beispiel-Keller\n\nIch heisse Lena Brunner und studiere an der OST in St. Gallen. Für meine Masterarbeit wäre ich froh um Ihre Hilfe: Hätten Sie 15 Minuten für einen Fragebogen?\n\nEs geht darum, wie KMU zu Kunden und Lieferanten kommen. Ich schreibe Ihnen, weil Muster Medtech im Auftrag von Medizintechnik-Firmen Präzisionsteile fertigt.\n\nAls Dank können Sie am Schluss die Ergebnisse anfordern.\nZum Fragebogen (ohne Anmeldung, offen bis Freitag, 30. Oktober):\nhttps://umfrage.example-hochschule.ch/kmu/?c=CHE000000046&l=de\nDer Link enthält die UID Ihrer Firma; veröffentlicht werden nur zusammengefasste Ergebnisse.\n\nIhren Namen und diese Adresse habe ich von Ihrer Website und nutze beides nur für diese Anfrage. Ich schreibe Ihnen nur dieses eine Mal. Ein kurzes «Nein» genügt, dann lösche ich Ihren Namen.\n\nVielen Dank und freundliche Grüsse\nLena Brunner\nMasterstudentin, OST Ostschweizer Fachhochschule\nBetreut von Prof. Dr. Hans Vorbild"
+  },
+  {
+   "kind": "constructed, named on the site",
+   "contact": {
+    "name": "Marco Vorlage",
+    "role": "Gründer",
+    "email": "info@vorlage-kaffee.example",
+    "email_kind": "constructed",
+    "source": "site"
+   },
+   "sentence": "Ich schreibe Ihnen, weil Ihre Rösterei Rohkaffee aus den Anbauländern einkauft und ihn geröstet an Cafés und Läden verkauft.",
+   "subject": "Für Marco Vorlage: Masterarbeit an der OST",
+   "body": "Zuhanden Marco Vorlage – besten Dank fürs Weiterleiten\n\nGuten Tag Marco Vorlage\n\nIch heisse Lena Brunner und studiere an der OST in St. Gallen. Für meine Masterarbeit wäre ich froh um Ihre Hilfe: Hätten Sie 15 Minuten für einen Fragebogen?\n\nEs geht darum, wie KMU zu Kunden und Lieferanten kommen. Ich schreibe Ihnen, weil Ihre Rösterei Rohkaffee aus den Anbauländern einkauft und ihn geröstet an Cafés und Läden verkauft.\n\nAls Dank können Sie am Schluss die Ergebnisse anfordern.\nZum Fragebogen (ohne Anmeldung, offen bis Freitag, 30. Oktober):\nhttps://umfrage.example-hochschule.ch/kmu/?c=CHE000000046&l=de\nDer Link enthält die UID Ihrer Firma; veröffentlicht werden nur zusammengefasste Ergebnisse.\n\nIhren Namen habe ich von Ihrer Website und nutze ihn nur für diese Anfrage. Ich schreibe Ihnen nur dieses eine Mal. Ein kurzes «Nein» genügt, dann lösche ich Ihren Namen.\n\nVielen Dank und freundliche Grüsse\nLena Brunner\nMasterstudentin, OST Ostschweizer Fachhochschule\nBetreut von Prof. Dr. Hans Vorbild"
+  },
+  {
+   "kind": "SHAB-named, site inbox",
+   "contact": {
+    "name": "Urs Probe",
+    "role": "Präsident des Verwaltungsrates",
+    "email": "info@exempel-verpackungen.example",
+    "email_kind": "generic",
+    "source": "shab"
+   },
+   "sentence": "Ich schreibe Ihnen, weil Exempel Verpackungen Schachteln aus Karton für Lebensmittelhersteller herstellt.",
+   "subject": "Für Herrn Probe: Masterarbeit an der OST",
+   "body": "Zuhanden Herrn Probe oder der Geschäftsleitung – besten Dank fürs Weiterleiten\n\nGuten Tag Herr Probe\n\nIch heisse Lena Brunner und studiere an der OST in St. Gallen. Für meine Masterarbeit wäre ich froh um Ihre Hilfe: Hätten Sie 15 Minuten für einen Fragebogen?\n\nEs geht darum, wie KMU zu Kunden und Lieferanten kommen. Ich schreibe Ihnen, weil Exempel Verpackungen Schachteln aus Karton für Lebensmittelhersteller herstellt.\n\nAls Dank können Sie am Schluss die Ergebnisse anfordern.\nZum Fragebogen (ohne Anmeldung, offen bis Freitag, 30. Oktober):\nhttps://umfrage.example-hochschule.ch/kmu/?c=CHE000000046&l=de\nDer Link enthält die UID Ihrer Firma; veröffentlicht werden nur zusammengefasste Ergebnisse.\n\nIhren Namen habe ich aus dem Handelsamtsblatt (SHAB), diese Adresse von Ihrer Website; ich nutze beides nur für diese Anfrage. Ich schreibe Ihnen nur dieses eine Mal. Ein kurzes «Nein» genügt, dann lösche ich Ihren Namen.\n\nVielen Dank und freundliche Grüsse\nLena Brunner\nMasterstudentin, OST Ostschweizer Fachhochschule\nBetreut von Prof. Dr. Hans Vorbild"
+  },
+  {
+   "kind": "nobody named, site inbox",
+   "contact": {
+    "email": "info@probe-kaeserei.example",
+    "email_kind": "generic",
+    "source": "site"
+   },
+   "sentence": "Ich schreibe Ihnen, weil Ihre Käserei Milch aus der Region verarbeitet und den Käse an Läden und Restaurants liefert.",
+   "subject": "Für die Geschäftsleitung: Masterarbeit an der OST",
+   "body": "Zuhanden der Geschäftsleitung – besten Dank fürs Weiterleiten\n\nGuten Tag\n\nIch heisse Lena Brunner und studiere an der OST in St. Gallen. Für meine Masterarbeit wäre ich froh um Ihre Hilfe: Hätten Sie 15 Minuten für einen Fragebogen?\n\nEs geht darum, wie KMU zu Kunden und Lieferanten kommen. Ich schreibe Ihnen, weil Ihre Käserei Milch aus der Region verarbeitet und den Käse an Läden und Restaurants liefert.\n\nAls Dank können Sie am Schluss die Ergebnisse anfordern.\nZum Fragebogen (ohne Anmeldung, offen bis Freitag, 30. Oktober):\nhttps://umfrage.example-hochschule.ch/kmu/?c=CHE000000046&l=de\nDer Link enthält die UID Ihrer Firma; veröffentlicht werden nur zusammengefasste Ergebnisse.\n\nDiese Adresse habe ich von Ihrer Website und nutze sie nur für diese Anfrage. Ich schreibe Ihnen nur dieses eine Mal.\n\nVielen Dank und freundliche Grüsse\nLena Brunner\nMasterstudentin, OST Ostschweizer Fachhochschule\nBetreut von Prof. Dr. Hans Vorbild"
+  }
+ ]
+}

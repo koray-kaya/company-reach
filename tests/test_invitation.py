@@ -1,12 +1,32 @@
-"""The parts of an invitation the model never writes: the survey link and
-the data-protection sentence. Both are added by code after drafting, so that
-page text cannot steer either of them."""
+"""The parts of an invitation the model never writes: the frame around its
+one sentence — routing line, greeting, opening, topic, link block, privacy
+text and closing — and the survey link. All are written by code, so page
+text cannot steer any of them."""
+
+import json
+import re
+from datetime import date
+from pathlib import Path
 
 import pytest
 
+from company_reach.models import Contact
+from company_reach.profile import Invitation, Sender
 from company_reach.tools.invitation import (
     InvitationError,
+    assemble,
+    closing,
+    falls_back,
+    german_date,
+    greeting,
+    link_block,
+    opening,
+    privacy,
     privacy_sentence,
+    routing_line,
+    salutation,
+    split_name,
+    subject,
     survey_link,
     uid_is_valid,
 )
@@ -92,3 +112,300 @@ def test_the_sentence_names_the_site_as_the_source():
 
 def test_the_sentence_names_shab_as_the_source():
     assert "Schweizerischen Handelsamtsblatt (SHAB)" in privacy_sentence("shab")
+
+
+# --- the frame (frame@1) -----------------------------------------------------
+#
+# Every name below is fictional. The five complete mails are the study's
+# examples, kept in tests/fixtures/invitation/examples.json.
+
+SENDER = Sender(
+    name="Lena Brunner",
+    affiliation="Masterstudentin, OST Ostschweizer Fachhochschule",
+    school_short="OST",
+    place="St. Gallen",
+    supervisor="Prof. Dr. Hans Vorbild",
+)
+INV = Invitation(
+    topic="wie KMU zu Kunden und Lieferanten kommen",
+    closes=date(2026, 10, 30),
+    offer_results=True,
+    no_login=True,
+)
+EXAMPLES = json.loads(
+    (Path(__file__).parent / "fixtures/invitation/examples.json").read_text()
+)
+LINK = "https://survey.example/form/?c=CHE000000046&l=de"
+
+
+def person(
+    name: str | None,
+    role: str | None = None,
+    *,
+    kind: str = "generic",
+    source: str = "site",
+    salutation: str | None = None,
+) -> Contact:
+    return Contact(
+        name=name,
+        role=role,
+        email="info@muster.example",
+        email_kind=kind,
+        source=source,
+        salutation=salutation,
+    )
+
+
+@pytest.mark.parametrize(
+    ("written", "title", "given", "surname"),
+    [
+        ("Reto Muster", "", ("Reto",), "Muster"),
+        ("Sandra Beispiel-Keller", "", ("Sandra",), "Beispiel-Keller"),
+        ("Hans von Arx", "", ("Hans",), "von Arx"),
+        ("Maria van der Berg", "", ("Maria",), "van der Berg"),
+        ("Anna Maria Beispiel-Keller", "", ("Anna", "Maria"), "Beispiel-Keller"),
+        # three plain tokens: which two are given names is not knowable
+        ("Hans Peter Muster", "", ("Hans", "Peter", "Muster"), None),
+        ("Prof. Dr. Urs Probe", "Prof.", ("Urs",), "Probe"),
+        ("Dr. Sandra Beispiel-Keller", "Dr.", ("Sandra",), "Beispiel-Keller"),
+        ("Reto Muster, dipl. Ing. FH", "", ("Reto",), "Muster"),
+        ("dipl. Ing. Reto Muster MBA", "", ("Reto",), "Muster"),
+        ("Frau Anna Muster", "", ("Anna",), "Muster"),
+        ("Reto", "", ("Reto",), None),
+    ],
+)
+def test_split_name(written, title, given, surname):
+    assert split_name(written) == (title, given, surname)
+
+
+def test_a_masculine_site_role_never_sets_herr():
+    # sites use the masculine role generically; "Gründer" may be a woman
+    c = person("Marco Vorlage", "Gründer")
+    assert salutation(c) == (None, None)
+    assert greeting(c) == "Guten Tag Marco Vorlage"
+    assert falls_back(c)
+
+
+def test_a_feminine_role_sets_frau():
+    c = person("Dr. Sandra Beispiel-Keller", "Geschäftsführerin")
+    assert salutation(c) == ("Frau", "role")
+    assert greeting(c) == "Guten Tag Frau Dr. Beispiel-Keller"
+    assert not falls_back(c)
+
+
+@pytest.mark.parametrize(
+    ("role", "expected"),
+    [
+        ("Präsident des Verwaltungsrates", "Herr"),
+        ("Präsidentin des Verwaltungsrates", "Frau"),
+        ("Geschäftsführer", "Herr"),
+        ("Mitglied des Verwaltungsrates", None),
+    ],
+)
+def test_a_gendered_shab_role_proposes_a_salutation(role, expected):
+    # SHAB genders its entries, so its masculine form is evidence
+    assert salutation(person("Urs Probe", role, source="shab"))[0] == expected
+
+
+def test_the_reviewers_choice_wins_over_the_role():
+    chosen = person("Reto Muster", "Inhaberin", salutation="Herr")
+    assert salutation(chosen) == ("Herr", "set")
+    none = person("Anna Muster", "Inhaberin", salutation="ohne")
+    assert salutation(none) == (None, "set")
+    assert greeting(none) == "Guten Tag Anna Muster"
+
+
+def test_herr_becomes_herrn_in_subject_and_routing():
+    c = person("Urs Probe", "Präsident des Verwaltungsrates", source="shab")
+    assert greeting(c) == "Guten Tag Herr Probe"
+    assert subject(c, SENDER, INV) == "Für Herrn Probe: Masterarbeit an der OST"
+    assert routing_line(c) == (
+        "Zuhanden Herrn Probe oder der Geschäftsleitung – besten Dank fürs Weiterleiten"
+    )
+
+
+def test_a_lone_first_name_is_treated_as_nobody_named():
+    c = person("Reto", "CEO")
+    assert greeting(c) == "Guten Tag"
+    assert routing_line(c) == (
+        "Zuhanden der Geschäftsleitung – besten Dank fürs Weiterleiten"
+    )
+    assert subject(c, SENDER, INV) == (
+        "Für die Geschäftsleitung: Masterarbeit an der OST"
+    )
+    assert "Ihren Namen" not in privacy(c, INV)
+    assert not falls_back(c)
+
+
+def test_no_routing_line_for_a_seen_address():
+    c = person("Reto Muster", "Inhaber", kind="seen", salutation="Herr")
+    assert routing_line(c) is None
+    assert subject(c, SENDER, INV) == "Masterarbeit an der OST: Bitte um 15 Minuten"
+
+
+def test_shab_routing_adds_geschaeftsleitung():
+    site = person("Anna Muster", "Inhaberin")
+    shab = person("Anna Muster", "Inhaberin", source="shab")
+    assert "oder der Geschäftsleitung" not in routing_line(site)
+    assert routing_line(shab) == (
+        "Zuhanden Frau Muster oder der Geschäftsleitung – besten Dank fürs Weiterleiten"
+    )
+
+
+def test_a_name_without_a_salutation_is_written_out_in_full():
+    c = person("Hans Peter Muster", "Inhaber")
+    assert routing_line(c).startswith("Zuhanden Hans Peter Muster – ")
+    assert subject(c, SENDER, INV) == ("Für Hans Peter Muster: Masterarbeit an der OST")
+
+
+def test_subject_over_60_chars_falls_back():
+    c = person("Dr. Katharina Beispiel-Hinterberger-Muster", "Inhaberin")
+    long = "Für Frau Dr. Beispiel-Hinterberger-Muster: Masterarbeit an der OST"
+    assert len(long) > 60
+    assert subject(c, SENDER, INV) == "Masterarbeit an der OST: Bitte um 15 Minuten"
+
+
+_EINMAL = "Ich schreibe Ihnen nur dieses eine Mal."
+_NEIN = "Ein kurzes «Nein» genügt, dann lösche ich Ihren Namen."
+
+
+@pytest.mark.parametrize(
+    ("contact", "first"),
+    [
+        (
+            person("Reto Muster", "Inhaber", kind="seen"),
+            "Ihren Namen und Ihre Adresse habe ich von Ihrer Website und nutze "
+            "beides nur für diese Anfrage.",
+        ),
+        (
+            person("Anna Muster", "Inhaberin", kind="generic"),
+            "Ihren Namen und diese Adresse habe ich von Ihrer Website und nutze "
+            "beides nur für diese Anfrage.",
+        ),
+        (
+            person("Anna Muster", "Inhaberin", kind="constructed"),
+            "Ihren Namen habe ich von Ihrer Website und nutze ihn nur für diese "
+            "Anfrage.",
+        ),
+        (
+            person("Urs Probe", "Präsident", kind="generic", source="shab"),
+            "Ihren Namen habe ich aus dem Handelsamtsblatt (SHAB), diese Adresse "
+            "von Ihrer Website; ich nutze beides nur für diese Anfrage.",
+        ),
+        (
+            person("Urs Probe", "Präsident", kind="constructed", source="shab"),
+            "Ihren Namen habe ich aus dem Handelsamtsblatt (SHAB) und nutze ihn "
+            "nur für diese Anfrage.",
+        ),
+        (
+            person("Urs Probe", "Präsident", kind="seen", source="shab"),
+            "Ihren Namen habe ich aus dem Handelsamtsblatt (SHAB), Ihre Adresse "
+            "von Ihrer Website; ich nutze beides nur für diese Anfrage.",
+        ),
+    ],
+)
+def test_privacy_text_per_kind(contact, first):
+    text = privacy(contact, INV)
+    assert text == f"{first} {_EINMAL} {_NEIN}"
+    # forget deletes the name and keeps the address suppressed for good, so
+    # the promise is about the name, never "beides"
+    assert "lösche ich Ihren Namen" in text
+    assert "lösche ich beides" not in text
+    # SHAB names people; it is never where an address came from
+    for clause in re.split(r"[,;.]", text):
+        if "Adresse" in clause:
+            assert "Website" in clause
+            assert "SHAB" not in clause
+
+
+def test_privacy_text_when_nobody_is_named():
+    text = privacy(person(None), INV)
+    assert text == (
+        "Diese Adresse habe ich von Ihrer Website und nutze sie nur für diese "
+        f"Anfrage. {_EINMAL}"
+    )
+    assert "Ihren Namen" not in text
+
+
+def test_a_guessed_address_is_never_said_to_come_from_the_site():
+    # a lone first name at a constructed info@: nobody named, and the
+    # address was never on the site
+    text = privacy(person("Reto", "Inhaber", kind="constructed"), INV)
+    assert "Website" not in text
+    assert "Ihren Namen" not in text
+
+
+def test_the_reminder_wording_replaces_the_one_mail_promise():
+    reminded = INV.model_copy(update={"reminder": True})
+    text = privacy(person("Anna Muster", "Inhaberin"), reminded)
+    assert "Ich erinnere Sie höchstens einmal daran." in text
+    assert "nur dieses eine Mal" not in text
+
+
+def test_german_date_is_friday_30_oktober_for_2026_10_30():
+    assert german_date(date(2026, 10, 30)) == "Freitag, 30. Oktober"
+    assert german_date(date(2027, 3, 1)) == "Montag, 1. März"
+
+
+def test_link_block_omits_what_is_not_true():
+    bare = Invitation(topic="t")
+    assert link_block(LINK, bare) == (
+        f"Zum Fragebogen:\n{LINK}\nDer Link enthält die UID Ihrer Firma; "
+        "veröffentlicht werden nur zusammengefasste Ergebnisse."
+    )
+    assert link_block(LINK, INV).startswith(
+        "Als Dank können Sie am Schluss die Ergebnisse anfordern.\n"
+        "Zum Fragebogen (ohne Anmeldung, offen bis Freitag, 30. Oktober):\n"
+    )
+
+
+def test_the_short_link_block_leaves_out_results_and_uid_lines():
+    assert link_block(LINK, INV, short=True) == (
+        f"Zum Fragebogen (ohne Anmeldung, offen bis Freitag, 30. Oktober):\n{LINK}"
+    )
+
+
+def test_the_opening_names_sender_school_and_request():
+    assert opening(SENDER, INV) == (
+        "Ich heisse Lena Brunner und studiere an der OST in St. Gallen. Für "
+        "meine Masterarbeit wäre ich froh um Ihre Hilfe: Hätten Sie 15 Minuten "
+        "für einen Fragebogen?"
+    )
+    nowhere = SENDER.model_copy(update={"place": ""})
+    assert "an der OST. Für" in opening(nowhere, INV)
+
+
+def test_the_closing_signs_only_what_is_set():
+    assert closing(SENDER, INV) == (
+        "Vielen Dank und freundliche Grüsse\nLena Brunner\n"
+        "Masterstudentin, OST Ostschweizer Fachhochschule\n"
+        "Betreut von Prof. Dr. Hans Vorbild"
+    )
+    alone = SENDER.model_copy(update={"supervisor": ""})
+    assert "Betreut" not in closing(alone, INV)
+    client_signs = INV.model_copy(update={"sign_in_body": False})
+    assert closing(SENDER, client_signs) == "Vielen Dank und freundliche Grüsse"
+
+
+def test_the_sentence_loses_its_eszett():
+    body = assemble(
+        person(None),
+        "Ich schreibe Ihnen, weil Ihre Firma Strassen und Grossküchen baut.".replace(
+            "ss", "ß"
+        ),
+        link=LINK,
+        sender=SENDER,
+        inv=INV,
+    )
+    assert "ß" not in body
+    assert "Grossküchen" in body
+
+
+@pytest.mark.parametrize("mail", EXAMPLES["mails"], ids=lambda m: m["kind"])
+def test_the_five_example_mails_are_assembled_byte_for_byte(mail):
+    c = Contact(**mail["contact"])
+    link = survey_link(EXAMPLES["survey_url"], EXAMPLES["uid"])
+    assert subject(c, SENDER, INV) == mail["subject"]
+    body = assemble(c, mail["sentence"], link=link, sender=SENDER, inv=INV)
+    assert body == mail["body"]
+    assert "ß" not in body
