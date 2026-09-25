@@ -15,6 +15,12 @@ Both run again on every redirect. httpx following redirects itself checked
 only the first URL, so a public page answering 302 to a private address
 reached our own network (audit: SSRF on redirect).
 
+A page is decoded here, not by httpx. httpx reads the charset from the
+Content-Type header only and falls back to UTF-8, so an older Latin-1 site
+that names its charset in `<meta>` lost every umlaut to U+FFFD (audit).
+The order is the browser's: the header, then the page's own `<meta>`, then a
+guess by charset_normalizer.
+
 The other rule worth stating: a single page that fails is not an error. It
 returns a `Page` carrying what went wrong, because the company may still be
 identifiable from another page. Only a home page that cannot be reached at
@@ -23,9 +29,11 @@ as "this company has no website".
 """
 
 import asyncio
+import codecs
 import hashlib
 import ipaddress
 import json
+import re
 import socket
 import time
 from dataclasses import dataclass, replace
@@ -33,6 +41,7 @@ from pathlib import Path
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import httpx
+from charset_normalizer import from_bytes
 from protego import Protego
 
 from company_reach.errors import FetchError
@@ -44,6 +53,16 @@ _HOME_ATTEMPTS = 2
 _BACKOFF_S = (2.0, 4.0)
 # Enough for http → https → www → a language path, with room to spare.
 _MAX_REDIRECTS = 5
+# `<meta charset="…">` and `<meta http-equiv="Content-Type" content="…;
+# charset=…">` alike. The standard wants them in the first 1024 bytes; a
+# little more room costs nothing.
+_META_CHARSET = re.compile(
+    rb"""<meta[^>]+?charset\s*=\s*["']?\s*([A-Za-z0-9._:-]+)""", re.IGNORECASE
+)
+_SNIFF_BYTES = 4096
+# What browsers do with these labels: pages that say Latin-1 are written in
+# Windows-1252, whose curly quotes and dashes Latin-1 does not have.
+_AS_WINDOWS_1252 = {"iso8859-1", "ascii"}
 
 
 @dataclass(frozen=True)
@@ -92,6 +111,32 @@ def _is_public(address: str) -> bool:
     )
 
 
+def _codec(label: str | None) -> str | None:
+    """The Python codec for a declared charset, or None when unknown."""
+    if not label:
+        return None
+    try:
+        name = codecs.lookup(label.strip()).name
+    except LookupError:
+        return None
+    return "cp1252" if name in _AS_WINDOWS_1252 else name
+
+
+def decode(content: bytes, header_charset: str | None) -> str:
+    """A page's bytes as text: the header's charset, else the page's own
+    `<meta>`, else charset_normalizer's guess, else UTF-8. A byte the
+    charset cannot read becomes U+FFFD rather than an error."""
+    meta = _META_CHARSET.search(content[:_SNIFF_BYTES])
+    declared = meta.group(1).decode("ascii") if meta else None
+    for label in (header_charset, declared):
+        if codec := _codec(label):
+            return content.decode(codec, errors="replace")
+    guess = from_bytes(content).best()
+    if guess is not None:
+        return str(guess)
+    return content.decode("utf-8", errors="replace")
+
+
 def _cache_key(url: str) -> str:
     return hashlib.sha1(url.encode("utf-8")).hexdigest()
 
@@ -135,11 +180,16 @@ class Fetcher:
         side = self._cache_dir / f"{key}.json"
         if not (body.is_file() and side.is_file()):
             return None
+        html = body.read_text("utf-8")
+        if "\ufffd" in html:
+            # cached before pages were decoded by their charset: the
+            # characters are already lost, and only the site has them
+            return None
         meta = json.loads(side.read_text(encoding="utf-8"))
         return Page(
             url=url,
             status=meta.get("status"),
-            html=body.read_text("utf-8"),
+            html=html,
             final_url=meta.get("final_url"),
         )
 
@@ -317,7 +367,8 @@ class Fetcher:
                 status=answer.status_code,
                 error=f"too large: {len(answer.content)} bytes",
             )
-        return Page(url=url, status=answer.status_code, html=answer.text)
+        html = decode(answer.content, answer.charset_encoding)
+        return Page(url=url, status=answer.status_code, html=html)
 
     async def get_home(self, url: str) -> Page:
         """The site's home page, retried, and an error if it stays out of

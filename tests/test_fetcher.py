@@ -5,6 +5,7 @@ Both protect against the same shape of problem — a URL we did not choose,
 arriving from a search engine, pointed somewhere we never meant to go.
 """
 
+import json
 import socket
 
 import httpx
@@ -351,6 +352,80 @@ async def test_a_declared_crawl_delay_is_honoured(settings: Settings, monkeypatc
     await fetch.get(HOME)
     await fetch.get("https://muster-metallbau.ch/kontakt")
     assert 5 in slept
+
+
+# --- the charset -------------------------------------------------------------
+# httpx decodes a body without a charset in its Content-Type as UTF-8 and never
+# reads the page's own <meta charset>. An older SME site in Latin-1 then came
+# out with U+FFFD for every umlaut — in the greeting, or dropped as invented
+# (audit).
+
+IMPRESSUM_TEXT = "Geschäftsführer: Hans Müller, Bahnhofstrasse 12a, 8000 Zürich"
+
+
+def latin1_page(head: str = "") -> bytes:
+    html = f"<html><head>{head}</head><body><p>{IMPRESSUM_TEXT}</p></body></html>"
+    return html.encode("latin-1")
+
+
+def answer(body: bytes, content_type: str = "text/html") -> httpx.Response:
+    return httpx.Response(200, content=body, headers={"content-type": content_type})
+
+
+@respx.mock
+async def test_a_latin1_page_without_header_keeps_its_umlauts(f: Fetcher):
+    allow_robots()
+    body = latin1_page('<meta charset="iso-8859-1">')
+    respx.get(HOME).mock(return_value=answer(body))
+    page = await f.get(HOME)
+    assert IMPRESSUM_TEXT in page.html
+    assert "\ufffd" not in page.html
+
+
+@respx.mock
+async def test_an_http_equiv_charset_is_read_too(f: Fetcher):
+    allow_robots()
+    body = latin1_page(
+        '<meta http-equiv="Content-Type" content="text/html; charset=windows-1252">'
+    )
+    respx.get(HOME).mock(return_value=answer(body))
+    assert IMPRESSUM_TEXT in (await f.get(HOME)).html
+
+
+@respx.mock
+async def test_a_page_that_declares_nothing_is_detected(f: Fetcher):
+    allow_robots()
+    respx.get(HOME).mock(return_value=answer(latin1_page()))
+    assert IMPRESSUM_TEXT in (await f.get(HOME)).html
+
+
+@respx.mock
+async def test_the_header_charset_comes_first(f: Fetcher):
+    # the server's word outranks the page's: the meta tag here is stale
+    allow_robots()
+    html = f'<html><head><meta charset="iso-8859-1"></head><p>{IMPRESSUM_TEXT}</p>'
+    respx.get(HOME).mock(
+        return_value=answer(html.encode("utf-8"), "text/html; charset=utf-8")
+    )
+    assert IMPRESSUM_TEXT in (await f.get(HOME)).html
+
+
+@respx.mock
+async def test_a_cached_page_with_broken_characters_is_fetched_again(f: Fetcher):
+    """Pages cached before the charset fix hold the U+FFFD already, and a
+    rerun would read them from the cache for good."""
+    allow_robots()
+    route = respx.get(HOME).mock(
+        return_value=answer(latin1_page('<meta charset="iso-8859-1">'))
+    )
+    f.cache_path(HOME).parent.mkdir(parents=True, exist_ok=True)
+    f.cache_path(HOME).write_text("<p>Hans M\ufffdller</p>", encoding="utf-8")
+    f.cache_path(HOME).with_suffix(".json").write_text(
+        json.dumps({"url": HOME, "final_url": None, "status": 200}), encoding="utf-8"
+    )
+    page = await f.get(HOME)
+    assert route.call_count == 1
+    assert "Hans Müller" in page.html
 
 
 # --- the cache ---------------------------------------------------------------
