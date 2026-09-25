@@ -10,6 +10,7 @@
 <body class="home">
 <main>
   <h1>company-reach</h1>
+  {% if done %}<p class="done-note">{{ done }}.</p>{% endif %}
 
   {% if waiting_total %}
   <section class="waiting">
