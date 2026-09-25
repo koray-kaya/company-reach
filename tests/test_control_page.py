@@ -126,7 +126,10 @@ def test_the_page_refreshes_while_a_command_runs(page):
     client.post("/jobs/score", headers=SAME)
     try:
         html = client.get("/").text
-        assert 'http-equiv="refresh"' in html
+        # the button leads to /#job; a refresh that names no url reloads that
+        # address, which a browser treats as a jump within the page: Chrome
+        # never asked again, and a finished round showed "running" (#56)
+        assert '<meta http-equiv="refresh" content="3;url=/">' in html
         assert "running" in html
     finally:
         stop(jobs)
