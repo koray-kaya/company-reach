@@ -161,6 +161,7 @@ def _seed(settings, scores: dict[str, int]) -> None:
             goal_hash=goal_hash("g"),
             prompt_version=version,
             model=settings.llm_model,
+            criteria_hash=None,  # scored before criteria were stored
         )
 
 

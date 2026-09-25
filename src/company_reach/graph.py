@@ -44,6 +44,7 @@ from company_reach.tools import llm
 from company_reach.tools.db import (
     connect,
     count_sendable,
+    current_criteria_hash,
     errored_uids,
     no_site_uids,
     record_pending,
@@ -122,15 +123,17 @@ def draw_batch(state: ReachState, *, settings: Settings) -> dict:
     """
     batch_no = state["batches_drawn"] + 1
     prompt_version, _ = llm.load_prompt("score")
+    goal = goal_hash(state["goal"])
 
     with connect(settings.db_path) as conn:
         uids = db_draw_batch(
             conn,
             run_id=state["run_id"],
             batch_no=batch_no,
-            goal_hash=goal_hash(state["goal"]),
+            goal_hash=goal,
             prompt_version=prompt_version,
             model=settings.llm_model,
+            criteria_hash=current_criteria_hash(conn, goal),
             min_score=settings.draw_min_score,
             limit=state["batch_size"],
         )

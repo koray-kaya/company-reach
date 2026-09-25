@@ -9,11 +9,17 @@ from typer.testing import CliRunner
 from company_reach import cli
 from company_reach.errors import SearchError
 from company_reach.manifest import manifest_path
-from company_reach.models import CompanyRecord, RawPerson, Score
+from company_reach.models import CompanyRecord, RawPerson, Score, SelectionCriteria
 from company_reach.nodes import find_site as find_site_node
 from company_reach.profile import goal_hash
 from company_reach.tools import llm
-from company_reach.tools.db import connect, init_db, upsert_companies, upsert_scores
+from company_reach.tools.db import (
+    connect,
+    init_db,
+    store_criteria,
+    upsert_companies,
+    upsert_scores,
+)
 from company_reach.tools.search import Result
 
 PAGE = json.loads((Path(__file__).parent / "fixtures/lindas_page.json").read_text())
@@ -59,6 +65,7 @@ def _seed_scored_pool(settings, scores: dict[str, int]) -> None:
             goal_hash=goal_hash("make and sell"),
             prompt_version=version,
             model=settings.llm_model,
+            criteria_hash=None,  # scored before criteria were stored
         )
 
 
@@ -91,6 +98,34 @@ def test_run_dry_writes_a_finished_manifest(settings, monkeypatch):
     assert m["status"] == "done"
     assert m["counts"]["results"] == 1
     assert m["goal"] == "make and sell"
+
+
+def test_the_manifest_records_the_criteria(settings, monkeypatch):
+    """Audit H10: a run's companies were ranked against these rules, and the
+    file has to say which."""
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    _seed_scored_pool(settings, {"CHE000000001": 9})
+    rules = SelectionCriteria(must=["makes"], must_not=["holds"], positive_signals=[])
+    with connect(settings.db_path) as conn:
+        store_criteria(
+            conn,
+            goal_hash("make and sell"),
+            rules,
+            criteria_hash="c1",
+            model="test-model",
+            prompt_version="1",
+            adopt_unlinked=True,
+        )
+
+    r = runner.invoke(
+        cli.app, ["run", "--dry", "--goal", "make and sell", "--run-id", "r1"]
+    )
+
+    assert r.exit_code == 0, r.output
+    m = json.loads(manifest_path("r1", settings=settings).read_text())
+    assert m["criteria_hash"] == "c1"
+    assert m["criteria"]["must"] == ["makes"]
+    assert m["counts"]["results"] == 1  # the adopted score is drawn
 
 
 def test_run_dry_on_an_empty_database_says_what_to_run(settings, monkeypatch):

@@ -21,6 +21,7 @@ from company_reach.models import (
     Draft,
     Score,
     SelectionCriteria,
+    StoredCriteria,
 )
 
 if TYPE_CHECKING:  # avoids pulling langchain into every db import
@@ -62,6 +63,7 @@ _ADDED_COLUMNS = {
     ("ledger", "frame_version"): "TEXT",
     ("ledger", "arm"): "TEXT",
     ("ledger", "contact_kind"): "TEXT",
+    ("scores", "criteria_hash"): "TEXT",
 }
 
 
@@ -153,12 +155,19 @@ def upsert_companies(
 
 
 def unscored_companies(
-    conn: sqlite3.Connection, goal_hash: str, prompt_version: str, model: str
+    conn: sqlite3.Connection,
+    goal_hash: str,
+    prompt_version: str,
+    model: str,
+    criteria_hash: str | None,
 ) -> list[CompanyRecord]:
-    """Companies the rules kept and this (goal, prompt, model) has not scored.
+    """Companies the rules kept and this (goal, prompt, model, criteria) has
+    not scored.
 
     The left join is the score cache: rerunning after an interrupted pass, or
-    with a longer --limit, costs nothing for work already done."""
+    with a longer --limit, costs nothing for work already done. `is` rather
+    than `=` for the criteria, because it also matches NULL to NULL: a score
+    made before criteria were stored, while its goal has none stored yet."""
     rows = conn.execute(
         """select c.uid, c.name, c.legal_form, c.municipality, c.street,
                   c.postal_code, c.city, c.purpose, c.purpose_head
@@ -166,20 +175,25 @@ def unscored_companies(
              left join scores s
                on s.uid = c.uid and s.goal_hash = ?
               and s.prompt_version = ? and s.model = ?
+              and s.criteria_hash is ?
             where c.screen_reason is null and s.uid is null
             order by c.uid""",
-        (goal_hash, prompt_version, model),
+        (goal_hash, prompt_version, model, criteria_hash),
     ).fetchall()
     return [CompanyRecord(**dict(row)) for row in rows]
 
 
 def count_scored(
-    conn: sqlite3.Connection, goal_hash: str, prompt_version: str, model: str
+    conn: sqlite3.Connection,
+    goal_hash: str,
+    prompt_version: str,
+    model: str,
+    criteria_hash: str | None,
 ) -> int:
     return conn.execute(
         "select count(*) from scores where goal_hash = ? and prompt_version = ? "
-        "and model = ?",
-        (goal_hash, prompt_version, model),
+        "and model = ? and criteria_hash is ?",
+        (goal_hash, prompt_version, model, criteria_hash),
     ).fetchone()[0]
 
 
@@ -190,28 +204,108 @@ def upsert_scores(
     goal_hash: str,
     prompt_version: str,
     model: str,
+    criteria_hash: str | None,
 ) -> int:
+    """A company keeps one score per (goal, prompt, model). A rescore under
+    new criteria replaces it, and the row then names the new criteria."""
     conn.executemany(
         """INSERT INTO scores (uid, goal_hash, prompt_version, model, score,
-             reason, scored_at)
-           VALUES (?,?,?,?,?,?,?)
+             reason, scored_at, criteria_hash)
+           VALUES (?,?,?,?,?,?,?,?)
            ON CONFLICT(uid, goal_hash, prompt_version, model) DO UPDATE SET
              score=excluded.score, reason=excluded.reason,
-             scored_at=excluded.scored_at""",
+             scored_at=excluded.scored_at, criteria_hash=excluded.criteria_hash""",
         [
-            (s.uid, goal_hash, prompt_version, model, s.score, s.reason, now())
+            (
+                s.uid,
+                goal_hash,
+                prompt_version,
+                model,
+                s.score,
+                s.reason,
+                now(),
+                criteria_hash,
+            )
             for s in scores
         ],
     )
     return len(scores)
 
 
+# --- criteria: one set per goal (audit H10) -----------------------------------
+
+
+def load_criteria(conn: sqlite3.Connection, goal_hash: str) -> StoredCriteria | None:
+    row = conn.execute(
+        "select * from criteria where goal_hash = ?", (goal_hash,)
+    ).fetchone()
+    if row is None:
+        return None
+    return StoredCriteria(
+        criteria=SelectionCriteria.model_validate_json(row["criteria"]),
+        criteria_hash=row["criteria_hash"],
+        model=row["model"],
+        prompt_version=row["prompt_version"],
+        created_at=row["created_at"],
+    )
+
+
+def current_criteria_hash(conn: sqlite3.Connection, goal_hash: str) -> str | None:
+    """The hash a score must carry to count for this goal. None while the
+    goal has no criteria stored; then the scores made before criteria were
+    stored, which carry NULL, are the ones that count."""
+    stored = load_criteria(conn, goal_hash)
+    return stored.criteria_hash if stored else None
+
+
+def store_criteria(
+    conn: sqlite3.Connection,
+    goal_hash: str,
+    criteria: SelectionCriteria,
+    *,
+    criteria_hash: str,
+    model: str | None,
+    prompt_version: str | None,
+    adopt_unlinked: bool,
+) -> int:
+    """Store the goal's criteria, replacing any set stored before.
+
+    The first time a goal gets criteria, its scores made before criteria
+    were stored take their hash (`adopt_unlinked`). They are the baseline
+    the owner has; without this, a database from before the table would
+    lose every score at once. Not when new criteria were asked for, since
+    the point then is to score again. Returns how many scores took it."""
+    first = load_criteria(conn, goal_hash) is None
+    conn.execute(
+        """INSERT INTO criteria (goal_hash, criteria, criteria_hash, model,
+             prompt_version, created_at) VALUES (?,?,?,?,?,?)
+           ON CONFLICT(goal_hash) DO UPDATE SET criteria=excluded.criteria,
+             criteria_hash=excluded.criteria_hash, model=excluded.model,
+             prompt_version=excluded.prompt_version,
+             created_at=excluded.created_at""",
+        (
+            goal_hash,
+            criteria.model_dump_json(),
+            criteria_hash,
+            model,
+            prompt_version,
+            now(),
+        ),
+    )
+    if not (first and adopt_unlinked):
+        return 0
+    return conn.execute(
+        "update scores set criteria_hash = ? "
+        "where goal_hash = ? and criteria_hash is null",
+        (criteria_hash, goal_hash),
+    ).rowcount
+
+
 def record_run(
     path: Path,
     run_id: str,
     goal: str,
-    criteria: SelectionCriteria,
-    provenance: "Provenance",
+    criteria: StoredCriteria,
     *,
     seed: int,
 ) -> None:
@@ -235,9 +329,9 @@ def record_run(
                 goal_hash(goal),
                 seed,
                 None,
-                provenance.model,
-                json.dumps({provenance.prompt: provenance.prompt_version}),
-                criteria.model_dump_json(),
+                criteria.model,
+                json.dumps({"criteria": criteria.prompt_version}),
+                criteria.criteria.model_dump_json(),
                 now(),
                 "scoring",
             ),
@@ -252,6 +346,7 @@ def draw_batch(
     goal_hash: str,
     prompt_version: str,
     model: str,
+    criteria_hash: str | None,
     min_score: int,
     limit: int,
 ) -> list[str]:
@@ -284,6 +379,7 @@ def draw_batch(
              join scores s
                on s.uid = c.uid and s.goal_hash = ?
               and s.prompt_version = ? and s.model = ?
+              and s.criteria_hash is ?
             where c.screen_reason is null
               and s.score >= ?
               -- not already drawn in THIS run, or the loop would redraw it
@@ -307,7 +403,16 @@ def draw_batch(
                                           where error_kind is null)))
             order by s.score desc
             limit ?""",
-        (goal_hash, prompt_version, model, min_score, run_id, run_id, limit),
+        (
+            goal_hash,
+            prompt_version,
+            model,
+            criteria_hash,
+            min_score,
+            run_id,
+            run_id,
+            limit,
+        ),
     ).fetchall()
     return [r["uid"] for r in rows]
 

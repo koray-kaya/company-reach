@@ -2,9 +2,12 @@ import json
 
 import httpx
 import respx
+from typer.testing import CliRunner
 
-from company_reach.models import CompanyRecord, SelectionCriteria
+from company_reach import cli
+from company_reach.models import CompanyRecord, RawScore, ScoreBatch, SelectionCriteria
 from company_reach.nodes.score_pool import score_pool
+from company_reach.tools import llm
 from company_reach.tools.db import connect, init_db, upsert_companies
 
 URL = "https://api.openai.com/v1/chat/completions"
@@ -181,3 +184,88 @@ async def test_one_failing_batch_does_not_stop_the_others(settings, monkeypatch)
     report = await score_pool("run1", "goal", CRITERIA, settings=settings)
     assert report.failed_batches == 1
     assert report.scored == 2  # the other batch went through
+
+
+# --- one set of criteria per goal (audit H10) ---------------------------------
+
+runner = CliRunner()
+
+
+def _provenance(prompt: str) -> llm.Provenance:
+    return llm.Provenance(
+        model="test-model",
+        prompt=prompt,
+        prompt_version="1",
+        reasoning_effort="low",
+        prompt_tokens=0,
+        completion_tokens=0,
+        finish_reason="stop",
+        seconds=0.0,
+    )
+
+
+def fake_model(monkeypatch, *musts: str) -> dict[str, int]:
+    """`llm.ask` without an endpoint. The criteria prompt answers with the
+    next of `musts` each time it is asked; the score prompt gives every
+    company it was sent a 7. Returns how often each prompt was asked."""
+    calls = {"criteria": 0, "score": 0}
+
+    async def ask(prompt_name, output_model, /, *, settings, **variables):
+        calls[prompt_name] += 1
+        if prompt_name == "criteria":
+            answer = SelectionCriteria(
+                must=[musts[calls["criteria"] - 1]],
+                must_not=["holds"],
+                positive_signals=[],
+            )
+        else:
+            sent = json.loads(variables["companies"])
+            answer = ScoreBatch(
+                scores=[RawScore(uid=c["uid"], score=7, reason="ok") for c in sent]
+            )
+        return answer, _provenance(prompt_name)
+
+    monkeypatch.setattr(llm, "ask", ask)
+    return calls
+
+
+def criteria_hashes(settings) -> set[str | None]:
+    with connect(settings.db_path) as conn:
+        return {r[0] for r in conn.execute("select criteria_hash from scores")}
+
+
+def test_two_score_passes_use_one_criteria(settings, monkeypatch):
+    """Audit H10: every `score` wrote fresh criteria, so two passes over one
+    pool were ranked against two rule sets and the cache could not tell."""
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    seed(settings, 4)
+    calls = fake_model(monkeypatch, "makes things", "sells software")
+
+    for _ in range(2):
+        r = runner.invoke(cli.app, ["score", "--goal", "goal", "--limit", "2"])
+        assert r.exit_code == 0, r.output
+
+    assert calls["criteria"] == 1
+    assert len(stored(settings)) == 4
+    hashes = criteria_hashes(settings)
+    assert len(hashes) == 1 and None not in hashes
+    assert "makes things" in r.output  # the second pass shows the stored rules
+
+
+def test_a_new_criteria_rescores(settings, monkeypatch):
+    """`--new-criteria` writes a fresh set, and every score made under the
+    old one stops counting: the whole pool is scored again."""
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    seed(settings, 3)
+    calls = fake_model(monkeypatch, "makes things", "sells software")
+    runner.invoke(cli.app, ["score", "--goal", "goal"])
+    before = criteria_hashes(settings)
+
+    r = runner.invoke(cli.app, ["score", "--goal", "goal", "--new-criteria"])
+
+    assert r.exit_code == 0, r.output
+    assert calls["criteria"] == 2
+    assert "3 newly scored" in r.output
+    assert "sells software" in r.output
+    after = criteria_hashes(settings)
+    assert len(after) == 1 and after != before

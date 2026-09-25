@@ -2,10 +2,11 @@
 
 Three ideas hold this together.
 
-*The cache.* A score belongs to a (goal, prompt version, model) triple. Rerun
-with the same three and nothing is asked again; change any of them and the
-answer is rightly recomputed. This is what makes `--limit` safe: score two
-hundred now, two hundred more tonight, nothing repeated.
+*The cache.* A score belongs to a goal, a prompt version, a model and the
+criteria it was scored against. Rerun with the same four and nothing is asked
+again; change any of them and the answer is rightly recomputed. This is what
+makes `--limit` safe: score two hundred now, two hundred more tonight,
+nothing repeated, all against one set of rules.
 
 *The shuffle.* Swiss UIDs run in registration order, so taking the first N
 companies would sample the oldest firms in the canton. One seeded shuffle
@@ -24,7 +25,7 @@ import time
 from dataclasses import dataclass
 
 from company_reach.models import CompanyRecord, Score, ScoreBatch, SelectionCriteria
-from company_reach.nodes.write_criteria import format_criteria
+from company_reach.nodes.write_criteria import criteria_hash, format_criteria
 from company_reach.profile import goal_hash
 from company_reach.settings import Settings
 from company_reach.tools import llm
@@ -132,6 +133,7 @@ async def score_pool(
         goal_hash=goal_hash(goal),
         prompt_version=prompt_version,
         model=settings.llm_model,
+        criteria_hash=criteria_hash(criteria),
     )
 
     with connect(settings.db_path) as conn:

@@ -68,7 +68,9 @@ uv run company-reach review <run>               # decide, one company at a time
 
 `3203` is the federal id of a municipality (that one is St. Gallen). Every
 command is safe to run again: nothing already done is repeated, and scoring
-is incremental. `run` finds each company's site, reads it, chooses who to
+is incremental. The criteria are written once per goal and stored, so every
+`score` pass ranks against the rules `criteria` showed you;
+`score --new-criteria` writes a fresh set and scores the pool again. `run` finds each company's site, reads it, chooses who to
 write to and drafts an invitation; a company whose search or site failed is
 recorded as an error, not as "no website", and `company-reach retry <run>`
 does it again. Every search query is logged, and a "no website" card on the

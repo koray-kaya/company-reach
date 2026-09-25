@@ -2,16 +2,23 @@ import json
 import sqlite3
 from pathlib import Path
 
-from company_reach.models import CompanyProfile, CompanyRecord, Person
+from company_reach.models import (
+    CompanyProfile,
+    CompanyRecord,
+    Person,
+    SelectionCriteria,
+)
 from company_reach.tools.db import (
     connect,
     errored_uids,
     init_db,
+    load_criteria,
     profile_by_uid,
     record_decision,
     record_page,
     record_searches,
     search_log,
+    store_criteria,
     suppress,
     upsert_companies,
     upsert_profile,
@@ -363,3 +370,66 @@ def test_errored_uids_skips_decided_and_suppressed_companies(tmp_path: Path):
         suppress(conn, "CHE000000002", reason="forgotten on request")
         record_decision(conn, "CHE000000003", "skipped")
         assert errored_uids(conn, "r1") == ["CHE000000001"]
+
+
+# --- criteria (audit H10) -------------------------------------------------------
+
+
+def test_legacy_scores_adopt_the_first_stored_criteria(tmp_path: Path):
+    """Scores made before criteria were stored name no criteria. The first
+    set stored for their goal is the baseline the owner has, so they take
+    its hash; a later set takes nothing over, and other goals keep theirs."""
+    path = tmp_path / "old.db"
+    conn = sqlite3.connect(path)
+    conn.execute(
+        """CREATE TABLE scores (
+             uid TEXT NOT NULL, goal_hash TEXT NOT NULL,
+             prompt_version TEXT NOT NULL, model TEXT NOT NULL,
+             score INTEGER NOT NULL, reason TEXT, scored_at TEXT NOT NULL,
+             PRIMARY KEY (uid, goal_hash, prompt_version, model))"""
+    )
+    conn.executemany(
+        "insert into scores values (?, ?, '1', 'm1', 8, 'x', '2026-09-20')",
+        [("CHE000000001", "g1"), ("CHE000000002", "g2"), ("CHE000000003", "g3")],
+    )
+    conn.commit()
+    conn.close()
+
+    first = SelectionCriteria(must=["makes"], must_not=[], positive_signals=[])
+    later = SelectionCriteria(must=["sells"], must_not=[], positive_signals=[])
+    with connect(path) as c:
+        adopted = store_criteria(
+            c,
+            "g1",
+            first,
+            criteria_hash="h1",
+            model="m1",
+            prompt_version="1",
+            adopt_unlinked=True,
+        )
+        store_criteria(
+            c,
+            "g1",
+            later,
+            criteria_hash="h2",
+            model="m1",
+            prompt_version="1",
+            adopt_unlinked=True,
+        )
+        # `--new-criteria` asked for a fresh set: nothing is adopted
+        store_criteria(
+            c,
+            "g3",
+            later,
+            criteria_hash="h3",
+            model="m1",
+            prompt_version="1",
+            adopt_unlinked=False,
+        )
+    with connect(path) as c:
+        rows = dict(c.execute("select uid, criteria_hash from scores").fetchall())
+        kept = load_criteria(c, "g1")
+
+    assert adopted == 1
+    assert rows == {"CHE000000001": "h1", "CHE000000002": None, "CHE000000003": None}
+    assert kept is not None and kept.criteria == later and kept.criteria_hash == "h2"

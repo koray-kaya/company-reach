@@ -14,7 +14,7 @@ from company_reach.tools.db import (
     upsert_scores,
 )
 
-KEY = dict(goal_hash="g1", prompt_version="1", model="m1")
+KEY = dict(goal_hash="g1", prompt_version="1", model="m1", criteria_hash="c1")
 
 
 def rec(uid: str) -> CompanyRecord:
@@ -191,3 +191,15 @@ def test_a_suppressed_company_is_never_drawn(db: Path):
     with connect(db) as conn:
         suppress(conn, uid(1), reason="never again")
         assert uid(1) not in draw(conn, run_id="r9")
+
+
+def test_a_score_under_other_criteria_is_not_drawn(db: Path):
+    """Audit H10: after `--new-criteria` the old scores stop counting, or the
+    pool would be ranked against two rule sets at once."""
+    with connect(db) as conn:
+        upsert_scores(
+            conn,
+            [Score(uid=uid(1), score=9, reason="x")],
+            **(KEY | {"criteria_hash": "c0"}),
+        )
+        assert uid(1) not in draw(conn)
