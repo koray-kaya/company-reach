@@ -35,7 +35,8 @@ company still has its directory entries, so silence means we were not heard.
 With a Brave key (decided 2026-09-25) "no website" needs a second opinion:
 a provider that answered and found no candidate. Brave is asked in place of
 the pause when SearXNG was silent, and once more before any "no website" —
-unless it has already answered for this company. Brave failing is an
+the quoted name and seat, unless Brave has already answered that very
+query for this company. Brave failing is an
 error like any other. Its results are used, never stored: its terms forbid
 keeping them, so a candidate only Brave found is left out of the record.
 """
@@ -353,8 +354,8 @@ async def search_results(
     # resolving guess does not change that: it is built from the name and
     # says nothing about whether search was heard.
     if not searched and settings.brave_search_api_key is not None:
-        if not _brave_asked(log):
-            for query in build_queries(record)[:2]:
+        for query in build_queries(record)[:2]:
+            if not _brave_answered(log, query):
                 searched.extend(await _ask_brave(query, settings=settings, log=log))
     elif not searched:
         await asyncio.sleep(settings.search_retry_pause_s)
@@ -389,10 +390,14 @@ async def _ask_brave(
     return results_of([asked])
 
 
-def _brave_asked(log: list[Asked]) -> bool:
-    """Brave answered for this company — found something or found nothing.
-    A Brave error is not an answer, but it has already raised by then."""
-    return any(a.provider == "brave" and a.error is None for a in log)
+def _brave_answered(log: list[Asked], query: str) -> bool:
+    """Brave answered this query — found something or found nothing. Which
+    query matters: Brave standing in for a failed SearXNG on the UID or the
+    `site:.ch` query says nothing about the company's name. A Brave error is
+    not an answer, but it has already raised by then."""
+    return any(
+        a.provider == "brave" and a.query == query and a.error is None for a in log
+    )
 
 
 async def _ask_every_query(
@@ -483,13 +488,15 @@ async def _find(
     site = await _choose(record, candidates, settings=settings, fetcher=fetcher)
 
     # "No website" needs a provider that answered and found no candidate.
-    # With a key, that is Brave's to confirm, once, with the strongest query.
+    # With a key, that is Brave's to confirm, once, with the strongest query:
+    # the quoted name and seat.
+    name_query = build_queries(record)[0]
     if (
         site is None
         and settings.brave_search_api_key is not None
-        and not _brave_asked(log)
+        and not _brave_answered(log, name_query)
     ):
-        more = await _ask_brave(build_queries(record)[0], settings=settings, log=log)
+        more = await _ask_brave(name_query, settings=settings, log=log)
         results += more
         considered = {registered_domain(url) for url in candidates}
         new = [
@@ -502,7 +509,7 @@ async def _find(
             site = await _choose(record, new, settings=settings, fetcher=fetcher)
 
     if site is None:
-        decided = _no_site(record, candidates, brave=_brave_asked(log))
+        decided = _no_site(record, candidates, brave=_brave_answered(log, name_query))
     else:
         decided = {"site": site, "recommendation": None, "reason": None}
 

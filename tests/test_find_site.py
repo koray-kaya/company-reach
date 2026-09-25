@@ -1122,3 +1122,100 @@ async def test_without_a_sitemap_links_are_read_where_the_home_page_landed(
     )
     urls = await node.all_page_urls(f"{SITE}/", fetcher=quick(settings), limit=200)
     assert f"{SITE}/de/kontakt" in urls
+
+
+# --- "Brave confirmed" means the name query (final review) --------------------
+# Brave answering some other query — reached through the fallback when
+# SearXNG failed on it — says nothing about the company's name. It must not
+# stand in for the check a "no website" rests on.
+
+UID_DOWN = {
+    "results": [],
+    "unresponsive_engines": [
+        ["duckduckgo", "timeout"],
+        ["mojeek", "timeout"],
+        ["brave", "CAPTCHA"],
+    ],
+}
+
+
+def searxng_by_query(answers: dict[str, httpx.Response], default: httpx.Response):
+    def answer(request: httpx.Request) -> httpx.Response:
+        return answers.get(request.url.params["q"], default)
+
+    return respx.get(SEARXNG).mock(side_effect=answer)
+
+
+def brave_by_query(answers: dict[str, list[str]]) -> respx.Route:
+    def answer(request: httpx.Request) -> httpx.Response:
+        urls = answers.get(request.url.params["q"], [])
+        results = [{"url": u, "title": "Muster Metallbau AG"} for u in urls]
+        return httpx.Response(200, json={"web": {"results": results}})
+
+    return respx.get(BRAVE).mock(side_effect=answer)
+
+
+@respx.mock
+async def test_brave_empty_on_the_uid_query_does_not_confirm_silence(
+    armed, monkeypatch
+):
+    """The name queries were silent and SearXNG failed on the UID query;
+    Brave, asked in its place, found nothing for the UID. That is no answer
+    about the name, so Brave is still asked the name query."""
+    name, _, uid_query = build_queries(company())
+    empty = httpx.Response(200, json={"results": [], "unresponsive_engines": []})
+    searxng_by_query({uid_query: httpx.Response(200, json=UID_DOWN)}, empty)
+    brave = brave_by_query({name: [f"{SITE}/"]})
+    serve(IMPRESSUM_WITH_UID)
+    model_says(monkeypatch, f"{SITE}/", "Muster Metallbau AG")
+
+    out = await find_site(state(), settings=armed, fetcher=quick(armed))
+
+    asked = [c.request.url.params["q"] for c in brave.calls]
+    assert name in asked
+    assert out["site"].url == f"{SITE}/"
+
+
+@respx.mock
+async def test_without_a_key_a_failing_uid_query_is_still_an_error(
+    settings: Settings, monkeypatch
+):
+    _, _, uid_query = build_queries(company())
+    quiet = settings.model_copy(update={"search_gap_s": 0.0})
+    empty = httpx.Response(200, json={"results": [], "unresponsive_engines": []})
+    searxng_by_query({uid_query: httpx.Response(200, json=UID_DOWN)}, empty)
+
+    async def no_guesses(names, **kw):
+        return []
+
+    monkeypatch.setattr(node, "resolving_domains", no_guesses)
+    with pytest.raises(SearchError, match="baseline"):
+        await find_site(state(), settings=quiet, fetcher=quick(quiet))
+
+
+@respx.mock
+async def test_brave_answering_the_narrowing_query_does_not_confirm(armed, monkeypatch):
+    """Only directories, then SearXNG failed on `site:.ch` and Brave answered
+    that one query. The name query was never put to Brave, so it still is
+    before the company is written off."""
+    narrowing = node.narrowing_query(company())
+    name = build_queries(company())[0]
+    searxng_by_query(
+        {narrowing: httpx.Response(503)},
+        httpx.Response(
+            200,
+            json={
+                "results": [{"url": DIRECTORY, "title": "t", "engine": "duckduckgo"}],
+                "unresponsive_engines": [],
+            },
+        ),
+    )
+    brave = brave_by_query({name: [f"{SITE}/"]})
+    serve(IMPRESSUM_WITH_UID)
+    model_says(monkeypatch, f"{SITE}/", "Muster Metallbau AG")
+
+    out = await find_site(state(), settings=armed, fetcher=quick(armed))
+
+    asked = [c.request.url.params["q"] for c in brave.calls]
+    assert asked == [narrowing, name]
+    assert out["site"].url == f"{SITE}/"
