@@ -32,7 +32,13 @@ from company_reach.errors import ProfileError
 from company_reach.models import Contact
 from company_reach.nodes.check_draft import reassemble
 from company_reach.profile import load_profile
-from company_reach.review.cards import Card, first_undecided, load_cards
+from company_reach.review.cards import (
+    Card,
+    first_undecided,
+    load_cards,
+    next_card,
+    waiting,
+)
 from company_reach.review.jobs import JobBusy, Jobs
 from company_reach.settings import Settings
 from company_reach.tools import mailto
@@ -86,7 +92,7 @@ def create_app(settings: Settings, *, jobs: Jobs | None = None) -> FastAPI:
         return cards
 
     @app.get("/", response_class=HTMLResponse)
-    def home(request: Request) -> HTMLResponse:
+    def home(request: Request, done: str = "") -> HTMLResponse:
         """Where the campaign stands, the buttons for a round, the command
         that runs or ran last, and every run with results, newest first."""
         try:
@@ -130,6 +136,7 @@ def create_app(settings: Settings, *, jobs: Jobs | None = None) -> FastAPI:
                 "runs": rows,
                 "job": job,
                 "job_tail": job.tail() if job else "",
+                "done": done,
             },
         )
 
@@ -161,6 +168,11 @@ def create_app(settings: Settings, *, jobs: Jobs | None = None) -> FastAPI:
             raise HTTPException(404, f"run {run_id!r} has {len(cards)} companies")
         with connect(settings.db_path) as conn:
             sent = sent_this_month(conn)
+        # the card's group: the mails the run recommended, or the rest
+        is_mail = cards[n].recommendation == "send"
+        group = [
+            i for i, c in enumerate(cards) if (c.recommendation == "send") == is_mail
+        ]
         return templates.TemplateResponse(
             request,
             "review.html",
@@ -169,6 +181,11 @@ def create_app(settings: Settings, *, jobs: Jobs | None = None) -> FastAPI:
                 "cards": cards,
                 "n": n,
                 "card": cards[n],
+                "is_mail": is_mail,
+                "group": group,
+                "in_group": group.index(n) + 1,
+                "waiting_count": sum(waiting(c) for c in cards),
+                "next_mail": next_card(cards, n) if is_mail else None,
                 "goal": load_profile(settings.profile_path).goal,
                 "sent_this_month": sent,
                 "skip_reasons": SKIP_REASONS,
@@ -178,16 +195,16 @@ def create_app(settings: Settings, *, jobs: Jobs | None = None) -> FastAPI:
         )
 
     def next_url(run_id: str, n: int) -> str:
-        """The next undecided company after this one, else the first
-        undecided anywhere: a decision slides on to the next open card."""
-        cards = cards_for(run_id)
-        later = [i for i in range(n + 1, len(cards)) if cards[i].decision is None]
-        return f"/review/{run_id}/{later[0] if later else first_undecided(cards)}"
+        """Where a decision leads: the next mail waiting, or the front page
+        once every mail of the run is decided (`cards.next_card`)."""
+        after_n = next_card(cards_for(run_id), n)
+        return "/" if after_n is None else f"/review/{run_id}/{after_n}"
 
     def after(run_id: str, n: int, done: str) -> RedirectResponse:
-        return RedirectResponse(
-            f"{next_url(run_id, n)}?done={quote(done)}", status_code=303
-        )
+        target = next_url(run_id, n)
+        if target == "/":
+            done += ". Every mail of this run is decided"
+        return RedirectResponse(f"{target}?done={quote(done)}", status_code=303)
 
     @app.post("/decide/{run_id}/{uid}", response_model=None)
     async def decide(

@@ -108,9 +108,12 @@ def test_a_suppressed_company_cannot_be_sent(db: Path):
 
 
 def test_the_first_undecided_card_is_where_the_page_opens(db: Path):
+    assert first_undecided(cards(db)) == 0
+    # with no mail waiting, the run opens at its first card, not at a company
+    # the run did not recommend (issue #54)
     with connect(db) as conn:
         record_decision(conn, SEND, "skipped", note="Not a fit")
-    assert first_undecided(cards(db)) == 1
+    assert first_undecided(cards(db)) == 0
 
 
 def test_a_contact_written_before_the_address_list_offers_its_one_address(db: Path):

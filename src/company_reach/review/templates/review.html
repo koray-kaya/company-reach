@@ -17,12 +17,13 @@
     <a class="home-link" href="/">← Home</a>
     <nav class="steps" aria-label="Companies">
       <a class="step{% if n == 0 %} off{% endif %}" id="prev" href="/review/{{ run_id }}/{{ n - 1 }}" aria-label="Previous company">‹</a>
-      <span class="pos">{{ n + 1 }} / {{ cards | length }}</span>
+      <span class="pos">{% if is_mail %}Mail{% else %}Not recommended{% endif %} {{ in_group }} of {{ group | length }}</span>
       <a class="step{% if n + 1 == cards | length %} off{% endif %}" id="next" href="/review/{{ run_id }}/{{ n + 1 }}" aria-label="Next company">›</a>
     </nav>
     <div class="progress" aria-hidden="true">
-      {% for other in cards %}<i class="{% if loop.index0 == n %}now{% elif other.decision == 'sent' %}sent{% elif other.decision %}skipped{% endif %}"></i>{% endfor %}
+      {% for i in group %}{% set other = cards[i] %}<i class="{% if i == n %}now{% elif other.decision == 'sent' %}sent{% elif other.decision %}skipped{% endif %}"></i>{% endfor %}
     </div>
+    {% if waiting_count %}<div class="waiting-count">{{ waiting_count }} waiting</div>{% endif %}
     <div class="count">Sent this month: <strong>{{ sent_this_month }}</strong></div>
   </header>
 
@@ -122,6 +123,7 @@
   <footer class="actions">
     {% if card.decision %}
     <span class="banner">Recorded: {{ card.decision }}.
+      {% if is_mail %}{% if next_mail is not none %}<a class="btn primary" href="/review/{{ run_id }}/{{ next_mail }}">Next mail →</a>{% else %}<a class="btn" href="/">All mails decided · Home</a>{% endif %}{% endif %}
       {% if card.decision == 'skipped' %}<button class="btn quiet" name="action" value="undo">Undo</button>{% endif %}
       {% if card.decision == 'sent' and card.sent_id %}<input type="hidden" name="sent_id" value="{{ card.sent_id }}"><button class="btn quiet" id="not-sent" name="action" value="not_sent" title="No mail left Outlook or your mail client: the send is taken back and the card opens again.">It was not sent</button>{% endif %}
       {% if card.decision == 'sent' %}<button class="btn quiet" id="bounced" name="action" value="bounced" title="The mail came back: its address goes on the never-again list, and the card opens again for another address.">Bounced</button>{% endif %}

@@ -159,3 +159,5 @@ body.home{overflow:auto}
 .home .waiting{display:flex;flex-wrap:wrap;align-items:center;gap:12px 20px;padding:16px;border-radius:10px;background:var(--tint);color:var(--tint-ink)}
 .home .waiting p{flex:1;min-width:220px}
 .bar .home-link{white-space:nowrap;font-weight:700}
+.waiting-count{white-space:nowrap;color:var(--tint-ink);background:var(--tint);padding:3px 10px;border-radius:999px;font-weight:700}
+.home .done-note{padding:10px 14px;border-radius:8px;background:var(--good);color:var(--good-ink);font-size:14px}

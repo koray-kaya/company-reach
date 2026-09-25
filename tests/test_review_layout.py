@@ -54,7 +54,7 @@ def test_previous_and_next_are_in_the_top_bar(html):
     top = bar(html)
     assert 'id="prev"' in top
     assert 'id="next"' in top
-    assert "1 / 3" in top
+    assert "Mail 1 of 1" in top
 
 
 def test_the_page_grid_cannot_grow_wider_than_the_window():

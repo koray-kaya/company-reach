@@ -419,10 +419,25 @@ def _newest_is(conn: sqlite3.Connection, row: sqlite3.Row | None, status: str) -
     return newest == row["id"]
 
 
+def waiting(card: Card) -> bool:
+    """A mail the run recommended that nobody has decided yet: what the
+    front page counts, and what the card page leads through."""
+    return card.recommendation == "send" and card.decision is None
+
+
 def first_undecided(cards: list[Card]) -> int:
-    """Where `/review/{run}` opens: the first card nobody decided about, or
-    the last card when every one is decided."""
-    for i, card in enumerate(cards):
-        if card.decision is None:
-            return i
-    return max(len(cards) - 1, 0)
+    """Where `/review/{run}` opens: the first mail waiting, else the first
+    card — never a company the run did not recommend while a mail waits."""
+    return next((i for i, card in enumerate(cards) if waiting(card)), 0)
+
+
+def next_card(cards: list[Card], n: int) -> int | None:
+    """Where a decision on card `n` leads. From a mail: the next mail
+    waiting, from the top again if need be. From a card the run did not
+    recommend: the card after it. None when the way leads out of the run."""
+    if cards[n].recommendation != "send":
+        return n + 1 if n + 1 < len(cards) else None
+    later = [i for i in range(n + 1, len(cards)) if waiting(cards[i])]
+    if later:
+        return later[0]
+    return next((i for i in range(n) if waiting(cards[i])), None)
