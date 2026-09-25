@@ -25,12 +25,28 @@ from company_reach.tools.textify import textify
 # Tried in this order, so an Impressum link beats a Kontakt link, and both
 # beat Datenschutz. The prototype took whichever legal link came first on
 # the page, and a privacy policy carries no UID.
+_IMPRESSUM_WORDS = r"impressum|imprint|mentions.legales|note.legali|legal.notice"
+_CONTACT_WORDS = r"kontakt|contact|contatti"
+_ABOUT_WORDS = r"ueber.uns|über.uns|about|a.propos|chi.siamo|wir.sind|team"
 _LEGAL_KINDS = (
-    re.compile(r"impressum|imprint|mentions.legales|note.legali|legal.notice", re.I),
-    re.compile(r"kontakt|contact|contatti", re.I),
+    re.compile(_IMPRESSUM_WORDS, re.I),
+    re.compile(_CONTACT_WORDS, re.I),
     re.compile(r"datenschutz|legal|rechtlich", re.I),
 )
-_ABOUT = re.compile(r"ueber.uns|über.uns|about|a.propos|chi.siamo|wir.sind|team", re.I)
+_ABOUT = re.compile(_ABOUT_WORDS, re.I)
+
+
+def _whole_word(words: str) -> re.Pattern[str]:
+    return re.compile(rf"(?<![a-z0-9äöü])(?:{words})(?![a-z0-9äöü])", re.I)
+
+
+# The same words, but only as whole words of a URL's path: `/kontakt-anfahrt`
+# is a Kontakt page, `/shop/kontaktlinsen` and `/produkte/steamer-pro` are
+# not (review). A link's words keep the looser patterns above, where they
+# find the Impressum for `find_site`.
+_PAGE_KINDS = tuple(
+    _whole_word(words) for words in (_IMPRESSUM_WORDS, _CONTACT_WORDS, _ABOUT_WORDS)
+)
 
 # Only when the home page links to none of the above.
 _LEGAL_PATHS = ("/impressum", "/impressum.html", "/impressum.php", "/imprint")
@@ -130,12 +146,12 @@ def find_links(html: str, base: str) -> tuple[list[str], list[str], list[str]]:
 
 def page_kind(url: str) -> int | None:
     """0 for an Impressum, 1 for a Kontakt page, 2 for Über uns or Team,
-    None for anything else — judged on the URL's path with the patterns
-    `find_links` uses on a link. These are the pages that name people and
-    say where the company is, and `pick_pages` reads every one it is
-    offered."""
+    None for anything else — judged on the whole words of the URL's path,
+    in the vocabulary `find_links` uses on a link. These are the pages that
+    name people and say where the company is, and `pick_pages` reads one of
+    each it is offered."""
     path = unquote(urlsplit(url).path)
-    for kind, pattern in enumerate((_LEGAL_KINDS[0], _LEGAL_KINDS[1], _ABOUT)):
+    for kind, pattern in enumerate(_PAGE_KINDS):
         if pattern.search(path):
             return kind
     return None

@@ -166,3 +166,81 @@ async def test_a_floor_that_fills_the_cap_asks_nobody(settings, monkeypatch):
 
     assert out["pages_to_read"] == FLOOR[:3]
     assert calls == []
+
+
+# One of each kind, not every language's copy: a site in four languages
+# filled the cap with its own Impressum and left the model nothing (review).
+
+
+def model_sees(monkeypatch, urls: list[str]) -> dict:
+    """Stubs the model and keeps what it was shown."""
+    shown: dict = {}
+
+    async def ask(prompt_name, output_model, *, settings, **variables):
+        shown.update(variables)
+        return output_model(urls=urls), None
+
+    monkeypatch.setattr(node.llm, "ask", ask)
+    return shown
+
+
+def languages(*codes: str) -> list[str]:
+    paths = {
+        "de": ("impressum", "kontakt", "ueber-uns"),
+        "fr": ("mentions-legales", "contact", "a-propos"),
+        "it": ("note-legali", "contatti", "chi-siamo"),
+        "en": ("imprint", "contact", "about-us"),
+    }
+    return [f"{SITE}/{code}/{path}" for code in codes for path in paths[code]]
+
+
+async def test_a_two_language_site_leaves_slots_for_the_model(settings, monkeypatch):
+    shown = model_sees(monkeypatch, PRODUCTS[:10])
+    pages = languages("de", "fr")
+
+    out = await pick_pages(state([f"{SITE}/", *pages, *PRODUCTS]), settings=settings)
+
+    # the home page and the first offered of each kind; six slots are left
+    assert out["pages_to_read"] == [f"{SITE}/", *pages[:3], *PRODUCTS[:6]]
+    assert shown["limit"] == "6"
+
+
+async def test_a_four_language_site_leaves_slots_for_the_model(settings, monkeypatch):
+    shown = model_sees(monkeypatch, PRODUCTS[:10])
+    pages = languages("de", "fr", "it", "en")
+
+    out = await pick_pages(state([f"{SITE}/", *pages, *PRODUCTS]), settings=settings)
+
+    assert out["pages_to_read"] == [f"{SITE}/", *pages[:3], *PRODUCTS[:6]]
+    assert shown["limit"] == "6"
+
+
+async def test_the_floor_is_not_offered_to_the_model_again(settings, monkeypatch):
+    shown = model_sees(monkeypatch, [])
+    pages = languages("de", "fr")
+
+    await pick_pages(state([f"{SITE}/", *pages, *PRODUCTS]), settings=settings)
+
+    offered = shown["pages"]
+    assert f"{SITE}/de/impressum" not in offered
+    assert f"{SITE}/\n" not in offered
+    assert f"{SITE}/fr/mentions-legales" in offered  # another copy stays choosable
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/shop/kontaktlinsen",
+        "/produkte/steamer-pro",
+        "/teamsport",
+        "/blog/roundabout",
+    ],
+)
+async def test_a_word_inside_a_product_path_is_not_a_floor_page(
+    settings, monkeypatch, path
+):
+    model_returns(monkeypatch, [])
+
+    out = await pick_pages(state([*PRODUCTS, f"{SITE}{path}"]), settings=settings)
+
+    assert out["pages_to_read"] == [SITE]
