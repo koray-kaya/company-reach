@@ -1,4 +1,4 @@
-# Copy to profile.toml (gitignored) and edit.
+# Copy to profile.toml (gitignored) and edit. Every value below is fictional.
 #
 # goal     — one sentence. What kind of company do you want to reach?
 #
@@ -16,7 +16,13 @@
 #            moved top-5 agreement with the labels from 1/5 to 3/5 and
 #            removed a +1.6-point generosity bias.
 #
-# about_me — who is writing. Used in M6 to draft the invitation.
+# about_me — background for the model that writes the one sentence of the
+#            invitation it writes ("Ich schreibe Ihnen, weil ..."). Say what
+#            the thesis asks, in plain words. Code already writes who you
+#            are, your school and the request, from [sender] below, so leave
+#            them out here: a school named here reached drafts as an invented
+#            "Universität". Do not write that nothing is sold or that there
+#            is no call: that denial makes a mail sound like selling.
 #
 # survey_url — the form every invitation links to, https:// only. The tool
 #            links to <survey_url>/?c=<UID>&l=de, so a response can be tied
@@ -26,6 +32,43 @@
 
 goal = "Swiss companies that make or process a product and sell it on — firms that have to find suppliers to buy from and customers to sell to. Not local trades whose customers come to them: repair workshops, on-site installers, building crafts, architecture and planning offices. Not pure services."
 
-about_me = "A master's student at a Swiss university, writing a thesis on how small firms find customers, suppliers and competitors. I am asking for 15 minutes to fill in a short online form — no phone call, no meeting, nothing to sell."
+about_me = "A master's thesis on how small firms find customers, suppliers and competitors, asked of the firms themselves in a short online questionnaire."
 
 survey_url = "https://survey.example/form"
+
+# [sender] — who writes. Required before anything is drafted; scoring and
+# site finding run without it. `company-reach doctor` names what is missing.
+[sender]
+name = "Lena Brunner"
+# the closing's third line, programme optional
+affiliation = "Masterstudentin, Hochschule Beispiel"
+# as the subject names it: "Masterarbeit an der HSB"
+school_short = "HSB"
+# optional: "studiere an der HSB in Musterstadt"; the real campus only
+place = "Musterstadt"
+# optional, and only with the supervisor's consent: "Betreut von ..."
+# supervisor = "Prof. Dr. Hans Vorbild"
+
+# [invitation] — what the mail says about the survey. Every sentence whose
+# fact you have not confirmed stays off: set a boolean to true only once it
+# is true.
+[invitation]
+# the end of "Es geht darum, ...". Required before drafting.
+topic = "wie KMU zu Kunden und Lieferanten kommen"
+# time three people filling in the form; say 10 if it takes 10
+minutes = 15
+# optional closing date, a TOML date; doctor wants it 14 days ahead
+# closes = 2026-10-30
+# the last page lets the reader request the results, and you will send them
+offer_results = false
+# the form needs no account ("ohne Anmeldung")
+no_login = false
+# one reminder is allowed. Every mail sent while this is false promises
+# "Ich schreibe Ihnen nur dieses eine Mal", for good.
+reminder = false
+# the "voll" / "kurz" length A/B, by a hash of the UID; worth it only above
+# about 200 sends
+experiment = false
+# false: only "Vielen Dank und freundliche Grüsse" is written, for a mail
+# client that adds the same signature itself
+sign_in_body = true

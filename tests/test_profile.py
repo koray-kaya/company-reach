@@ -1,3 +1,5 @@
+from datetime import date
+
 import pytest
 
 from company_reach.errors import ProfileError
@@ -60,3 +62,94 @@ def test_a_survey_url_that_is_not_https_is_an_error(tmp_path):
     path.write_text(TOML + 'survey_url = "http://survey.example/form"\n')
     with pytest.raises(ProfileError, match="https"):
         load_profile(path)
+
+
+# --- [sender] and [invitation] (frame@1) --------------------------------------
+
+FULL = (
+    TOML
+    + """survey_url = "https://survey.example/form"
+
+[sender]
+name = "Lena Brunner"
+affiliation = "Masterstudentin, OST Ostschweizer Fachhochschule"
+school_short = "OST"
+place = "St. Gallen"
+supervisor = "Prof. Dr. Hans Vorbild"
+
+[invitation]
+topic = "wie KMU zu Kunden und Lieferanten kommen"
+minutes = 15
+closes = 2026-10-30
+offer_results = true
+no_login = true
+"""
+)
+
+
+def test_sender_and_invitation_sections_load(tmp_path):
+    path = tmp_path / "profile.toml"
+    path.write_text(FULL)
+    profile = load_profile(path)
+    assert profile.sender.name == "Lena Brunner"
+    assert profile.sender.school_short == "OST"
+    assert profile.sender.place == "St. Gallen"
+    assert profile.sender.supervisor == "Prof. Dr. Hans Vorbild"
+    inv = profile.invitation
+    assert inv.topic == "wie KMU zu Kunden und Lieferanten kommen"
+    assert inv.minutes == 15
+    assert (inv.offer_results, inv.no_login) == (True, True)
+    # every sentence whose fact is not confirmed stays off by default
+    assert (inv.reminder, inv.experiment) == (False, False)
+    assert inv.sign_in_body is True
+    assert profile.drafting_gaps() == []
+
+
+def test_closes_is_read_as_a_date(tmp_path):
+    path = tmp_path / "profile.toml"
+    path.write_text(FULL)
+    assert load_profile(path).invitation.closes == date(2026, 10, 30)
+
+
+def test_a_profile_without_sender_still_loads(tmp_path):
+    # scoring and site finding need none of it; drafting refuses without it
+    path = tmp_path / "profile.toml"
+    path.write_text(TOML)
+    profile = load_profile(path)
+    assert profile.sender.name == ""
+    assert profile.invitation.closes is None
+    assert profile.invitation.minutes == 15
+    assert profile.drafting_gaps() == [
+        "survey_url",
+        "sender.name",
+        "sender.affiliation",
+        "sender.school_short",
+        "invitation.topic",
+    ]
+
+
+def test_a_misspelt_field_is_named(tmp_path):
+    # a typo would otherwise vanish, and the mail would lack the field
+    path = tmp_path / "profile.toml"
+    path.write_text(TOML + '[sender]\nschool = "OST"\n')
+    with pytest.raises(ProfileError, match="school"):
+        load_profile(path)
+
+
+def test_a_wrong_type_is_a_profile_error(tmp_path):
+    path = tmp_path / "profile.toml"
+    path.write_text(TOML + '[invitation]\nminutes = "fifteen"\n')
+    with pytest.raises(ProfileError, match="minutes"):
+        load_profile(path)
+
+
+def test_the_example_profile_loads_and_names_no_university():
+    from pathlib import Path
+
+    example = Path(__file__).parents[1] / "profile.toml.example"
+    profile = load_profile(example)
+    assert profile.drafting_gaps() == []
+    # a school named in about_me reached drafts as an invented "Universität",
+    # and a denial of selling made them sound like selling
+    assert "universit" not in profile.about_me.lower()
+    assert "nothing to sell" not in profile.about_me.lower()
