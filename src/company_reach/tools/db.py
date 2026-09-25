@@ -51,6 +51,17 @@ _ADDED_COLUMNS = {
     ("contacts", "addresses"): "TEXT",
     ("searches", "result_count"): "INTEGER",
     ("searches", "error"): "TEXT",
+    ("contacts", "salutation"): "TEXT",
+    ("contacts", "salutation_origin"): "TEXT",
+    # frame@1: a draft of the M6/M7 shape has none of these, so it can
+    # never pass for a current one
+    ("drafts", "model_text"): "TEXT",
+    ("drafts", "frame_version"): "TEXT",
+    ("drafts", "arm"): "TEXT",
+    ("drafts", "problems"): "TEXT",
+    ("ledger", "frame_version"): "TEXT",
+    ("ledger", "arm"): "TEXT",
+    ("ledger", "contact_kind"): "TEXT",
 }
 
 
@@ -462,8 +473,8 @@ def record_contact(
     cur = conn.execute(
         """INSERT INTO contacts (run_id, uid, name, role, email, email_kind,
              source, source_url, source_date, linkedin_lead, alternatives,
-             addresses)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+             addresses, salutation, salutation_origin)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             run_id,
             uid,
@@ -477,9 +488,79 @@ def record_contact(
             contact.linkedin_lead,
             json.dumps(contact.alternatives, ensure_ascii=False),
             json.dumps([a.model_dump(exclude_none=True) for a in contact.addresses]),
+            contact.salutation,
+            contact.salutation_origin,
         ),
     )
     return cur.lastrowid
+
+
+def contact_for(
+    conn: sqlite3.Connection, run_id: str, uid: str
+) -> tuple[int, Contact] | None:
+    """The company's latest contact in a run, with its row id (the draft
+    refers to it), or None when the run found nobody to write to."""
+    row = conn.execute(
+        "select * from contacts where run_id = ? and uid = ? order by id desc limit 1",
+        (run_id, uid),
+    ).fetchone()
+    if row is None:
+        return None
+    addresses = json.loads(row["addresses"] or "[]")
+    if not addresses and row["email"] and row["email_kind"]:
+        # a run from before M7 stored only the chosen address
+        addresses = [{"email": row["email"], "kind": row["email_kind"]}]
+    return row["id"], Contact(
+        name=row["name"],
+        role=row["role"],
+        email=row["email"],
+        email_kind=row["email_kind"],
+        source=row["source"],
+        source_url=row["source_url"],
+        source_date=row["source_date"],
+        linkedin_lead=row["linkedin_lead"],
+        alternatives=json.loads(row["alternatives"] or "[]"),
+        addresses=addresses,
+        salutation=row["salutation"],
+        salutation_origin=row["salutation_origin"],
+    )
+
+
+def readdress_contact(
+    conn: sqlite3.Connection, run_id: str, uid: str, contact: Contact
+) -> None:
+    """The reviewer chose another of the card's addresses: the company's
+    latest contact row now says who the mail is for and where it goes. The
+    row keeps its id, so the draft still points at it."""
+    conn.execute(
+        """update contacts set name = ?, role = ?, email = ?, email_kind = ?,
+             salutation = ?, salutation_origin = ?, alternatives = ?,
+             addresses = ?
+            where id = (select max(id) from contacts where run_id = ? and uid = ?)""",
+        (
+            contact.name,
+            contact.role,
+            contact.email,
+            contact.email_kind,
+            contact.salutation,
+            contact.salutation_origin,
+            json.dumps(contact.alternatives, ensure_ascii=False),
+            json.dumps([a.model_dump(exclude_none=True) for a in contact.addresses]),
+            run_id,
+            uid,
+        ),
+    )
+
+
+def set_salutation(
+    conn: sqlite3.Connection, run_id: str, uid: str, salutation: str
+) -> None:
+    """The reviewer's choice on the card, on the company's latest contact."""
+    conn.execute(
+        """update contacts set salutation = ?, salutation_origin = 'reviewer'
+            where id = (select max(id) from contacts where run_id = ? and uid = ?)""",
+        (salutation, run_id, uid),
+    )
 
 
 def record_draft(
@@ -495,8 +576,9 @@ def record_draft(
     conn.execute("delete from drafts where run_id = ? and uid = ?", (run_id, uid))
     conn.execute(
         """INSERT INTO drafts (run_id, uid, contact_id, subject, body,
-             mailto_fits, prompt_version, model, created_at)
-           VALUES (?,?,?,?,?,?,?,?,?)""",
+             mailto_fits, prompt_version, model, created_at, model_text,
+             frame_version, arm)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             run_id,
             uid,
@@ -507,7 +589,53 @@ def record_draft(
             provenance.prompt_version,
             provenance.model,
             now(),
+            draft.model_text,
+            draft.frame_version,
+            draft.arm,
         ),
+    )
+
+
+def rewrite_draft(
+    conn: sqlite3.Connection,
+    draft_id: int,
+    draft: Draft,
+    *,
+    found: list[str],
+    contact_id: int | None = None,
+) -> None:
+    """The same draft rebuilt by code around the same sentence — the card's
+    salutation or address, or `redraft` after the profile or the contact
+    changed — with the outcome of checking it again. `contact_id` moves the
+    draft to the contact it now addresses."""
+    conn.execute(
+        """update drafts set subject = ?, body = ?, mailto_fits = ?,
+             model_text = ?, frame_version = ?, arm = ?, problems = ?,
+             contact_id = coalesce(?, contact_id)
+            where id = ?""",
+        (
+            draft.subject,
+            draft.body,
+            int(draft.mailto_fits),
+            draft.model_text,
+            draft.frame_version,
+            draft.arm,
+            "; ".join(found),
+            contact_id,
+            draft_id,
+        ),
+    )
+
+
+def record_draft_check(
+    conn: sqlite3.Connection, run_id: str, uid: str, found: list[str]
+) -> None:
+    """`check_draft`'s outcome on the company's draft: "" when it passed,
+    the rules it broke otherwise. A draft that was never checked keeps
+    null, and the card sends neither."""
+    conn.execute(
+        "update drafts set problems = ? where run_id = ? and uid = ?",
+        ("; ".join(found), run_id, uid),
     )
 
 
@@ -568,15 +696,35 @@ def record_decision(
     run_id: str | None = None,
     note: str | None = None,
     decided_at: str | None = None,
+    frame_version: str | None = None,
+    arm: str | None = None,
+    contact_kind: str | None = None,
 ) -> int:
     """Append one decision. Nothing in the ledger is ever updated or
-    deleted by the page: undoing a skip is an `undone` row after it."""
+    deleted by the page: undoing a skip is an `undone` row after it.
+
+    A `sent` row carries the draft's frame and arm and the kind of contact
+    it went to, copied here because `forget` and `purge` delete drafts and
+    contacts but keep the ledger — and the survey's answers are compared by
+    them."""
     if status not in DECISIONS:
         raise ValueError(f"status must be one of {DECISIONS}, not {status!r}")
     cur = conn.execute(
         """INSERT INTO ledger (uid, status, address, draft_id, run_id, note,
-             decided_at) VALUES (?,?,?,?,?,?,?)""",
-        (uid, status, address, draft_id, run_id, note, decided_at or now()),
+             decided_at, frame_version, arm, contact_kind)
+           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+        (
+            uid,
+            status,
+            address,
+            draft_id,
+            run_id,
+            note,
+            decided_at or now(),
+            frame_version,
+            arm,
+            contact_kind,
+        ),
     )
     return cur.lastrowid
 

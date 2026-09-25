@@ -112,3 +112,11 @@ p,h1,h2,blockquote{margin:0}
 .queries{margin:6px 0 0;padding-left:18px;font-size:13.5px;color:var(--muted)}
 .also{font-size:13px;color:var(--muted);margin-top:6px}
 form.app{margin:0}
+
+/* frame@1: the salutation toggle, and one hint per address row. */
+.salute{display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin-top:8px;font-size:13px;color:var(--muted)}
+.kind.warn{background:var(--warn);color:var(--warn-ink)}
+.btn.small{font-size:13px;padding:4px 10px}
+.btn.on{border-color:var(--blue);color:var(--blue);font-weight:700}
+.addr .rowhint{display:block;grid-column:2 / -1;font-size:13px;color:var(--muted);white-space:normal}
+.addr:has(input:disabled){cursor:not-allowed}

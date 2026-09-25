@@ -2,23 +2,38 @@
 
 The drafting prompt sees the company's profile, and the profile's
 description can quote a hostile page by design (#22). So this is the guard
-that matters rather than a tidiness rule:
+that matters rather than a tidiness rule. Under frame@1 the model writes one
+sentence and code writes the rest, so the checks come in two kinds.
 
-* the model's own text carries no link and no e-mail address;
-* the finished mail's only URL is the survey link code appended, byte for
-  byte;
-* it greets the contact by name, carries the data-protection sentence, is
-  at most 1,200 characters and fits in a `mailto:` link.
+The sentence (`sentence_problems`), each rule worded as feedback for the one
+redraft: it begins "Ich schreibe Ihnen, weil", is one German sentence of at
+most 25 words, ends with a full stop, and carries no role noun (the wrong
+gender is the worst mistake this mail can make), no praise or denial of
+selling, nothing the frame already says, no legal form, no year, no
+placeholder, no e-mail address and no link — written out, defanged, or
+under any ending.
 
-The last three are assembled by code and should never fail; they are
-checked anyway, because a check that only covers what can go wrong today
-stops covering it the day the assembly changes.
+The frame (`frame_problems`): the body is exactly what the frame builds
+around that sentence, routing line, greeting, privacy text and signature
+included; the subject is the frame's; the survey link is the body's only
+URL, byte for byte; nothing the profile supplied is a placeholder or spelt
+with ß (a name from a page or the register is left as written); at most
+1,300 characters, and it fits in a `mailto:` link, which is the binding
+limit. The frame is assembled by code and should never fail; it is checked
+anyway, because a check that only covers what can go wrong today stops
+covering it the day the assembly changes.
 
-A draft that fails is written once more, with the model told why. If the
-second fails too, the company is held and the draft deleted, so nothing that
-failed these checks is one click from being sent. What survives every rule
-is non-URL steering — a sentence a hostile page talked the model into — and
-for that the control is the human reading the draft before sending it.
+Only a sentence that fails is written once more, with the model told what
+is wrong with the sentence and nothing else — the frame is not the model's
+to fix. If the second sentence fails too, the company is held and the draft
+deleted; if the second attempt raises, the first is deleted before the
+error travels on. A draft whose sentence passes but whose frame fails is
+kept with its problems: the card refuses it, and `redraft` rebuilds it
+without a model call once the profile is fixed. The outcome is stored on
+the draft row, and the card sends only a draft that passed. What survives
+every rule is non-URL steering — a sentence a hostile page talked the model
+into — and for that the control is the human reading the draft before
+sending it.
 """
 
 import re
@@ -27,11 +42,24 @@ from typing import Any
 
 from company_reach.models import Contact, Draft
 from company_reach.nodes import draft as draft_node
+from company_reach.profile import Profile, load_profile
 from company_reach.settings import Settings
-from company_reach.tools.db import connect, delete_draft
-from company_reach.tools.invitation import privacy_sentence
+from company_reach.tools.db import connect, delete_draft, record_draft_check
+from company_reach.tools.invitation import (
+    FRAME_VERSION,
+    arm_for,
+    assemble,
+    subject,
+    survey_link,
+)
+from company_reach.tools.mailto import build
 
-MAX_CHARS = 1200
+PREFIX = "Ich schreibe Ihnen, weil "
+MAX_WORDS = 25  # the prompt asks for 20
+MAX_SENTENCE_CHARS = 180
+# The frame alone is about 1,000 characters with long names; the study's
+# longest fictional mail measured 1,276.
+MAX_CHARS = 1300
 
 # A scheme, "www.", or a bare domain under a common TLD ("shop.ch/angebot").
 # Ordinary German abbreviations ("z.B.", "St.Gallen", "30.9.2026") end in
@@ -42,37 +70,237 @@ _LINK = re.compile(
     r"|info|swiss|shop|example)\b\S*",
     re.IGNORECASE,
 )
+# Any other ending, in lower case: "evil.xyz", "shop.app". Upper case after
+# the dot is German ("St.Gallen", "z.B."), and one letter is an abbreviation.
+_ANY_DOMAIN = re.compile(r"\b[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[a-z]{2,24}\b")
+# A link or address written so a filter does not see it.
+_DEFANGED = re.compile(
+    r"\bh[tx]{2}ps?\b|[\[({]\s*(?:\.|dot|punkt|at|ät|@)\s*[\])}]"
+    r"|\s(?:dot|punkt)\s+(?:ch|li|com|net|org|de|at|io|info|swiss)\b",
+    re.IGNORECASE,
+)
 _EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 _URL_IN_BODY = re.compile(r"https?://\S+")
+
+# A role noun describes the reader, and in the wrong gender it is the worst
+# mistake this mail can make; code writes the greeting. Matched at the end
+# of a word too, since German compounds it ("Firmengründer",
+# "Filialleiterin"), and case-insensitive for the same reason.
+_ROLE = re.compile(
+    r"(Inhaber|Geschäftsführer|Gründer|Chef|Leiter|Präsident|Direktor"
+    r"|Unternehmer|Teilhaber|Verwaltungsrat|Verwaltungsrätin|CEO)(in|innen)?$",
+    re.IGNORECASE,
+)
+# Things, not people, that end the same way.
+_NOT_ROLES = (
+    "halbleiter", "ableiter", "stromleiter", "wärmeleiter", "lichtleiter",
+    "supraleiter", "wellenleiter",
+)  # fmt: skip
+_WORD = re.compile(r"[\wäöüÄÖÜéèàç]+")
+# What code writes and the sentence must not: the school (an invented one
+# was the audit's first finding), a salutation, a greeting.
+_FRAME_WORDS = re.compile(
+    r"\b(Universität\w*|Hochschule\w*|Fachhochschule\w*|studier\w*|Student\w*"
+    r"|Professor\w*|Herrn?|Frau|Sehr geehrte\w*|Guten Tag|Grüezi)\b",
+    re.IGNORECASE,
+)
+
+
+def _role_noun(text: str) -> str | None:
+    for word in _WORD.findall(text):
+        low = word.lower()
+        if any(low.endswith(thing) for thing in _NOT_ROLES):
+            continue
+        if _ROLE.search(word):
+            return word
+    return None
+
+
+# Praise, denials of selling, and what the frame already says.
+_BANNED = re.compile(
+    r"\b(wertvoll\w*|besonders|genau|spannend\w*|innovativ\w*|führend\w*"
+    r"|renommiert\w*|einzigartig\w*|beeindruckend\w*|aus erster Hand"
+    r"|aus eigener Erfahrung|Praktiker\w*|Anruf\w*|Telefon\w*|Termin\w*"
+    r"|Treffen|Verkaufsabsicht|Umfrage\w*|Fragebogen\w*|Masterarbeit|Minuten"
+    r"|Link|Danke|Dank|Grüsse)\b",
+    re.IGNORECASE,
+)
+_LEGAL_FORM = re.compile(r"\b(AG|GmbH|SA|Sàrl|KG|Co\.)(?=\W|$)")
+_YEAR = re.compile(r"\b(18|19|20)\d{2}\b")
+_PLACEHOLDER = re.compile(r"[\[\]{}<>®™©]|\bXY\b|\bXX\b|\.\.\.|…")
+# A second sentence: "!" or "?", or a full stop after a word of four letters
+# or more and before a capital. "St. Gallen" and "z. B." pass.
+_SECOND = re.compile(r"[!?]|\b\w{4,}\.\s+[A-ZÄÖÜ]")
+# Words German does not use. Two of them make the sentence English.
+_ENGLISH = re.compile(
+    r"\b(the|and|of|with|your|our|which|that|is|are|for|from|this|we)\b",
+    re.IGNORECASE,
+)
 
 Redraft = Callable[..., Awaitable[dict]]
 
 
-def problems(draft: Draft, contact: Contact) -> list[str]:
+def _links(text: str) -> str | None:
+    for pattern in (_LINK, _ANY_DOMAIN, _DEFANGED):
+        if found := pattern.search(text):
+            return found.group().strip()
+    return None
+
+
+def sentence_problems(text: str) -> list[str]:
+    """What is wrong with the model's one sentence, worded as feedback."""
+    found: list[str] = []
+    if "\n" in text:
+        found.append("the sentence contains a line break")
+    if not text.startswith(PREFIX):
+        found.append(f"the sentence must begin with '{PREFIX.strip()}'")
+    if not text.rstrip().endswith("."):
+        found.append("the sentence must end with a full stop")
+    if _SECOND.search(text):
+        found.append("write one sentence, not two, and no question")
+    words = len(text.split())
+    if words > MAX_WORDS or len(text) > MAX_SENTENCE_CHARS:
+        found.append(
+            f"the sentence is longer than {MAX_WORDS} words or "
+            f"{MAX_SENTENCE_CHARS} characters ({words} words); write at most 20"
+        )
+    if role := _role_noun(text):
+        found.append(f"the sentence describes the reader with a role noun ({role})")
+    if own := _FRAME_WORDS.search(text):
+        found.append(
+            f"the sentence says '{own.group()}', which code writes: the school, "
+            "the salutation and the greeting are not the sentence's to say"
+        )
+    if banned := _BANNED.search(text):
+        found.append(
+            f"the sentence uses '{banned.group()}', which the rest of the mail "
+            "already covers or which reads as praise or selling"
+        )
+    if legal := _LEGAL_FORM.search(text):
+        found.append(
+            f"write the company's name without its legal form ({legal.group()})"
+        )
+    if year := _YEAR.search(text):
+        found.append(f"leave out years ({year.group()})")
+    if placeholder := _PLACEHOLDER.search(text):
+        found.append(
+            f"the sentence contains a placeholder or symbol ({placeholder.group()})"
+        )
+    if len({w.lower() for w in _ENGLISH.findall(text)}) >= 2:
+        found.append("write the sentence in German")
+    if email := _EMAIL.search(text):
+        found.append(f"the sentence contains an e-mail address ({email.group()})")
+        text = _EMAIL.sub(" ", text)  # so the address is not counted twice
+    if link := _links(text):
+        found.append(
+            f"the sentence contains a link ({link}); the survey link is added "
+            "below it by code"
+        )
+    return found
+
+
+def problems(draft: Draft, contact: Contact, profile: Profile) -> list[str]:
     """Every rule the draft breaks, worded for the model's second attempt
     and for the reviewer's card. Empty means it may be sent."""
-    found: list[str] = []
-    text, body = draft.model_text, draft.body
+    return sentence_problems(draft.model_text) + frame_problems(draft, contact, profile)
 
-    if email := _EMAIL.search(text):
-        found.append(f"the text contained an e-mail address ({email.group()})")
-        text = _EMAIL.sub(" ", text)  # so the address is not counted twice
-    if link := _LINK.search(text):
-        found.append(
-            f"the text contained a link ({link.group()}); the survey link is "
-            "added below the text by code"
-        )
+
+def _profile_texts(profile: Profile) -> dict[str, str]:
+    """The profile's texts the frame writes into every mail."""
+    return {
+        **{f"sender.{k}": v for k, v in profile.sender.model_dump().items()},
+        "invitation.topic": profile.invitation.topic,
+    }
+
+
+def eszett_fields(profile: Profile) -> list[str]:
+    """Profile fields written with ß. Swiss spelling writes ss; a name from
+    a page or the register is the person's own and is left alone."""
+    return [k for k, v in _profile_texts(profile).items() if "ß" in str(v)]
+
+
+def frame_problems(draft: Draft, contact: Contact, profile: Profile) -> list[str]:
+    """What is wrong with everything code wrote around the sentence. No
+    model call can fix these: they come from the profile, the contact, or
+    code, so a draft failing only here is kept, unsendable, for `redraft`
+    once the cause is fixed."""
+    found: list[str] = []
+    body = draft.body
+
     if _URL_IN_BODY.findall(body) != [draft.link]:
         found.append("the survey link is not the only URL in the mail")
-    if not body.startswith(draft_node.greeting(contact) + "\n"):
-        found.append(f"the greeting does not name {contact.name or 'nobody'}")
-    if privacy_sentence(contact.source) not in body:
-        found.append("the data-protection sentence is missing")
+    framed = assemble(
+        contact,
+        draft.model_text,
+        link=draft.link,
+        sender=profile.sender,
+        inv=profile.invitation,
+        short=draft.arm == "kurz",
+    )
+    if body != framed:
+        found.append(
+            "the mail is not what the frame writes around the sentence "
+            "(routing line, greeting, privacy text or signature changed)"
+        )
+    if draft.subject != subject(contact, profile.sender, profile.invitation):
+        found.append("the subject is not the one the frame writes")
+    if _EMAIL.search(draft.subject) or _links(draft.subject):
+        found.append(f"the subject contains a link or address ({draft.subject})")
+
+    # What code wrote from the profile and the contact: everything but the
+    # sentence and the survey link. A name is read off a page, and reaches
+    # the greeting even where no subject or routing line carries it.
+    frame = body.replace(draft.model_text, "").replace(draft.link, "")
+    if address := _EMAIL.search(frame):
+        found.append(
+            f"the mail carries an address outside the survey link ({address.group()})"
+        )
+    elif link := _links(frame):
+        found.append(f"the mail carries a link outside the survey link ({link})")
+    if placeholder := _PLACEHOLDER.search(f"{draft.subject}\n{frame}"):
+        found.append(
+            f"the mail contains a placeholder ({placeholder.group()}); fill in "
+            "[sender] and [invitation] in profile.toml"
+        )
+    if fields := eszett_fields(profile):
+        found.append(
+            f"Swiss spelling: write ss, never ß, in {', '.join(fields)} in profile.toml"
+        )
     if len(body) > MAX_CHARS:
-        found.append(f"the mail is longer than 1,200 characters ({len(body)})")
+        found.append(f"the mail is longer than 1,300 characters ({len(body)})")
     if not draft.mailto_fits:
         found.append("the mail is too long for a mailto: link")
     return found
+
+
+def reassemble(
+    sentence: str, contact: Contact, profile: Profile, uid: str
+) -> tuple[Draft, list[str]]:
+    """The mail rebuilt by code around a sentence the model already wrote,
+    from today's profile and contact — no model call — and checked again.
+    Used when only the frame is stale: a new survey_url or closing date, a
+    newer contact, the reviewer's salutation or address."""
+    link = survey_link(profile.survey_url, uid)
+    arm = arm_for(uid, experiment=profile.invitation.experiment)
+    body = assemble(
+        contact,
+        sentence,
+        link=link,
+        sender=profile.sender,
+        inv=profile.invitation,
+        short=arm == "kurz",
+    )
+    title = subject(contact, profile.sender, profile.invitation)
+    rebuilt = Draft(
+        subject=title,
+        body=body,
+        model_text=sentence,
+        link=link,
+        mailto_fits=build(contact.email or "", title, body).fits,
+        frame_version=FRAME_VERSION,
+        arm=arm,
+    )
+    return rebuilt, problems(rebuilt, contact, profile)
 
 
 async def check_draft(
@@ -83,20 +311,41 @@ async def check_draft(
 ) -> dict:
     """`redraft` is the `draft` node, passed in so a test can hand it a
     double and count how often it was asked."""
+    run_id, uid = state["run_id"], state["uid"]
     contact: Contact = state["contact"]
-    found = problems(state["draft"], contact)
-    if not found:
+    profile = load_profile(settings.profile_path)
+    first = state["draft"]
+    wrong = sentence_problems(first.model_text)
+    if not wrong:
+        # the sentence is fine: whatever else fails, the model cannot fix it
+        with connect(settings.db_path) as conn:
+            record_draft_check(
+                conn, run_id, uid, frame_problems(first, contact, profile)
+            )
         return {}
 
-    second = (
-        await redraft(state | {"draft_feedback": "; ".join(found)}, settings=settings)
-    )["draft"]
-    found = problems(second, contact)
-    if not found:
+    try:
+        second = (
+            await redraft(
+                state | {"draft_feedback": "; ".join(wrong)}, settings=settings
+            )
+        )["draft"]
+    except Exception:
+        # the first draft failed; nothing that failed may stay one click
+        # from being sent while the error travels to the result row
+        with connect(settings.db_path) as conn:
+            delete_draft(conn, run_id, uid)
+        raise
+    if not sentence_problems(second.model_text):
+        with connect(settings.db_path) as conn:
+            record_draft_check(
+                conn, run_id, uid, frame_problems(second, contact, profile)
+            )
         return {"draft": second}
 
+    found = problems(second, contact, profile)
     with connect(settings.db_path) as conn:
-        delete_draft(conn, state["run_id"], state["uid"])
+        delete_draft(conn, run_id, uid)
     return {
         "draft": None,
         "recommendation": "hold",

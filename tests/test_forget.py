@@ -150,3 +150,38 @@ def test_a_home_page_that_moved_is_deleted_from_the_cache(settings, data):
     )
     forget(settings, SEND)
     assert not (cache / "c3.html").exists()
+
+
+def test_the_promise_matches_what_forget_deletes(settings, data):
+    """The mail promises "Ein kurzes «Nein» genügt, dann lösche ich Ihren
+    Namen". `forget` deletes the name and keeps the address on the
+    never-again list for good, so no text may promise to delete the
+    address, and the docstring quotes the promise the mail makes."""
+    import itertools
+    import re
+
+    from fictional_profile import INVITATION
+
+    import company_reach.forget
+    from company_reach.models import Contact
+    from company_reach.tools.invitation import privacy
+
+    for source, kind, name in itertools.product(
+        ("site", "shab"),
+        ("seen", "generic", "constructed"),
+        ("Anna Muster", "Reto", None),
+    ):
+        if kind == "constructed" and name != "Anna Muster":
+            continue  # nobody named is never written to at a guessed address
+        text = privacy(
+            Contact(name=name, email="a@b.example", email_kind=kind, source=source),
+            INVITATION,
+        )
+        assert not re.search(r"lösche ich (sie|beides|Ihre|diese)\b", text), text
+    promise = "Ein kurzes «Nein» genügt, dann lösche ich Ihren Namen"
+    assert promise in " ".join(company_reach.forget.__doc__.split())
+
+    forget(settings, "info@muster-metallbau.ch")
+    with connect(settings.db_path) as conn:
+        assert conn.execute("select count(*) from drafts").fetchone()[0] == 0
+        assert is_suppressed(conn, "info@muster-metallbau.ch")

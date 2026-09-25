@@ -524,3 +524,241 @@ def test_a_leftover_unfinished_company_is_reported(settings, monkeypatch):
     )
     assert "company-reach retry" not in dry.output
     assert "finish them with: company-reach run --run-id r9 --dry" in dry.output
+
+
+# --- redraft (frame@1) --------------------------------------------------------
+
+NEW_SURVEY = "https://survey.test/new-form"
+_PROV = llm.Provenance(
+    model="test-model",
+    prompt="draft",
+    prompt_version="4",
+    reasoning_effort="low",
+    prompt_tokens=1,
+    completion_tokens=1,
+    finish_reason="stop",
+    seconds=0.1,
+)
+
+
+def _card(settings, uid):
+    """The card as the page would show it, against today's profile."""
+    from review_seed import RUN
+
+    from company_reach.profile import load_profile
+    from company_reach.review.cards import load_cards
+
+    profile = load_profile(settings.profile_path)
+    with connect(settings.db_path) as conn:
+        cards = load_cards(
+            conn,
+            RUN,
+            survey_url=profile.survey_url,
+            sending_approved=True,
+            profile=profile,
+        )
+    return next(c for c in cards if c.uid == uid)
+
+
+def _bad_stored_sentence(settings, uid, text="Ihre Firma ist besonders wertvoll."):
+    """A stored draft whose own sentence breaks the rules: only the model
+    can write a new one."""
+    with connect(settings.db_path) as conn:
+        conn.execute("update drafts set model_text = ? where uid = ?", (text, uid))
+
+
+def _redraft_setup(settings, monkeypatch, *, sentence=None):
+    """The seeded run, then the survey moved: every draft links to the old
+    one. Only the drafting prompt may be asked, and nothing may be fetched
+    or searched (respx refuses every request)."""
+    from fictional_profile import profile_text
+    from review_seed import SENTENCE, seed
+
+    from company_reach.models import DraftAnswer
+
+    seed(settings.db_path)
+    settings.profile_path.write_text(profile_text(NEW_SURVEY))
+    asked: list[str] = []
+
+    async def only_draft(prompt_name, output_model, *, settings, **variables):
+        asked.append(prompt_name)
+        assert prompt_name == "draft", f"redraft asked {prompt_name!r}"
+        answer = DraftAnswer(sentence=sentence or SENTENCE)
+        return answer, _PROV
+
+    monkeypatch.setattr(llm, "ask", only_draft)
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    return asked
+
+
+@respx.mock
+def test_redraft_makes_stale_cards_sendable(settings, monkeypatch):
+    """Review focus 3: `survey_url` changed after drafts existed. `redraft`
+    restores every undecided send card from SQLite — draft and check only,
+    no search, no fetch — and no card offers the old link any more."""
+    from review_seed import RUN, SEND, SURVEY
+
+    from company_reach.tools.invitation import survey_link
+
+    asked = _redraft_setup(settings, monkeypatch)
+    assert "survey_url" in _card(settings, SEND).send_block
+
+    r = runner.invoke(cli.app, ["redraft", RUN])
+    assert r.exit_code == 0, r.output
+    # only the frame changed: rebuilt around the same sentence, no model call
+    assert asked == []
+    assert "1 redrafted · 1 sendable" in r.output
+
+    card = _card(settings, SEND)
+    assert card.send_block is None
+    assert card.draft.link == survey_link(NEW_SURVEY, SEND)
+    assert f"{SURVEY}/" not in card.draft.body
+
+
+@respx.mock
+def test_redraft_rebuilds_a_profile_change_without_a_model_call(settings, monkeypatch):
+    from fictional_profile import profile_text
+    from review_seed import RUN, SEND, SURVEY
+
+    asked = _redraft_setup(settings, monkeypatch)
+    moved = profile_text(SURVEY).replace("closes = 2026-10-30", "closes = 2026-11-13")
+    settings.profile_path.write_text(
+        moved.replace('supervisor = "Prof. Dr. Hans Vorbild"\n', "")
+    )
+    assert "profile" in _card(settings, SEND).send_block
+
+    r = runner.invoke(cli.app, ["redraft", RUN])
+    assert r.exit_code == 0, r.output
+    assert asked == []
+    card = _card(settings, SEND)
+    assert card.send_block is None
+    assert "offen bis Freitag, 13. November" in card.draft.body
+    assert "Betreut von" not in card.draft.body
+
+
+@respx.mock
+def test_redraft_follows_a_newer_contact(settings, monkeypatch):
+    from fictional_profile import profile_text
+    from review_seed import RUN, SEND, SURVEY
+
+    from company_reach.models import Contact
+    from company_reach.tools.db import record_contact
+
+    asked = _redraft_setup(settings, monkeypatch)
+    settings.profile_path.write_text(profile_text(SURVEY))
+    with connect(settings.db_path) as conn:
+        record_contact(
+            conn,
+            RUN,
+            SEND,
+            Contact(
+                name="Beat Beispiel",
+                role="Geschäftsführer",
+                email="info@muster-metallbau.ch",
+                email_kind="generic",
+                source="site",
+            ),
+        )
+    assert "contact" in _card(settings, SEND).send_block
+
+    r = runner.invoke(cli.app, ["redraft", RUN])
+    assert r.exit_code == 0, r.output
+    assert asked == []
+    card = _card(settings, SEND)
+    assert card.send_block is None
+    assert "Guten Tag Beat Beispiel" in card.draft.body
+
+
+@respx.mock
+def test_redraft_asks_the_model_when_the_sentence_itself_fails(settings, monkeypatch):
+    from review_seed import RUN, SEND
+
+    asked = _redraft_setup(settings, monkeypatch)
+    _bad_stored_sentence(settings, SEND)
+    r = runner.invoke(cli.app, ["redraft", RUN])
+    assert r.exit_code == 0, r.output
+    assert asked == ["draft"]
+    assert _card(settings, SEND).send_block is None
+
+
+@respx.mock
+def test_redraft_leaves_a_decided_card_alone(settings, monkeypatch):
+    from review_seed import RUN, SEND
+
+    from company_reach.tools.db import record_decision
+
+    asked = _redraft_setup(settings, monkeypatch)
+    with connect(settings.db_path) as conn:
+        record_decision(conn, SEND, "skipped", note="Not a fit")
+    r = runner.invoke(cli.app, ["redraft", RUN])
+    assert r.exit_code == 0, r.output
+    assert asked == []
+    assert "nothing to redraft" in r.output
+
+
+@respx.mock
+def test_redraft_a_current_card_only_when_named(settings, monkeypatch):
+    from fictional_profile import profile_text
+    from review_seed import RUN, SEND, SURVEY
+
+    asked = _redraft_setup(settings, monkeypatch)
+    settings.profile_path.write_text(profile_text(SURVEY))  # nothing is stale
+    assert runner.invoke(cli.app, ["redraft", RUN]).exit_code == 0
+    assert asked == []
+    r = runner.invoke(cli.app, ["redraft", RUN, "--uid", SEND])
+    assert r.exit_code == 0, r.output
+    assert asked == ["draft"]
+
+
+@respx.mock
+def test_redraft_that_fails_twice_holds_the_company(settings, monkeypatch):
+    from review_seed import RUN, SEND
+
+    asked = _redraft_setup(
+        settings, monkeypatch, sentence="Ihre Firma ist besonders wertvoll."
+    )
+    _bad_stored_sentence(settings, SEND)
+    r = runner.invoke(cli.app, ["redraft", RUN])
+    assert r.exit_code == 0, r.output
+    assert asked == ["draft", "draft"]
+    card = _card(settings, SEND)
+    assert card.recommendation == "hold"
+    assert card.draft is None
+    assert "failed its checks twice" in card.reason
+
+
+@respx.mock
+def test_redraft_picks_up_a_hold_whose_draft_failed_twice(settings, monkeypatch):
+    """A draft that failed twice was deleted and the company held; the
+    cause may be gone (a profile fixed, a better model). `redraft` tries
+    again, and a draft that passes makes it a send card again."""
+    from fictional_profile import profile_text
+    from review_seed import RUN, SEND, SURVEY
+
+    asked = _redraft_setup(settings, monkeypatch)
+    settings.profile_path.write_text(profile_text(SURVEY))
+    with connect(settings.db_path) as conn:
+        conn.execute("delete from drafts where uid = ?", (SEND,))
+        conn.execute(
+            "update results set recommendation = 'hold', reason = ? where uid = ?",
+            ("the draft failed its checks twice: the sentence uses 'wertvoll'", SEND),
+        )
+    r = runner.invoke(cli.app, ["redraft", RUN])
+    assert r.exit_code == 0, r.output
+    assert asked == ["draft"]
+    card = _card(settings, SEND)
+    assert card.recommendation == "send"
+    assert "general inbox" in card.reason
+    assert card.send_block is None
+
+
+def test_redraft_without_sender_asks_no_model(settings, monkeypatch):
+    from fictional_profile import profile_text
+    from review_seed import RUN
+
+    asked = _redraft_setup(settings, monkeypatch)
+    settings.profile_path.write_text(profile_text(NEW_SURVEY, sections=False))
+    r = runner.invoke(cli.app, ["redraft", RUN])
+    assert r.exit_code == 1
+    assert "sender.name" in r.output
+    assert asked == []

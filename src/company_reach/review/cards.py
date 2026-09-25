@@ -10,6 +10,12 @@ Send is refused, with the reason the card shows, when any of these holds
 * the company is already decided, or on the never-again list;
 * there is no draft — a hold or a skip was never drafted, and a draft that
   failed its checks twice was deleted;
+* the draft was written with an older frame, was never checked, or failed
+  its checks: Send rests on the latest check's outcome, never on a draft
+  row existing;
+* the draft no longer matches today's profile or contact — a new closing
+  date, a supervisor taken out, a newer contact found by a retry: the frame
+  is checked again here, in code, on every load;
 * ethics approval is not recorded (`SENDING_APPROVED` in `.env`);
 * the draft's survey link is a placeholder, or points somewhere other than
   the profile's current `survey_url`.
@@ -21,12 +27,21 @@ import sqlite3
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
-from company_reach.models import CompanyProfile, Contact, dotted_uid
+from company_reach.models import CompanyProfile, Contact, Draft, dotted_uid
+from company_reach.nodes.check_draft import problems
+from company_reach.profile import Profile
 from company_reach.tools.db import (
     company_by_uid,
+    contact_for,
     decision_for,
     is_suppressed,
     search_log,
+)
+from company_reach.tools.invitation import (
+    FRAME_VERSION,
+    needs_check,
+    salutation,
+    split_name,
 )
 from company_reach.tools.mailto import build
 
@@ -37,6 +52,15 @@ _TIERS = {
     "model": "model choice",
 }
 _ORDER = {"send": 0, "hold": 1, "skip": 2}
+# Where Frau / Herr came from, as the card says it next to the toggle.
+_ORIGINS = {
+    "reviewer": "your choice",
+    "page": "written on the page",
+    "page-surname": "on the page, surname only",
+    "role": "from the role",
+    "shab": "SHAB proposal",
+    None: "none known",
+}
 _URL = re.compile(r"https?://\S+")
 
 
@@ -48,11 +72,27 @@ class DraftView:
     mailto_fits: bool
     prompt_version: str
     model: str
+    model_text: str | None
+    frame_version: str | None  # None: written before frame@1
+    arm: str | None
+    problems: str | None  # None: never checked; "": passed
+    contact_id: int | None = None  # the contact row it was written for
 
     @property
     def link(self) -> str | None:
         found = _URL.findall(self.body)
         return found[0] if found else None
+
+    def as_draft(self) -> Draft:
+        return Draft(
+            subject=self.subject,
+            body=self.body,
+            model_text=self.model_text or "",
+            link=self.link or "",
+            mailto_fits=self.mailto_fits,
+            frame_version=self.frame_version or "",
+            arm=self.arm or "voll",
+        )
 
 
 @dataclass(frozen=True)
@@ -76,6 +116,16 @@ class Card:
     link_length: int
     decision: str | None
     send_block: str | None
+    # the greeting's Frau / Herr, or None when it uses the full name
+    salutation: str | None = None
+    # where it came from, in the reviewer's words: "from the role", ...
+    salutation_origin: str | None = None
+    # "Anrede prüfen": neither the reviewer's choice nor a full page match
+    check_salutation: bool = False
+    # a named person with a surname, and a current draft to rebuild
+    can_choose_salutation: bool = False
+    # an undecided current draft: another address rebuilds it for that row
+    can_readdress: bool = False
 
 
 def safe_url(url: str | None) -> str | None:
@@ -99,29 +149,25 @@ def _search_line(row: sqlite3.Row) -> str:
     return f"{row['query']} — {row['provider']} · {outcome}"
 
 
-def _contact(conn: sqlite3.Connection, run_id: str, uid: str) -> Contact | None:
-    row = conn.execute(
-        "select * from contacts where run_id = ? and uid = ? order by id desc limit 1",
-        (run_id, uid),
-    ).fetchone()
-    if row is None:
+def _drift(
+    draft: DraftView | None,
+    contact: Contact | None,
+    contact_id: int | None,
+    profile: Profile | None,
+) -> str | None:
+    """Why a checked frame@1 draft no longer matches what it was built
+    from, or None. Pure code: the frame is rebuilt and compared, as
+    `check_draft` does, against today's profile and contact."""
+    if draft is None or draft.frame_version != FRAME_VERSION or draft.problems != "":
+        return None  # _send_block says what is wrong with it
+    if draft.contact_id is not None and draft.contact_id != contact_id:
+        return "a newer contact was found since the draft was written"
+    if profile is None or contact is None:
         return None
-    addresses = json.loads(row["addresses"] or "[]")
-    if not addresses and row["email"] and row["email_kind"]:
-        # a run from before M7 stored only the chosen address
-        addresses = [{"email": row["email"], "kind": row["email_kind"]}]
-    return Contact(
-        name=row["name"],
-        role=row["role"],
-        email=row["email"],
-        email_kind=row["email_kind"],
-        source=row["source"],
-        source_url=row["source_url"],
-        source_date=row["source_date"],
-        linkedin_lead=row["linkedin_lead"],
-        alternatives=json.loads(row["alternatives"] or "[]"),
-        addresses=addresses,
-    )
+    found = problems(draft.as_draft(), contact, profile)
+    if found:
+        return f"the draft no longer matches the profile ({'; '.join(found)})"
+    return None
 
 
 def _draft(conn: sqlite3.Connection, run_id: str, uid: str) -> DraftView | None:
@@ -138,17 +184,24 @@ def _draft(conn: sqlite3.Connection, run_id: str, uid: str) -> DraftView | None:
         mailto_fits=bool(row["mailto_fits"]),
         prompt_version=row["prompt_version"],
         model=row["model"],
+        model_text=row["model_text"],
+        frame_version=row["frame_version"],
+        arm=row["arm"],
+        problems=row["problems"],
+        contact_id=row["contact_id"],
     )
 
 
 def _send_block(
     *,
+    run_id: str,
     draft: DraftView | None,
     reason: str,
     decision: str | None,
     suppressed: bool,
     survey_url: str,
     sending_approved: bool,
+    drift: str | None = None,
 ) -> str | None:
     if decision is not None:
         return f"Already decided: {decision}."
@@ -156,6 +209,18 @@ def _send_block(
         return "This company is on the never-again list."
     if draft is None:
         return f"No draft to send — {reason}."
+    if draft.frame_version != FRAME_VERSION:
+        return (
+            f"The draft was written with an older frame "
+            f"({draft.frame_version or 'before frame@1'}); "
+            f"run `company-reach redraft {run_id}`."
+        )
+    if draft.problems is None:
+        return f"The draft was never checked; run `company-reach redraft {run_id}`."
+    if draft.problems:
+        return f"The draft failed its checks ({draft.problems}); redraft it."
+    if drift:
+        return f"{drift[:1].upper()}{drift[1:]}; run `company-reach redraft {run_id}`."
     if not sending_approved:
         return (
             "Sending is locked until ethics approval is recorded "
@@ -164,16 +229,25 @@ def _send_block(
     link = draft.link or ""
     host = urlsplit(link).hostname or ""
     if host == "example" or host.endswith(".example"):
-        return f"The survey link is a placeholder ({host}); set survey_url and redraft."
+        return (
+            f"The survey link is a placeholder ({host}); set survey_url, then "
+            f"run `company-reach redraft {run_id}`."
+        )
     if not survey_url or not link.startswith(survey_url.rstrip("/")):
         return (
-            "The draft links to a survey other than the profile's survey_url; redraft."
+            "The draft links to a survey other than the profile's survey_url; "
+            f"run `company-reach redraft {run_id}`."
         )
     return None
 
 
 def load_cards(
-    conn: sqlite3.Connection, run_id: str, *, survey_url: str, sending_approved: bool
+    conn: sqlite3.Connection,
+    run_id: str,
+    *,
+    survey_url: str,
+    sending_approved: bool,
+    profile: Profile | None = None,
 ) -> list[Card]:
     """Every company with a result in the run: send, then hold, then skip,
     then the ones that errored; inside a group, the order they were drawn."""
@@ -199,12 +273,13 @@ def load_cards(
         profile_row = conn.execute(
             "select profile from profiles where run_id = ? and uid = ?", (run_id, uid)
         ).fetchone()
-        profile = (
+        company = (
             CompanyProfile.model_validate_json(profile_row["profile"])
             if profile_row
             else None
         )
-        contact = _contact(conn, run_id, uid)
+        found = contact_for(conn, run_id, uid)
+        contact_id, contact = found if found else (None, None)
         draft = _draft(conn, run_id, uid)
         latest = decision_for(conn, uid)
         decision = latest["status"] if latest else None
@@ -212,6 +287,14 @@ def load_cards(
             f"{r['error_kind']} error: {r['error_text']}" if r["error_kind"] else ""
         )
         to = contact.email if contact and contact.email else ""
+        # the toggle rebuilds a current draft around its own sentence, so it
+        # needs one, and a surname for "Frau Muster" to be written at all
+        rebuildable = (
+            draft is not None
+            and draft.frame_version == FRAME_VERSION
+            and bool(draft.model_text)
+        )
+        surname = bool(contact and contact.name and split_name(contact.name).surname)
         cards.append(
             Card(
                 uid=uid,
@@ -219,8 +302,8 @@ def load_cards(
                 name=record.name if record else uid,
                 legal_form=_LEGAL_FORMS.get(record.legal_form, "") if record else "",
                 seat=(record.city or record.municipality) if record else "",
-                what=profile.description
-                if profile
+                what=company.description
+                if company
                 else (record.purpose_head if record else ""),
                 site_url=safe_url(site["url"]) if site else None,
                 evidence=site["evidence"] if site else None,
@@ -237,6 +320,8 @@ def load_cards(
                 link_length=build(to, draft.subject, draft.body).length if draft else 0,
                 decision=decision,
                 send_block=_send_block(
+                    run_id=run_id,
+                    drift=_drift(draft, contact, contact_id, profile),
                     draft=draft,
                     reason=reason,
                     decision=decision,
@@ -244,6 +329,11 @@ def load_cards(
                     survey_url=survey_url,
                     sending_approved=sending_approved,
                 ),
+                salutation=salutation(contact)[0] if contact else None,
+                salutation_origin=_ORIGINS[salutation(contact)[1]] if contact else None,
+                check_salutation=bool(contact and draft and needs_check(contact)),
+                can_choose_salutation=rebuildable and surname and decision is None,
+                can_readdress=rebuildable and decision is None,
             )
         )
     return cards

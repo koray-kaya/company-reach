@@ -193,6 +193,140 @@ async def test_a_name_without_an_address_goes_to_the_general_inbox(db_settings):
     )
 
 
+@pytest.mark.parametrize(
+    ("page", "expected", "origin"),
+    [
+        ("Ihre Ansprechpartnerin: Frau Anna Muster, Inhaber", "Frau", "page"),
+        ("Fragen beantwortet Herr Dr. Muster gern.", "Herr", "page-surname"),
+        ("Bitte wenden Sie sich an Herrn Muster.", "Herr", "page-surname"),
+    ],
+)
+async def test_frau_before_the_name_sets_the_salutation(
+    db_settings, page, expected, origin
+):
+    # the page itself says it: the one source a site gives that is not a
+    # generic masculine role noun. Only the full name before it is certain.
+    out = await run(
+        state([Person(name="Anna Muster", role="Inhaber")], {SITE: page}),
+        db_settings,
+    )
+    assert out["contact"].salutation == expected
+    assert out["contact"].salutation_origin == origin
+    [row] = contact_rows(db_settings)
+    assert (row["salutation"], row["salutation_origin"]) == (expected, origin)
+
+
+@pytest.mark.parametrize(
+    ("page", "role"),
+    [
+        # the founder, her father: a surname alone may be anyone of that name
+        (
+            "1978 gründete Herr Muster die Firma. Heute führt Anna Muster den Betrieb.",
+            None,
+        ),
+        # a couple: neither salutation is hers alone
+        ("Herr und Frau Muster führen den Betrieb.", None),
+        ("Ihre Ansprechpartner: Frau/Herr Muster", None),
+        # a customer quote on the same page
+        (
+            "Anna Muster, Inhaberin. «Schnell und sauber» – Herr Muster, Kunde "
+            "aus Bern",
+            None,
+        ),
+        (
+            "Anna Muster, Inhaberin. «Schnell und sauber» – Herr Muster, Kunde "
+            "aus Bern",
+            "Inhaberin",
+        ),
+    ],
+)
+async def test_a_salutation_that_may_be_someone_elses_sets_nothing(
+    db_settings, page, role
+):
+    """Critical in review: "Herr Muster" elsewhere on the page gave Anna a
+    Herr, unflagged. A wrong Frau/Herr is the worst mistake the mail can
+    make; a missing one only falls back to the full name."""
+    out = await run(
+        state([Person(name="Anna Muster", role=role)], {SITE: page}), db_settings
+    )
+    assert out["contact"].salutation is None
+
+
+async def test_a_lone_first_name_is_nobody_named(db_settings):
+    """Review: "Reto, Inhaber" got a guessed info@ and a Send, although the
+    mail treats a lone first name as nobody named — and nobody named is
+    never written to at a guessed address."""
+    shab = Shab()
+    out = await run(
+        state([Person(name="Reto", role="Inhaber")], {SITE: "Reto, Inhaber"}),
+        db_settings,
+        shab,
+    )
+    assert out["contact"] is None  # no inbox published: a hold
+    assert shab.calls == [UID]  # asked, as when the site names nobody
+
+
+async def test_a_lone_first_name_with_an_inbox_writes_to_the_inbox(db_settings):
+    out = await run(
+        state(
+            [Person(name="Reto", role="Inhaber")],
+            {SITE: "Reto, Inhaber. info@muster-metallbau.ch"},
+        ),
+        db_settings,
+    )
+    contact = out["contact"]
+    assert (contact.name, contact.email_kind) == (None, "generic")
+
+
+async def test_a_named_colleague_is_chosen_over_a_lone_first_name(db_settings):
+    out = await run(
+        state(
+            [
+                Person(name="Reto", role="Inhaber"),
+                Person(name="Anna Muster", role="Leiterin Verkauf"),
+            ],
+            {SITE: "Reto, Inhaber. Anna Muster, Leiterin Verkauf"},
+        ),
+        db_settings,
+    )
+    assert out["contact"].name == "Anna Muster"
+    assert all(not a.startswith("Reto") for a in out["contact"].alternatives)
+
+
+async def test_a_page_salutation_against_a_feminine_role_sets_nothing(db_settings):
+    out = await run(
+        state(
+            [Person(name="Anna Muster", role="Inhaberin")],
+            {SITE: "Ihr Ansprechpartner: Herr Muster"},
+        ),
+        db_settings,
+    )
+    assert out["contact"].salutation is None
+
+
+async def test_a_bare_role_sets_nothing(db_settings):
+    # "Inhaber" on a site says nothing about who holds it
+    out = await run(
+        state(
+            [Person(name="Anna Muster", role="Inhaber")],
+            {SITE: "Anna Muster, Inhaber. Herr Beispiel, Werkstatt."},
+        ),
+        db_settings,
+    )
+    assert out["contact"].salutation is None
+
+
+async def test_two_salutations_for_one_name_set_nothing(db_settings):
+    out = await run(
+        state(
+            [Person(name="Anna Muster", role="Inhaber")],
+            {SITE: "Frau Muster (Büro), Herr Muster (Werkstatt)"},
+        ),
+        db_settings,
+    )
+    assert out["contact"].salutation is None
+
+
 async def test_with_no_address_at_all_info_is_constructed_and_marked(db_settings):
     shab = Shab()
     out = await run(

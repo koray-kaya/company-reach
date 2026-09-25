@@ -46,21 +46,27 @@
           {% elif c %}
           <p class="person">Nobody named</p>
           {% endif %}
+          {% if card.draft and (card.can_choose_salutation or card.check_salutation) %}
+          <p class="salute">
+            {% if card.check_salutation %}<span class="kind warn">Anrede prüfen</span>{% endif %}
+            {% if card.can_choose_salutation %}{% set now = card.salutation or 'ohne' %}
+            <span class="lbl">Salutation:</span>
+            {% for choice in ('Frau', 'Herr', 'ohne') %}<button class="btn small{% if now == choice %} on{% endif %}" name="action" value="salutation:{{ choice }}"{% if now == choice %} aria-pressed="true"{% endif %}>{{ choice }}</button>
+            {% endfor %}
+            <span class="lbl">({{ card.salutation_origin }})</span>
+            {% else %}<span class="lbl">The surname is not clear; change the greeting in your mail client if it needs one.</span>{% endif %}
+          </p>
+          {% endif %}
           {% if c and c.addresses %}
           <div class="addrs" role="radiogroup" aria-label="Address">
             {% for a in c.addresses %}
-            <label class="addr"><input type="radio" name="to" value="{{ a.email }}"{% if loop.first %} checked{% endif %}{% if card.send_block %} disabled{% endif %}><span class="mail">{{ a.email }}</span><span class="kind {{ a.kind }}">{{ a.kind | replace('_', ' ') }}</span></label>
+            {% set written_for = a.email == c.email %}
+            <label class="addr"><input type="radio" name="to" value="{{ a.email }}"{% if written_for %} checked{% endif %}{% if card.send_block or a.kind == 'third_party' or not written_for %} disabled{% endif %}><span class="mail">{{ a.email }}</span><span class="kind {{ a.kind }}">{{ a.kind | replace('_', ' ') }}</span>
+              <span class="rowhint">{% if a.kind == 'seen' %}Their own address on the company's site.{% elif a.kind == 'generic' %}The inbox the site publishes.{% if c.name and written_for %} The first line of the mail asks whoever reads it to pass it to {{ c.name }}.{% endif %}{% elif a.kind == 'constructed' %}Not seen anywhere: info@ on the site's domain, guessed. A bounce is visible and harmless.{% elif a.kind == 'third_party' %}On another domain than the verified site — the way a hostile page plants a contact. Never sent to from here.{% endif %}</span></label>
+            {% if not written_for and a.kind != 'third_party' and card.can_readdress %}<p class="hint" style="margin:0 0 0 30px"><button class="btn small" name="action" value="address:{{ a.email }}">Write to this address instead</button> The mail is rebuilt for it; read it again before sending.</p>{% endif %}
             {% if a.note %}<p class="hint" style="margin:0 0 0 30px">{{ a.email }}: {{ a.note }}</p>{% endif %}
             {% endfor %}
           </div>
-          {% set kind = c.addresses[0].kind %}
-          <p class="hint">
-            {% if kind == 'seen' %}Their own address on the company's site.
-            {% elif kind == 'generic' %}The inbox the site publishes.{% if c.name %} The greeting names {{ c.name }}, so it gets passed on.{% endif %}
-            {% elif kind == 'constructed' %}Not seen anywhere: info@ on the site's domain, guessed. A bounce is visible and harmless.
-            {% elif kind == 'third_party' %}On another domain than the verified site — the way a hostile page plants a contact.
-            {% endif %}
-          </p>
           {% endif %}
           {% if c and c.linkedin_lead %}
           <p class="hint"><span class="kind unverified">unverified lead</span> {{ c.linkedin_lead }} — check it yourself; nothing is sent from here.</p>
@@ -93,7 +99,7 @@
         <div class="body">{{ card.draft.body }}</div>
         <footer>
           <span>Opens in your mail client · {{ card.link_length }} of 2,000 link characters</span>
-          <span>draft@{{ card.draft.prompt_version }} · {{ card.draft.model }}</span>
+          <span>draft@{{ card.draft.prompt_version }} · {{ card.draft.frame_version or 'no frame' }} · {{ card.draft.arm or '–' }} · {{ card.draft.model }}</span>
         </footer>
       </article>
       {% else %}

@@ -193,6 +193,58 @@ def test_an_older_database_gains_the_columns_added_since(tmp_path: Path):
     assert {"source_date", "alternatives", "addresses"} <= columns
 
 
+def test_an_old_database_gains_the_new_columns(tmp_path: Path):
+    # frame@1: every draft records the model's own sentence (the card
+    # rebuilds the mail from it) and the frame and arm it was written with.
+    # The tables as M6 and M7 shipped them:
+    path = tmp_path / "old.db"
+    conn = sqlite3.connect(path)
+    conn.execute(
+        """CREATE TABLE drafts (
+             id INTEGER PRIMARY KEY, run_id TEXT, uid TEXT, contact_id INTEGER,
+             subject TEXT, body TEXT, mailto_fits INTEGER, prompt_version TEXT,
+             model TEXT, created_at TEXT)"""
+    )
+    conn.execute(
+        """CREATE TABLE contacts (
+             id INTEGER PRIMARY KEY, run_id TEXT, uid TEXT, name TEXT, role TEXT,
+             email TEXT, email_kind TEXT, source TEXT, source_url TEXT,
+             source_date TEXT, linkedin_lead TEXT, alternatives TEXT,
+             addresses TEXT)"""
+    )
+    conn.execute(
+        """CREATE TABLE ledger (
+             id INTEGER PRIMARY KEY, uid TEXT NOT NULL, status TEXT NOT NULL,
+             address TEXT, draft_id INTEGER, run_id TEXT, note TEXT,
+             decided_at TEXT NOT NULL)"""
+    )
+    conn.execute(
+        "insert into ledger (uid, status, decided_at) values ('CHE000000046',"
+        " 'skipped', '2026-09-24T10:00:00+00:00')"
+    )
+    conn.commit()
+    conn.close()
+
+    init_db(path)
+    init_db(path)
+
+    conn = sqlite3.connect(path)
+    drafts = {row[1] for row in conn.execute("pragma table_info(drafts)")}
+    contacts = {row[1] for row in conn.execute("pragma table_info(contacts)")}
+    ledger = {row[1] for row in conn.execute("pragma table_info(ledger)")}
+    kept = conn.execute("select count(*) from ledger").fetchone()[0]
+    conn.close()
+    # the survey's answers are compared per frame, arm and kind of contact,
+    # and a ledger with decisions in it is extended, never replaced
+    assert {"frame_version", "arm", "contact_kind"} <= ledger
+    assert kept == 1
+    assert {"model_text", "frame_version", "arm"} <= drafts
+    # the outcome of check_draft: null = never checked, "" = passed
+    assert "problems" in drafts
+    # Frau / Herr as the page wrote it or the reviewer chose it, and which
+    assert {"salutation", "salutation_origin"} <= contacts
+
+
 def test_any_connection_brings_an_older_database_up_to_date(tmp_path: Path):
     # found live: `enrich` opened a database created before `addresses`
     # existed and failed on its first contact, because only some commands

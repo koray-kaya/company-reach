@@ -342,36 +342,24 @@ async def test_extraction_matches_the_hand_labels():
     assert extra <= baseline["extra"]
 
 
-# --- drafts (M6) -------------------------------------------------------------
+# --- drafts (M6, frame@1) ----------------------------------------------------
 #
-# Graded deterministically, by the same rules `check_draft` applies, on the
-# *first* draft — the one the model wrote before any second chance — since
-# that is what measures the prompt. Inputs are the golden site set's latest
-# stored profile and contact (what `enrich --until contact` or a run left in
-# data/); a company without both is not drafted.
+# Under frame@1 the model writes one sentence and code writes the rest, so
+# the prompt is measured by its sentences. Each *first* sentence — the one
+# the model wrote before any second chance — is graded by the rules
+# `check_draft` applies to it (`sentence_problems`). Inputs are the golden
+# site set's latest stored profile and contact (what `enrich --until
+# contact` or a run left in data/); a company without both is not drafted.
 #
-# Two things are only reported. How often a draft repeats the stock opening
-# and clause the earlier illustrations taught, and how many drafts share an
-# opening: a draft that reads like the last one is closer to a mass mailing.
-# And the length, for the same reason the scoring eval reports exact
-# agreement: a number worth watching, not a threshold.
+# Every sentence is printed. The rules catch shape, praise and planted
+# links; only a person reading them catches an invented fact, and one wrong
+# detail spoils the mail. The length is reported, not asserted.
 
-# Measured 2026-09-24 on 10 golden companies, draft@3, GLM-5.3-Flash,
-# reasoning_effort=low: 10/10 pass, stock phrase 0/10, 8/10 distinct
-# openings, 806-988 chars. (draft@2: 10/10 pass but the stock phrase in
-# 10/10.) The poisoned page: 3/3 clean on both versions.
-DRAFT_BASELINE: dict[str, int] | None = {"passed": 10}
-# Measured twice on the public subset, 2026-09-24 (draft@3): 5/5 pass, no
-# stock phrase, 5 and 4 distinct openings.
-DRAFT_SUBSET_BASELINE: dict[str, int] | None = {"passed": 5}
-
-# The opening and the stock clause draft@2's German illustrations taught:
-# measured in 10 of 10 drafts on 2026-09-24, which is why draft@3 describes
-# its illustrations instead of writing them out.
-_ILLUSTRATION = (
-    "kennen Sie genau die Fragen",
-    "Ich schreibe an der Universität meine Masterarbeit",
-)
+# draft@5 has not been measured yet: draft@3's numbers (10/10 and 5/5 on
+# 2026-09-24) graded a whole paragraph against other rules. Set these from
+# the first run with RUN_LLM_EVALS=1.
+DRAFT_BASELINE: dict[str, int] | None = None
+DRAFT_SUBSET_BASELINE: dict[str, int] | None = None
 
 
 def _subset_draft_inputs(settings: Settings) -> list[dict]:
@@ -404,7 +392,8 @@ def _draft_inputs(settings: Settings) -> list[dict]:
     with connect(settings.db_path) as conn:
         for uid in uids:
             row = conn.execute(
-                """select p.profile, c.name, c.role, c.email, c.email_kind, c.source
+                """select p.profile, c.name, c.role, c.email, c.email_kind, c.source,
+                          c.salutation
                      from profiles p
                      join contacts c on c.run_id = p.run_id and c.uid = p.uid
                     where p.uid = ? and c.email is not null
@@ -426,6 +415,7 @@ def _draft_inputs(settings: Settings) -> list[dict]:
                         email=row["email"],
                         email_kind=row["email_kind"],
                         source=row["source"],
+                        salutation=row["salutation"],
                     ),
                     "contact_id": None,
                     "about_me": load_profile(settings.profile_path).about_me,
@@ -435,7 +425,7 @@ def _draft_inputs(settings: Settings) -> list[dict]:
 
 
 async def test_drafts_pass_the_checklist():
-    from company_reach.nodes.check_draft import problems
+    from company_reach.nodes.check_draft import sentence_problems
     from company_reach.nodes.draft import draft
 
     settings = Settings()
@@ -447,30 +437,30 @@ async def test_drafts_pass_the_checklist():
 
     drafts = await asyncio.gather(*[draft(s, settings=settings) for s in inputs])
     failures: dict[str, int] = {}
-    passed = copied = 0
-    lengths: list[int] = []
-    openings: list[str] = []
+    passed = 0
+    words: list[int] = []
+    lines: list[str] = []
     for state, out in zip(inputs, drafts, strict=True):
-        d = out["draft"]
-        found = problems(d, state["contact"])
+        sentence = out["draft"].model_text
+        found = sentence_problems(sentence)
         passed += not found
         for p in found:
             rule = p.split(" (")[0]
             failures[rule] = failures.get(rule, 0) + 1
-        copied += any(phrase in d.model_text for phrase in _ILLUSTRATION)
-        lengths.append(len(d.body))
-        openings.append(" ".join(d.model_text.split()[:6]))
+        words.append(len(sentence.split()))
+        mark = "ok  " if not found else "FAIL"
+        lines.append(f"  {mark} {state['company'].name}: {sentence}")
 
     which = "private golden set" if private else "public subset"
     print(
-        f"\ndrafts for the {which}, {len(inputs)} companies, prompt draft\n"
-        f"  pass the checklist        {passed}/{len(inputs)}\n"
-        f"  stock phrase repeated     {copied}/{len(inputs)}\n"
-        f"  distinct openings         {len(set(openings))}/{len(inputs)}\n"
-        f"  body length               {min(lengths)}-{max(lengths)} chars"
+        f"\nsentences for the {which}, {len(inputs)} companies, prompt draft\n"
+        f"  pass the sentence rules   {passed}/{len(inputs)}\n"
+        f"  words                     {min(words)}-{max(words)}"
     )
     for rule, n in sorted(failures.items(), key=lambda kv: -kv[1]):
         print(f"  failed: {rule}  x{n}")
+    print("  read each one for an invented fact:")
+    print("\n".join(lines))
 
     if baseline is None:
         pytest.skip("baseline not set yet; the numbers above are the first run")

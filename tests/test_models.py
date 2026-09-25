@@ -31,3 +31,11 @@ def test_company_result_is_empty_until_the_child_decides():
 def test_company_result_takes_a_recommendation():
     r = CompanyResult(uid="CHE000000042", recommendation="send", reason="fits")
     assert r.recommendation == "send"
+
+
+def test_draft_answer_asks_only_for_the_sentence():
+    # frame@1: the model no longer writes the subject or any of the frame,
+    # and a field absent from the schema is one the model cannot fill in
+    from company_reach.models import DraftAnswer
+
+    assert list(DraftAnswer.model_json_schema()["properties"]) == ["sentence"]

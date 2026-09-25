@@ -90,6 +90,50 @@ def test_suppression_is_by_uid_or_address(db: Path):
         assert not is_suppressed(conn, "info@muster.ch")
 
 
+def test_sent_records_frame_and_arm(db: Path):
+    # what the survey's answers are compared by, joined on the UID
+    with connect(db) as conn:
+        record_decision(
+            conn,
+            UID,
+            "sent",
+            address="info@muster.ch",
+            frame_version="frame@1",
+            arm="kurz",
+            contact_kind="generic/site/named",
+        )
+        row = conn.execute(
+            "select frame_version, arm, contact_kind from ledger"
+        ).fetchone()
+    assert tuple(row) == ("frame@1", "kurz", "generic/site/named")
+
+
+def test_a_sent_row_keeps_frame_and_kind_after_forget(settings):
+    """`forget` deletes drafts and contacts; the ledger's frame, arm and
+    contact kind survive it, with no personal data in them."""
+    from review_seed import SEND, seed
+
+    from company_reach.forget import forget
+
+    seed(settings.db_path)
+    with connect(settings.db_path) as conn:
+        record_decision(
+            conn,
+            SEND,
+            "sent",
+            address="info@muster-metallbau.ch",
+            frame_version="frame@1",
+            arm="voll",
+            contact_kind="generic/site/named",
+        )
+    forget(settings, SEND)
+    with connect(settings.db_path) as conn:
+        row = conn.execute(
+            "select address, frame_version, arm, contact_kind from ledger"
+        ).fetchone()
+    assert tuple(row) == (None, "frame@1", "voll", "generic/site/named")
+
+
 def test_an_older_ledger_with_one_row_per_company_is_replaced(tmp_path: Path):
     # the M1 shape; every database so far holds it empty
     path = tmp_path / "old.db"

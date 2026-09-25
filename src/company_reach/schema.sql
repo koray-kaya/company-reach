@@ -25,22 +25,38 @@ CREATE TABLE IF NOT EXISTS pages (
   url TEXT PRIMARY KEY, fetched_at TEXT, status INTEGER, text TEXT, raw_path TEXT);
 CREATE TABLE IF NOT EXISTS profiles (
   run_id TEXT NOT NULL, uid TEXT NOT NULL, profile TEXT NOT NULL, PRIMARY KEY (run_id, uid));
+-- salutation: "Frau"/"Herr" as the page wrote it or the reviewer chose it,
+-- "ohne" when the reviewer chose none; null when nobody stated one.
+-- salutation_origin: "reviewer", "page" (before the full name) or
+-- "page-surname" (before the surname alone).
 CREATE TABLE IF NOT EXISTS contacts (
   id INTEGER PRIMARY KEY, run_id TEXT, uid TEXT, name TEXT, role TEXT, email TEXT,
   email_kind TEXT, source TEXT, source_url TEXT, source_date TEXT, linkedin_lead TEXT,
-  alternatives TEXT, addresses TEXT);
+  alternatives TEXT, addresses TEXT, salutation TEXT, salutation_origin TEXT);
+-- model_text: the model's one sentence, from which the card rebuilds the
+-- mail. frame_version and arm: which frame built the body (frame@1).
+-- problems: check_draft's outcome; null = never checked, '' = passed. The
+-- card sends only a draft that passed.
 CREATE TABLE IF NOT EXISTS drafts (
   id INTEGER PRIMARY KEY, run_id TEXT, uid TEXT, contact_id INTEGER, subject TEXT, body TEXT,
-  mailto_fits INTEGER, prompt_version TEXT, model TEXT, created_at TEXT);
+  mailto_fits INTEGER, prompt_version TEXT, model TEXT, created_at TEXT,
+  model_text TEXT, frame_version TEXT, arm TEXT, problems TEXT);
 CREATE TABLE IF NOT EXISTS results (
   run_id TEXT NOT NULL, uid TEXT NOT NULL, recommendation TEXT, reason TEXT,
   error_kind TEXT, error_text TEXT, finished_at TEXT NOT NULL, PRIMARY KEY (run_id, uid));
 -- One row per decision, never updated: a company's state is its latest row,
--- and "contacted" is any 'sent' row ever (M7 open point 4).
+-- and "contacted" is any 'sent' row ever (M7 open point 4). A 'sent' row
+-- keeps the frame, the A/B arm and the kind of contact ("generic/site/named"),
+-- no personal data, so survey answers can be compared after forget and purge.
 CREATE TABLE IF NOT EXISTS ledger (
   id INTEGER PRIMARY KEY, uid TEXT NOT NULL, status TEXT NOT NULL, address TEXT,
-  draft_id INTEGER, run_id TEXT, note TEXT, decided_at TEXT NOT NULL);
+  draft_id INTEGER, run_id TEXT, note TEXT, decided_at TEXT NOT NULL,
+  frame_version TEXT, arm TEXT, contact_kind TEXT);
 CREATE INDEX IF NOT EXISTS ledger_uid ON ledger (uid);
+-- The survey's export, joined to the ledger by the UID in the link. Replaced
+-- whole on every import; a UID without a 'sent' row is kept and counted.
+CREATE TABLE IF NOT EXISTS responses (
+  uid TEXT PRIMARY KEY, started_at TEXT, completed_at TEXT, imported_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS suppression (
   key TEXT PRIMARY KEY, reason TEXT, added_at TEXT NOT NULL);
 -- Where find_site landed and why, for the review page, which reads only

@@ -1,30 +1,23 @@
-"""The invitation: a few sentences from the model, everything else from code.
+"""The invitation: one sentence from the model, everything else from code.
 
-The model writes the subject and the middle of the mail. It is shown the
-company's profile (M6 open point 1) — a sentence proving we know what the
-company makes is what separates this mail from a mass mailing — but the
-profile is delimited as data, since its description can quote hostile page
-text by design (#22). It is never shown the page text itself, and never the
-survey link.
+The model writes one sentence, "Ich schreibe Ihnen, weil ...", saying why
+this company gets the mail. It is shown the company's profile (M6 open point
+1) — a sentence proving we know what the company makes is what separates
+this mail from a mass mailing — but the profile is delimited as data, since
+its description can quote hostile page text by design (#22), and so is the
+contact's role, which a model read off a page (audit K4). It is never shown
+the page text itself, and never the survey link.
 
-Code then puts the mail together around that text:
-
-    Guten Tag <name>
-
-    <the model's text>
-
-    <survey link>
-
-    <data-protection sentence>
-
-    Freundliche Grüsse
-
-so that whatever steered the model cannot change who is greeted, where the
-link points, or what the reader is told about their data. The sender's
-name comes from the mail client's signature, since the mail leaves from the
-sender's own mailbox.
+Code writes the rest (frame@1, `tools/invitation.py`): the subject, a
+routing line for a shared inbox, the greeting, who writes and what they ask,
+the topic, the link block, where the name and address came from, and the
+signature. So whatever steered the model cannot change who is greeted,
+where the link points, or what the reader is told about their data. The
+sender comes from the profile's `[sender]`, not from the mail client: the
+mail must say who writes even when the client adds no signature.
 """
 
+import re
 from typing import Any
 
 from company_reach.errors import ProfileError
@@ -39,29 +32,27 @@ from company_reach.profile import load_profile
 from company_reach.settings import Settings
 from company_reach.tools import llm
 from company_reach.tools.db import connect, record_draft
-from company_reach.tools.invitation import privacy_sentence, survey_link
+from company_reach.tools.invitation import (
+    FRAME_VERSION,
+    arm_for,
+    assemble,
+    subject,
+    survey_link,
+)
 from company_reach.tools.mailto import build
 from company_reach.tools.untrusted import as_data
 
-CLOSING = "Freundliche Grüsse"
+_CANTONS = (
+    "AG|AI|AR|BE|BL|BS|FR|GE|GL|GR|JU|LU|NE|NW|OW|SG|SH|SO|SZ|TG|TI|UR|VD|VS|ZG|ZH"
+)
+# "Buchs AG", "Wohlen (AG)": the register tells places apart by canton. In
+# the sentence, "in Buchs AG" reads as a legal form and fails that rule.
+_CANTON = re.compile(rf"\s+(?:\((?:{_CANTONS})\)|(?:{_CANTONS}))$")
 
 
-def greeting(contact: Contact) -> str:
-    """Gender-neutral, so no guess about Herr or Frau is ever needed. With
-    nobody named it stays "Guten Tag" — never "Sehr geehrte Damen und
-    Herren", the greeting the research found gets forwarded, not read."""
-    return f"Guten Tag {contact.name}" if contact.name else "Guten Tag"
-
-
-def assemble(contact: Contact, model_text: str, *, link: str) -> str:
-    parts = [
-        greeting(contact),
-        model_text.strip(),
-        link,
-        privacy_sentence(contact.source),
-        CLOSING,
-    ]
-    return "\n\n".join(parts)
+def seat(record: CompanyRecord) -> str:
+    """Where the company sits, as a person would write it in a sentence."""
+    return _CANTON.sub("", record.city or record.municipality).strip()
 
 
 async def draft(state: dict[str, Any], *, settings: Settings) -> dict:
@@ -69,20 +60,24 @@ async def draft(state: dict[str, Any], *, settings: Settings) -> dict:
     profile: CompanyProfile = state["profile"]
     contact: Contact = state["contact"]
 
-    survey_url = load_profile(settings.profile_path).survey_url
-    if not survey_url:
+    me = load_profile(settings.profile_path)
+    if gaps := me.drafting_gaps():
+        # before the model is asked: a mail that cannot say who writes, or
+        # where the survey is, should cost no model call
         raise ProfileError(
-            f"{settings.profile_path} has no survey_url; every invitation links to it"
+            f"{settings.profile_path} is missing what every invitation needs: "
+            f"{', '.join(gaps)}"
         )
-    # Built before the model is asked: a UID the survey would reject should
-    # cost no model call.
-    link = survey_link(survey_url, record.uid)
+    # Built before the model is asked, too: a UID the survey would reject
+    # should cost nothing.
+    link = survey_link(me.survey_url, record.uid)
+    arm = arm_for(record.uid, experiment=me.invitation.experiment)
 
     feedback = state.get("draft_feedback") or ""
     if feedback:
         # the second and last attempt, after `check_draft` rejected the first
         feedback = (
-            "## An earlier draft was rejected\n\n"
+            "## An earlier sentence was rejected\n\n"
             f"{feedback}\n\nWrite a new one that does not do this."
         )
 
@@ -92,19 +87,33 @@ async def draft(state: dict[str, Any], *, settings: Settings) -> dict:
         settings=settings,
         about_me=state.get("about_me") or "",
         company_name=record.name,
-        seat=record.city or record.municipality,
-        role=contact.role or "not known",
+        seat=seat(record),
+        role=as_data(contact.role, label="ROLE") if contact.role else "not known",
         profile=as_data(profile.description, label="PROFILE"),
         feedback=feedback,
+        # the frame says both; the model is told so it does not say them
+        minutes=str(me.invitation.minutes),
+        topic=as_data(me.invitation.topic, label="TOPIC"),
     )
 
-    body = assemble(contact, answer.body, link=link)
-    result = Draft(
-        subject=answer.subject.strip(),
-        body=body,
-        model_text=answer.body.strip(),
+    sentence = answer.sentence.strip().replace("ß", "ss")
+    body = assemble(
+        contact,
+        sentence,
         link=link,
-        mailto_fits=build(contact.email or "", answer.subject.strip(), body).fits,
+        sender=me.sender,
+        inv=me.invitation,
+        short=arm == "kurz",
+    )
+    title = subject(contact, me.sender, me.invitation)
+    result = Draft(
+        subject=title,
+        body=body,
+        model_text=sentence,
+        link=link,
+        mailto_fits=build(contact.email or "", title, body).fits,
+        frame_version=FRAME_VERSION,
+        arm=arm,
     )
     with connect(settings.db_path) as conn:
         record_draft(

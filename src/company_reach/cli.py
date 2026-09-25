@@ -354,6 +354,39 @@ def retry(
 
 
 @app.command()
+def redraft(
+    run_id: Annotated[str, typer.Argument(help="The run whose cards to redraft.")],
+    uid: Annotated[
+        str | None,
+        typer.Option(help="Only this company, whether its draft is stale or not."),
+    ] = None,
+) -> None:
+    """Draft again the undecided send cards a run can no longer send.
+
+    A card stops being sendable when survey_url changed after drafting, when
+    the frame changed, or when its draft was never checked. The mail is
+    rebuilt from what the database holds — draft and check only, no search
+    and no fetch. Decided companies keep the draft they were decided on.
+    """
+    from company_reach.redraft import redraft_run
+
+    s = get_settings()
+    try:
+        outcomes = asyncio.run(redraft_run(run_id, settings=s, uid=uid))
+    except CompanyReachError as error:
+        typer.echo(str(error), err=True)
+        raise typer.Exit(1) from error
+
+    if not outcomes:
+        typer.echo(f"nothing to redraft in run {run_id}: every open card is current")
+        return
+    sendable = sum(o.outcome == "sendable" for o in outcomes)
+    typer.echo(f"{len(outcomes)} redrafted · {sendable} sendable")
+    for o in outcomes:
+        typer.echo(f"  {o.uid}  {o.outcome}")
+
+
+@app.command()
 def enrich(
     uid: Annotated[str, typer.Option(help="The company to enrich.")],
     until: Annotated[
@@ -445,6 +478,67 @@ def enrich(
             f"\nSubject: {finished.subject}   ({len(finished.body)} chars, {fits})"
         )
         typer.echo(finished.body)
+
+
+responses_app = typer.Typer(help="The survey's answers, joined by the link's UID.")
+app.add_typer(responses_app, name="responses")
+
+
+@responses_app.command("import")
+def responses_import(
+    export: Annotated[
+        Path,
+        typer.Argument(
+            help="The survey's CSV export: columns uid, started_at, completed_at "
+            "(ISO dates or times; completed_at may be empty)."
+        ),
+    ],
+) -> None:
+    """Replace the local responses with the survey's latest export."""
+    from company_reach.responses import import_responses
+
+    s = get_settings()
+    try:
+        with connect(s.db_path) as conn:
+            report = import_responses(conn, export)
+    except (CompanyReachError, OSError) as error:
+        typer.echo(str(error), err=True)
+        raise typer.Exit(1) from error
+    typer.echo(
+        f"{report.rows} responses · {report.matched} matched to a sent invitation"
+        f" · {report.rows - report.matched} without one"
+    )
+
+
+@app.command()
+def report(
+    within: Annotated[
+        int, typer.Option(help="Count a start only this many days after the mail.")
+    ] = 21,
+) -> None:
+    """Sent, bounced, never, started and completed, per frame, A/B arm and
+    kind of contact, with Wilson 95% intervals. Counts only; nobody named."""
+    from company_reach.responses import rate, report_rows
+
+    s = get_settings()
+    with connect(s.db_path) as conn:
+        groups, unmatched = report_rows(conn, within_days=within)
+    if not groups:
+        typer.echo("no invitation has been sent yet")
+        return
+    typer.echo(
+        f"{'frame':<9}{'arm':<6}{'contact':<25}{'sent':>5}{'bounced':>8}"
+        f"{'never':>6}{'delivered':>10}  started (≤{within} days)"
+        f"{'':<12}completed"
+    )
+    for g in groups:
+        typer.echo(
+            f"{g.frame_version:<9}{g.arm:<6}{g.contact_kind:<25}{g.sent:>5}"
+            f"{g.bounced:>8}{g.never:>6}{g.delivered:>10}  "
+            f"{g.started:>3} {rate(g.started, g.delivered):<26}"
+            f"{g.completed:>3} {rate(g.completed, g.delivered)}"
+        )
+    typer.echo(f"responses without a sent invitation: {unmatched}")
 
 
 def _resume(rid: str, dry: bool, goal: str | None, seed: int) -> str:

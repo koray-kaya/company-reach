@@ -93,8 +93,7 @@ def seeded(settings: Settings, monkeypatch) -> Settings:
             )
         elif prompt_name == "draft":
             answer = dict(
-                subject="Umfrage zu meiner Masterarbeit",
-                body="Da Sie Metallteile fertigen, wäre Ihre Sicht wertvoll.",
+                sentence="Ich schreibe Ihnen, weil Ihr Betrieb Metallteile baut."
             )
             return output_model(**answer), PROVENANCE
         else:  # pragma: no cover - a prompt nobody taught this stub about
@@ -229,7 +228,8 @@ async def test_a_company_walks_the_whole_child_to_a_checked_draft(
     )
     assert (out["contact"].name, out["contact"].email_kind) == ("Anna Muster", "seen")
     assert out["recommendation"] == "send"
-    assert out["draft"].body.startswith("Guten Tag Anna Muster")
+    # her own address: no "Zuhanden" line, and no role to propose Frau
+    assert out["draft"].body.startswith("Guten Tag Anna Muster\n\nIch heisse")
     assert f"?c={UID}&l=de" in out["draft"].body
 
 
