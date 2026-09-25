@@ -44,6 +44,14 @@ docker compose up -d searxng          # the search engine, on 127.0.0.1:8080
 uv run company-reach doctor           # settings, prompts, database, endpoint
 ```
 
+`profile.toml` has two sections the invitation is built from, and nothing is
+drafted without them: `[sender]` (your name, your affiliation, the school's
+short name) and `[invitation]` (the thesis topic, the survey's minutes, and
+switches for every promise the mail may make — a closing date, the results
+offer, no login, a reminder). Every switch is off until you set it: the mail
+says only what you have confirmed. Pooling and scoring run without them;
+`doctor` names what is missing.
+
 When running with `uv run`, set `SEARXNG_URL=http://127.0.0.1:8080` in
 `.env`; the container name only resolves inside Docker.
 
@@ -71,10 +79,39 @@ one company on its own:
 
 `review` opens the page on `http://127.0.0.1:8000/`. It shows one company
 per screen with the recommendation, the evidence, every address found and
-the draft. **Send** records the decision and opens the draft in your own
-mail program — nothing is sent by the tool. Send stays locked until
-`SENDING_APPROVED=true` is set in `.env` and the profile's `survey_url` is
-real. The page also runs in Docker: `docker compose up -d app`.
+the draft. The model writes one sentence of each mail; everything else is
+written by code from the profile and the contact. You can switch the
+salutation (Frau / Herr / none) or write to another of the addresses found,
+and the mail is rebuilt without asking the model again. **Send** records the
+decision and opens the draft in your own mail program — nothing is sent by
+the tool. Send stays locked until `SENDING_APPROVED=true` is set in `.env`
+and the profile's `survey_url` is real, and it refuses a draft that no
+longer matches the profile or the contact. The page also runs in Docker:
+`docker compose up -d app`.
+
+When you change the profile after drafting — the survey link, a closing
+date, the supervisor line — the cards say so, and one command brings them up
+to date:
+
+```bash
+uv run company-reach redraft <run>              # rebuild the stale cards
+```
+
+It rebuilds each mail around its sentence without a model call, and asks the
+model only for a sentence that fails its checks. Nothing is searched or
+fetched again.
+
+Every invitation's survey link carries the company's UID, so the survey's
+answers can be counted without a second mail:
+
+```bash
+uv run company-reach responses import export.csv   # uid, started_at, completed_at
+uv run company-reach report                        # counts per arm and kind
+```
+
+`report` prints sent, bounced, never, started and completed invitations per
+frame, length arm (`[invitation] experiment`) and kind of contact, each rate
+with its 95% interval. It prints counts only, no names.
 
 ## Personal data
 

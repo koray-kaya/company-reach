@@ -94,14 +94,19 @@ gets it. Everything else is written by code (`tools/invitation.py`):
   because `forget` keeps the address on the never-again list for good.
 - **What the link carries.** "Der Link enthält die UID Ihrer Firma;
   veröffentlicht werden nur zusammengefasste Ergebnisse." The survey's first
-  page carries the full notice.
+  page carries the full notice. When the length experiment is on
+  (`[invitation] experiment`), half the companies — chosen by their UID — get
+  the short mail, which leaves out this line and the results offer; for them
+  the survey's first page is where they read that the link carries the UID.
+  That page must say so before the experiment is switched on.
 
 ## How it is deleted
 
 - **On request:** `company-reach forget <uid|email>` removes the person
   from the database and the page cache — contacts and everyone named beside
-  them, drafts, profiles, site evidence, the search log, the name in the
-  recommendation — and vacuums the database so nothing stays in free pages.
+  them, drafts, profiles, site evidence, the search log, the imported survey
+  response times for the company, the name in the recommendation — and
+  vacuums the database so nothing stays in free pages.
   The company and the address go on the never-again list, so they are never
   contacted again. The ledger keeps the decision without the address. Files
   the tool did not write are not edited; any that still name the person are
