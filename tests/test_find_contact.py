@@ -587,6 +587,21 @@ async def test_the_same_name_written_differently_is_one_person(db_settings):
     assert out["contact"].name is None
 
 
+async def test_a_firm_or_a_single_word_in_shab_is_not_a_person(db_settings):
+    """The same rule as for a name read off the site: a register entry that
+    is the firm itself, or one word, is no one to greet."""
+    shab = Shab(
+        [
+            shab_person("Muster Metallbau AG", "Gesellschafterin"),
+            shab_person("Muster", "Geschäftsführer"),
+            shab_person("Anna Muster", "Mitglied des Verwaltungsrates"),
+        ]
+    )
+    out = await run(state([], {SITE: "Willkommen"}), db_settings, shab)
+    assert out["contact"].name == "Anna Muster"
+    assert out["contact"].alternatives == []
+
+
 async def test_nothing_anywhere_is_a_finding(db_settings):
     out = await run(state([], {SITE: "Willkommen"}), db_settings)
     assert out["contact"] is None

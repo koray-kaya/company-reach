@@ -7,6 +7,8 @@ because a human is invited to write to it. So nothing the model returns is
 believed on its own:
 
 * a name has to appear in one of the pages, or the person is dropped;
+* a name has to be somebody's: the company's own name, its short name or a
+  single word is on the page for other reasons, and is dropped too;
 * an address has to appear too, or it is dropped while the person stays,
   since being named is a separate claim from being reachable;
 * an address on a domain other than the verified site's is kept and marked.
@@ -27,6 +29,7 @@ been tidied.
 import re
 
 from company_reach.models import CompanyProfile, Person, RawProfile
+from company_reach.nodes.find_site import strip_legal_form
 from company_reach.tools.textify import normalise
 from company_reach.tools.urls import email_domain, registered_domain
 
@@ -54,7 +57,31 @@ def appears_in(value: str, haystack: str) -> bool:
     return bool(value.strip()) and normalise(value) in haystack
 
 
-def checked(raw: RawProfile, *, texts: dict[str, str], site_url: str) -> CompanyProfile:
+def names_a_person(name: str, *, company: str) -> bool:
+    """Whether a name, from the site or from SHAB, is someone to greet.
+
+    The audit found both failures behind "Guten Tag Muster Metallbau AG": the
+    model listed the firm as a person, and presence passed because the firm's
+    name is on every page of its site. A single word ("Kontakt", "Hans") is
+    no better — it greets nobody in particular.
+
+    Only the whole name is compared with the firm's. A family firm carries
+    its owner's name, and "Anna Muster" at "Muster Metallbau AG" is exactly
+    who to write to. The cost is the firm named after the owner and nothing
+    else: "Hans Muster GmbH" loses "Hans Muster", and its inbox is greeted
+    without a name.
+    """
+    folded = normalise(name).strip(" ,.-")
+    words = [word for word in folded.split() if any(c.isalpha() for c in word)]
+    if len(words) < 2:
+        return False
+    firm = {normalise(company).strip(" ,.-"), normalise(strip_legal_form(company))}
+    return folded not in firm
+
+
+def checked(
+    raw: RawProfile, *, texts: dict[str, str], site_url: str, company: str
+) -> CompanyProfile:
     """The profile as it is allowed to leave M5."""
     haystack = normalise("\n".join(texts.values()))
     site = registered_domain(site_url)
@@ -62,6 +89,8 @@ def checked(raw: RawProfile, *, texts: dict[str, str], site_url: str) -> Company
     persons: list[Person] = []
     for person in raw.persons:
         if not appears_in(person.name, haystack):
+            continue
+        if not names_a_person(person.name, company=company):
             continue
         email = person.email
         if email is not None and (is_noise(email) or not appears_in(email, haystack)):

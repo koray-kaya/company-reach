@@ -15,10 +15,13 @@ What is deliberately not checked, and why:
   several. A verbatim check would drop correct addresses for being tidied.
 """
 
+import pytest
+
 from company_reach.models import RawPerson, RawProfile
 from company_reach.tools.checks import checked
 
 SITE = "https://muster-metallbau.ch/"
+COMPANY = "Muster Metallbau AG"
 
 IMPRESSUM = (
     "Impressum. Muster Metallbau AG, Beispielstrasse 1, 8000 Musterstadt. "
@@ -40,7 +43,9 @@ def raw(**over) -> RawProfile:
 
 
 def check(profile: RawProfile, text: str = IMPRESSUM):
-    return checked(profile, texts={f"{SITE}impressum": text}, site_url=SITE)
+    return checked(
+        profile, texts={f"{SITE}impressum": text}, site_url=SITE, company=COMPANY
+    )
 
 
 # --- names -------------------------------------------------------------------
@@ -68,6 +73,33 @@ def test_a_name_differing_only_in_typography_is_kept():
     page = "Geschäftsführer Hans Großmann\u00a0arbeitet hier."
     out = check(raw(persons=[RawPerson(name="Hans Grossmann")]), text=page)
     assert [p.name for p in out.persons] == ["Hans Grossmann"]
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "Muster Metallbau AG",  # the register name
+        "MUSTER METALLBAU AG",  # however it is cased
+        "Muster Metallbau",  # its short name, the legal form stripped
+        "Kontakt",  # a single word is not somebody to greet
+        "Hans",
+        "a",
+    ],
+)
+def test_the_company_name_is_not_a_person(name):
+    """Audit (presence check): the name is on the page, so presence passed,
+    and the invitation greeted "Guten Tag Muster Metallbau AG". A firm or a
+    single word is on the page for other reasons than being a person."""
+    page = IMPRESSUM + " Kontakt: Hans, a"
+    out = check(raw(persons=[RawPerson(name=name, role="Geschäftsleitung")]), page)
+    assert out.persons == []
+
+
+def test_an_owner_whose_name_the_firm_carries_is_still_a_person():
+    # family firms carry the owner's name; only the whole firm name is refused
+    page = IMPRESSUM + " Inhaber: Hans Muster"
+    out = check(raw(persons=[RawPerson(name="Hans Muster")]), page)
+    assert [p.name for p in out.persons] == ["Hans Muster"]
 
 
 # --- e-mail addresses --------------------------------------------------------
@@ -116,6 +148,7 @@ def test_www_does_not_make_the_site_a_different_domain():
         ),
         texts={"x": IMPRESSUM},
         site_url="https://www.muster-metallbau.ch/",
+        company=COMPANY,
     )
     assert out.persons[0].email_offsite is False
 
@@ -180,5 +213,6 @@ def test_a_name_may_be_found_on_any_of_the_pages():
         raw(persons=[RawPerson(name="Beat Grossmann")]),
         texts={"a": "nothing here", "b": IMPRESSUM},
         site_url=SITE,
+        company=COMPANY,
     )
     assert [p.name for p in out.persons] == ["Beat Grossmann"]

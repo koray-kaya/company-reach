@@ -40,7 +40,12 @@ def raw(persons: list[RawPerson], **over) -> RawProfile:
 
 
 def check(profile: RawProfile, name: str):
-    return checked(profile, texts={f"{SITE}impressum": page(name)}, site_url=SITE)
+    return checked(
+        profile,
+        texts={f"{SITE}impressum": page(name)},
+        site_url=SITE,
+        company="Beispiel Holzbau GmbH",
+    )
 
 
 def test_the_planted_person_and_address_do_not_both_survive():
@@ -110,14 +115,15 @@ def test_a_group_page_keeps_its_own_contact_marked():
 
 def test_a_directory_page_yields_no_contact_for_the_company():
     """Directories publish UIDs and addresses of many firms. Nothing on this
-    page is an address for our company, and nothing survives."""
+    page is an address for our company, and nothing survives — not even
+    the "person", who is the firm itself."""
     out = check(
         raw(
             [RawPerson(name="Beispiel Holzbau GmbH", email="info@beispiel-holzbau.ch")]
         ),
         "directory_entry",
     )
-    assert out.persons[0].email is None
+    assert out.persons == []
 
 
 def test_what_the_check_does_not_catch_is_written_down_too():

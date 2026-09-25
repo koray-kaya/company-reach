@@ -59,7 +59,7 @@ from company_reach.nodes.find_site import SiteChoice, strip_legal_form
 from company_reach.settings import Settings
 from company_reach.tools import search as search_tool
 from company_reach.tools import shab as shab_tool
-from company_reach.tools.checks import appears_in, is_noise
+from company_reach.tools.checks import appears_in, is_noise, names_a_person
 from company_reach.tools.db import connect, record_contact
 from company_reach.tools.invitation import (
     can_be_addressed,
@@ -392,7 +392,11 @@ async def find_contact(
         contact.alternatives = [_describe(p.name, p.role, p.email) for p in ranked[1:]]
     else:
         found = await shab(state["uid"], settings=settings)
-        contact = _without_site_names(found, addresses=addresses, domain=domain)
+        # the rule check_profile applies to the site's names
+        people = [
+            p for p in found if names_a_person(p.name, company=state["company"].name)
+        ]
+        contact = _without_site_names(people, addresses=addresses, domain=domain)
 
     if contact is None or contact.email_kind == "constructed":
         name = contact.name if contact else None
