@@ -45,6 +45,7 @@ from company_reach.tools.db import (
 )
 from company_reach.tools.invitation import (
     FRAME_VERSION,
+    is_placeholder_url,
     needs_check,
     salutation,
     split_name,
@@ -271,8 +272,8 @@ def _send_block(
             "(SENDING_APPROVED=true in .env)."
         )
     link = draft.link or ""
-    host = urlsplit(link).hostname or ""
-    if host == "example" or host.endswith(".example"):
+    if is_placeholder_url(link):
+        host = urlsplit(link).hostname
         return (
             f"The survey link is a placeholder ({host}); set survey_url, then "
             f"run `company-reach redraft {run_id}`."

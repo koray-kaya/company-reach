@@ -170,3 +170,34 @@ async def test_the_connect_timeout_stays_short(settings):
     timeout = route.calls.last.request.extensions["timeout"]
     assert timeout["connect"] == 10.0
     assert timeout["read"] == settings.llm_timeout_seconds
+
+
+@pytest.mark.parametrize("status", [429, 500, 503])
+@respx.mock
+async def test_a_busy_endpoint_is_asked_again_after_the_pause(settings, status):
+    """Phase A review: a rate limit or a server error is transient, so it
+    is retried once — after LLM_RETRY_PAUSE_S, since an overload rarely
+    clears in the same second. Nothing pinned either half."""
+    s = settings.model_copy(update={"llm_retry_pause_s": 0.2})
+    route = respx.post(URL).mock(
+        side_effect=[
+            httpx.Response(status, json={"error": {"message": "busy"}}),
+            answer(json.dumps(CRITERIA)),
+        ]
+    )
+    started = time.monotonic()
+    result, _ = await llm.ask("criteria", SelectionCriteria, settings=s, goal="g")
+    assert result.must == ["makes something"]
+    assert route.call_count == 2
+    assert time.monotonic() - started >= 0.2
+
+
+@pytest.mark.parametrize("status", [429, 503])
+@respx.mock
+async def test_a_busy_endpoint_is_asked_twice_at_most(settings, status):
+    route = respx.post(URL).mock(
+        return_value=httpx.Response(status, json={"error": {"message": "busy"}})
+    )
+    with pytest.raises(LlmError, match="after 2 attempts"):
+        await llm.ask("criteria", SelectionCriteria, settings=settings, goal="g")
+    assert route.call_count == 2

@@ -14,7 +14,7 @@ from typing import Annotated
 import typer
 import uvicorn
 
-from company_reach.errors import CompanyReachError
+from company_reach.errors import CompanyReachError, ProfileError
 from company_reach.graph import (
     build_child,
     build_stub_child,
@@ -33,7 +33,7 @@ from company_reach.nodes.write_criteria import (
     format_criteria,
     write_criteria,
 )
-from company_reach.profile import goal_hash, load_profile
+from company_reach.profile import Profile, goal_hash, load_profile
 from company_reach.settings import Settings, get_settings
 from company_reach.tools import llm
 from company_reach.tools.db import (
@@ -60,13 +60,24 @@ V0_DIR = Path("data/v0")
 app = typer.Typer(help="Find Swiss companies, find the person, draft the mail.")
 
 
+def _profile(s: Settings) -> Profile:
+    """profile.toml, or a message and exit code 1: a missing or broken file
+    is the user's to fix, and a traceback would bury the sentence that says
+    how (Phase A review)."""
+    try:
+        return load_profile(s.profile_path)
+    except ProfileError as error:
+        typer.echo(str(error), err=True)
+        raise typer.Exit(1) from error
+
+
 def _resolve_goal(explicit: str | None) -> str:
     """--goal wins; otherwise profile.toml. Trying a goal on the command line
     without editing the file is the common case while wording is still being
     worked out."""
     if explicit:
         return explicit.strip()
-    return load_profile(get_settings().profile_path).goal
+    return _profile(get_settings()).goal
 
 
 def _run_id(explicit: str | None) -> str:
@@ -524,6 +535,8 @@ def run(
     """
     s = get_settings()
     text = _resolve_goal(goal)
+    # --goal overrides the goal only; the drafts still say who writes
+    about_me = _profile(s).about_me
     rid = _run_id(run_id)
 
     # `work` holds the database the run reads and writes; `s` the real data
@@ -535,12 +548,19 @@ def run(
 
         with connect(work.db_path) as conn:
             stored = load_criteria(conn, goal_hash(text))
-        start_manifest(rid, settings=s, goal=text, seed=seed, criteria=stored, dry=dry)
+        start_manifest(
+            rid,
+            settings=s,
+            goal=text,
+            seed=seed,
+            about_me=about_me,
+            criteria=stored,
+            dry=dry,
+        )
         state = initial_state(
             run_id=rid,
             goal=text,
-            # --goal overrides the goal only; the drafts still say who writes
-            about_me=load_profile(s.profile_path).about_me,
+            about_me=about_me,
             municipality="",
             settings=work,
             seed=seed,
@@ -769,12 +789,7 @@ def retry(
         f"{len(failing)} still failing"
     )
     for r in results:
-        outcome = (
-            f"{r.error_kind} error: {r.error_text}"
-            if r.error_kind
-            else (f"{r.recommendation}: {r.reason}")
-        )
-        typer.echo(f"  {r.uid}  {outcome}")
+        typer.echo(outcome_line(r))
 
 
 @app.command()
@@ -989,14 +1004,19 @@ def _resume(rid: str, goal: str | None, seed: int, target: int) -> str:
     return " ".join(parts)
 
 
-def _echo_result(result: CompanyResult) -> None:
-    """One line per company, the moment its child returns."""
+def outcome_line(result: CompanyResult) -> str:
+    """A company's line in `run` and `retry`: its verdict, or its error."""
     outcome = (
         f"{result.error_kind} error: {result.error_text}"
         if result.error_kind
         else f"{result.recommendation}: {result.reason}"
     )
-    typer.echo(f"  {result.uid}  {outcome}")
+    return f"  {result.uid}  {outcome}"
+
+
+def _echo_result(result: CompanyResult) -> None:
+    """One line per company, the moment its child returns."""
+    typer.echo(outcome_line(result))
 
 
 def _echo_contact(contact) -> None:

@@ -11,7 +11,13 @@ from company_reach import cli
 from company_reach.errors import SearchError
 from company_reach.graph import build_stub_child
 from company_reach.manifest import manifest_path, start_manifest
-from company_reach.models import CompanyRecord, RawPerson, Score, SelectionCriteria
+from company_reach.models import (
+    CompanyRecord,
+    CompanyResult,
+    RawPerson,
+    Score,
+    SelectionCriteria,
+)
 from company_reach.nodes import find_site as find_site_node
 from company_reach.profile import goal_hash
 from company_reach.tools import llm
@@ -947,6 +953,45 @@ def test_a_leftover_unfinished_company_is_reported(settings, monkeypatch):
     assert "r9 is a real run; use another id" in dry.output
     manifest = json.loads(manifest_path("r9", settings=settings).read_text())
     assert manifest["dry"] is False and manifest["counts"]["errors"] == 1
+
+
+def test_the_manifest_records_about_me(settings, monkeypatch):
+    """Phase A review: the drafts said who writes, and the manifest said
+    nobody — `run` never passed about_me to it."""
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    settings.profile_path.write_text(
+        'goal = "Firms that make things."\n'
+        'about_me = "Eine Studentin der Beispiel-Hochschule."\n'
+    )
+    _seed_scored_pool(settings, {"CHE000000001": 9})
+
+    assert _dry_run("r1").exit_code == 0
+    manifest = json.loads(manifest_path("r1", settings=settings).read_text())
+    assert manifest["about_me"] == "Eine Studentin der Beispiel-Hochschule."
+
+
+def test_run_with_a_goal_but_no_profile_says_what_is_missing(settings, monkeypatch):
+    """Phase A review: `run --goal` reads about_me from the profile, and
+    without one it ended in a ProfileError traceback."""
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    _seed_scored_pool(settings, {"CHE000000001": 9})
+    settings.profile_path.unlink()
+
+    r = _dry_run("r1")
+
+    assert r.exit_code == 1
+    assert isinstance(r.exception, SystemExit)  # a message, not a traceback
+    assert "no profile.toml" in r.output
+    assert not manifest_path("r1", settings=settings).exists()
+
+
+def test_run_and_retry_word_an_outcome_alike():
+    """Phase A review: `run` and `retry` each formatted a company's line."""
+    failed = CompanyResult(uid="CHE000000001", error_kind="search", error_text="x")
+    done = CompanyResult(uid="CHE000000002", recommendation="send", reason="y")
+
+    assert cli.outcome_line(failed) == "  CHE000000001  search error: x"
+    assert cli.outcome_line(done) == "  CHE000000002  send: y"
 
 
 # --- redraft (frame@1) --------------------------------------------------------
