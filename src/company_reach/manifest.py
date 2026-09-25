@@ -98,16 +98,20 @@ def start_manifest(
     seed: int,
     about_me: str = "",
     criteria: StoredCriteria | None = None,
+    dry: bool = False,
 ) -> Path:
     """`criteria` are the goal's stored ones, the rules the drawn companies
     were scored against; None for a goal whose scores predate stored
-    criteria, which the file then says rather than leaves out."""
+    criteria, which the file then says rather than leaves out. `dry` says
+    the run worked on a copy of the database, which is why it left no trace
+    there."""
     return _write(
         run_id,
         settings=settings,
         fields={
             "run_id": run_id,
             "status": "running",
+            "dry": dry,
             "started_at": now(),
             "goal": goal,
             "goal_hash": goal_hash(goal),

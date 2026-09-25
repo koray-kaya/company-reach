@@ -346,6 +346,26 @@ def test_a_drawn_out_pool_says_it_is_exhausted(settings, monkeypatch):
     assert "pool another municipality" in r.output
 
 
+def test_a_dry_run_leaves_the_real_database_untouched(settings, monkeypatch):
+    """Phase A's final review: a dry run wrote `seen` and `results` into the
+    real database, so a demonstration took real companies out of every
+    later run."""
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    _seed_scored_pool(settings, {"CHE000000001": 9, "CHE000000002": 7})
+    with connect(settings.db_path) as conn:
+        before = list(conn.iterdump())
+
+    r = _dry_run("r1")
+
+    assert r.exit_code == 0, r.output
+    assert "2 companies" in r.output  # the loop ran, on a copy
+    with connect(settings.db_path) as conn:
+        assert list(conn.iterdump()) == before
+    m = json.loads(manifest_path("r1", settings=settings).read_text())
+    assert m["dry"] is True  # the record says why the database has no trace
+    assert _dry_run("r2").exit_code == 0  # both are still drawable
+
+
 def test_run_target_reaches_the_loop_and_the_resume_hint(settings, monkeypatch):
     monkeypatch.setattr(cli, "get_settings", lambda: settings)
     _seed_scored_pool(settings, {"CHE000000001": 9})

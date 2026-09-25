@@ -2,7 +2,10 @@
 --help; the wiring to the `company-reach` executable is [project.scripts]."""
 
 import asyncio
+import tempfile
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Annotated
 
@@ -29,10 +32,11 @@ from company_reach.nodes.write_criteria import (
     write_criteria,
 )
 from company_reach.profile import goal_hash, load_profile
-from company_reach.settings import get_settings
+from company_reach.settings import Settings, get_settings
 from company_reach.tools import llm
 from company_reach.tools.db import (
     connect,
+    copy_database,
     count_brave_queries,
     current_criteria_hash,
     errored_uids,
@@ -62,6 +66,24 @@ def _resolve_goal(explicit: str | None) -> str:
 
 def _run_id(explicit: str | None) -> str:
     return explicit or f"r{uuid.uuid4().hex[:8]}"
+
+
+@contextmanager
+def _work_database(s: Settings, *, dry: bool) -> Iterator[Settings]:
+    """The settings a run reads and writes the database through.
+
+    A real run gets `s` itself. A dry run gets settings whose data directory
+    is a throwaway copy of the real database: the loop writes `seen` and
+    `results`, and on the real database a demonstration marked real
+    companies as drawn, out of every later run (Phase A's final review)."""
+    if not dry:
+        yield s
+        return
+    with tempfile.TemporaryDirectory(prefix="company-reach-dry-") as tmp:
+        work = s.model_copy(update={"data_dir": Path(tmp)})
+        if s.db_path.is_file():
+            copy_database(s.db_path, work.db_path)
+        yield work
 
 
 def _require_a_scored_pool(s, goal: str, run_id: str) -> None:
@@ -375,45 +397,52 @@ def run(
 
     The pool stages are separate commands, so this starts from a database that
     `pool` and `score` have already filled. That is what keeps `--dry` offline
-    and quick enough to demonstrate.
+    and quick enough to demonstrate; `--dry` works on a copy of the database.
     """
     s = get_settings()
     text = _resolve_goal(goal)
     rid = _run_id(run_id)
-    _require_a_scored_pool(s, text, rid)
-
-    with connect(s.db_path) as conn:
-        stored = load_criteria(conn, goal_hash(text))
-    start_manifest(rid, settings=s, goal=text, seed=seed, criteria=stored)
-    state = initial_state(
-        run_id=rid,
-        goal=text,
-        # --goal overrides the goal only; the drafts still say who writes
-        about_me=load_profile(s.profile_path).about_me,
-        municipality="",
-        settings=s,
-        seed=seed,
-        target=target,
-    )
     resume = _resume(rid, dry, goal, seed, target)
 
-    typer.echo(f"run {rid} — if it stops, run it again with: {resume}")
-    try:
-        child = build_stub_child() if dry else build_child(settings=s)
-        out = asyncio.run(
-            run_graph(state, settings=s, child=child, dry=dry, on_result=_echo_result)
-        )
-    except Exception as error:
-        reason = f"{type(error).__name__}: {error}"
-        finish_manifest(rid, settings=s, status="failed", counts={}, reason=reason)
-        typer.echo(f"run {rid} failed — {reason}", err=True)
-        raise typer.Exit(1) from error
+    # `work` holds the database the run reads and writes; `s` the real data
+    # directory, where the manifest goes whether the run is dry or not.
+    with _work_database(s, dry=dry) as work:
+        _require_a_scored_pool(work, text, rid)
 
-    with connect(s.db_path) as conn:
-        # From the table, not this call's children: a company an earlier,
-        # crashed attempt left unfinished belongs in the count too.
-        errors = len(errored_uids(conn, rid))
-        brave = count_brave_queries(conn, rid)
+        with connect(work.db_path) as conn:
+            stored = load_criteria(conn, goal_hash(text))
+        start_manifest(rid, settings=s, goal=text, seed=seed, criteria=stored, dry=dry)
+        state = initial_state(
+            run_id=rid,
+            goal=text,
+            # --goal overrides the goal only; the drafts still say who writes
+            about_me=load_profile(s.profile_path).about_me,
+            municipality="",
+            settings=work,
+            seed=seed,
+            target=target,
+        )
+
+        typer.echo(f"run {rid} — if it stops, run it again with: {resume}")
+        try:
+            child = build_stub_child() if dry else build_child(settings=work)
+            out = asyncio.run(
+                run_graph(
+                    state, settings=work, child=child, dry=dry, on_result=_echo_result
+                )
+            )
+        except Exception as error:
+            reason = f"{type(error).__name__}: {error}"
+            finish_manifest(rid, settings=s, status="failed", counts={}, reason=reason)
+            typer.echo(f"run {rid} failed — {reason}", err=True)
+            raise typer.Exit(1) from error
+
+        with connect(work.db_path) as conn:
+            # From the table, not this call's children: a company an earlier,
+            # crashed attempt left unfinished belongs in the count too.
+            errors = len(errored_uids(conn, rid))
+            brave = count_brave_queries(conn, rid)
+
     counts = {
         "batches_drawn": out["batches_drawn"],
         "results": len(out["results"]),
@@ -446,7 +475,10 @@ def run(
     elif counts["errors"]:
         typer.echo(f"retry the errors with: company-reach retry {rid}")
     if dry:
-        typer.echo("--dry: every company was skipped by the M3 stub child.")
+        typer.echo(
+            "--dry: every company was skipped by the M3 stub child, on a copy "
+            "of the database; nothing was recorded."
+        )
 
 
 @app.command("import-v0")

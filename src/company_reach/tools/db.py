@@ -120,6 +120,18 @@ def connect(path: Path) -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
+def copy_database(source: Path, target: Path) -> None:
+    """A consistent copy of a live database, through SQLite's backup API: a
+    plain file copy would miss what still sits in the WAL file."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    src, dst = sqlite3.connect(source), sqlite3.connect(target)
+    try:
+        src.backup(dst)
+    finally:
+        src.close()
+        dst.close()
+
+
 def now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
