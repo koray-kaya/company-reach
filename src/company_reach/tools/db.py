@@ -942,23 +942,41 @@ def rewrite_draft(
     """The same draft rebuilt by code around the same sentence — the card's
     salutation or address, or `redraft` after the profile or the contact
     changed — with the outcome of checking it again. `contact_id` moves the
-    draft to the contact it now addresses."""
+    draft to the contact it now addresses.
+
+    In place, unless a ledger row names the draft: a card reopened by a
+    bounce still has the text that went out under that id, and it stays;
+    the rebuilt mail becomes a new draft, the card's latest (D, review 7)."""
+    values = (
+        draft.subject,
+        draft.body,
+        int(draft.mailto_fits),
+        draft.model_text,
+        draft.frame_version,
+        draft.arm,
+        "; ".join(found),
+        contact_id,
+    )
+    named = conn.execute(
+        "select 1 from ledger where draft_id = ? limit 1", (draft_id,)
+    ).fetchone()
+    if named is None:
+        conn.execute(
+            """update drafts set subject = ?, body = ?, mailto_fits = ?,
+                 model_text = ?, frame_version = ?, arm = ?, problems = ?,
+                 contact_id = coalesce(?, contact_id)
+                where id = ?""",
+            (*values, draft_id),
+        )
+        return
     conn.execute(
-        """update drafts set subject = ?, body = ?, mailto_fits = ?,
-             model_text = ?, frame_version = ?, arm = ?, problems = ?,
-             contact_id = coalesce(?, contact_id)
-            where id = ?""",
-        (
-            draft.subject,
-            draft.body,
-            int(draft.mailto_fits),
-            draft.model_text,
-            draft.frame_version,
-            draft.arm,
-            "; ".join(found),
-            contact_id,
-            draft_id,
-        ),
+        """insert into drafts (run_id, uid, contact_id, subject, body,
+             mailto_fits, model_text, frame_version, arm, problems,
+             prompt_version, model, created_at)
+           select run_id, uid, coalesce(?, contact_id), ?, ?, ?, ?, ?, ?, ?,
+                  prompt_version, model, ?
+             from drafts where id = ?""",
+        (contact_id, *values[:7], now(), draft_id),
     )
 
 

@@ -717,6 +717,34 @@ def test_a_bounce_can_be_undone_while_it_is_the_newest_row(client, review):
     assert "Undo bounce" not in client.get(f"/review/{RUN}/0").text
 
 
+def test_a_reopened_card_rebuilds_into_a_new_draft(client, review):
+    """Review: after a bounce the card is open again, and its salutation
+    toggle rewrote in place the draft the sent row names. The text that
+    went out stays under its id; the rebuilt mail is a new draft."""
+    import hashlib
+
+    with_two_addresses(review)
+    post_send(client, "info@muster-metallbau.ch")
+    bounce(client)
+    with connect(review.db_path) as conn:
+        sent = conn.execute(
+            "select draft_id, body_sha256 from ledger where status = 'sent'"
+        ).fetchone()
+
+    r = client.post(
+        f"/decide/{RUN}/{SEND}?n=0", data={"action": "salutation:ohne"}, headers=SAME
+    )
+    assert r.status_code == 303
+    with connect(review.db_path) as conn:
+        kept = conn.execute(
+            "select body from drafts where id = ?", (sent["draft_id"],)
+        ).fetchone()
+    assert hashlib.sha256(kept["body"].encode()).hexdigest() == sent["body_sha256"]
+    html = client.get(f"/review/{RUN}/0").text
+    assert shown(html)["draft_id"] != str(sent["draft_id"])
+    assert "Guten Tag Anna Muster" in html
+
+
 def test_a_bounce_is_final_once_something_else_is_decided(client, review):
     with_two_addresses(review)
     post_send(client, "info@muster-metallbau.ch")
