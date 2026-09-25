@@ -223,3 +223,37 @@ def test_a_request_for_another_host_is_refused(page, host):
     assert r.status_code == 400
     assert jobs.current is None
     assert client.get("/", headers={"host": "localhost:8000"}).status_code == 200
+
+
+# --- the way in to the cards (the owner could not find it) --------------------
+
+
+def test_the_front_page_leads_to_the_mails_waiting(page):
+    # the only way in was a link named after the run id; nobody reads
+    # "rff5e5db8" as "your mails are here"
+    client, _ = open_page(page)
+    html = client.get("/").text
+    assert "1 mail waiting for you" in html
+    assert (
+        f'<a class="button primary" href="/review/{RUN}">Review the mails</a>' in html
+    )
+    assert f'<a class="button" href="/review/{RUN}">Review · 1 waiting</a>' in html
+
+
+def test_nothing_waits_once_every_mail_is_decided(page):
+    from review_seed import SEND
+
+    from company_reach.tools.db import record_decision
+
+    with connect(page.db_path) as conn:
+        record_decision(conn, SEND, "skipped", note="Not a fit")
+    client, _ = open_page(page)
+    html = client.get("/").text
+    assert "waiting for you" not in html
+    assert f'<a class="button" href="/review/{RUN}">Review</a>' in html
+
+
+def test_a_card_leads_back_to_the_front_page(page):
+    client, _ = open_page(page)
+    html = client.get(f"/review/{RUN}/0").text
+    assert '<a class="home-link" href="/">' in html

@@ -11,6 +11,13 @@
 <main>
   <h1>company-reach</h1>
 
+  {% if waiting_total %}
+  <section class="waiting">
+    <p><strong>{{ waiting_total }} mail{{ "s" if waiting_total != 1 }} waiting for you.</strong> Read each one, then Send, Skip or Never.</p>
+    <a class="button primary" href="/review/{{ first_waiting }}">Review the mails</a>
+  </section>
+  {% endif %}
+
   <section>
     <p class="label">Where the campaign stands</p>
     {% if profile_problem %}
@@ -59,8 +66,8 @@
     <p class="label">Runs to review</p>
     {% for run in runs %}
     <div class="run">
-      <a href="/review/{{ run.run_id }}">{{ run.run_id }}</a>
-      <span class="src">{{ run.companies }} companies · {{ run.to_send or 0 }} to send{% if run.errors %} · {{ run.errors }} errors{% endif %} · {{ (run.finished or "")[:10] }}</span>
+      {% if waiting[run.run_id] %}<a class="button" href="/review/{{ run.run_id }}">Review · {{ waiting[run.run_id] }} waiting</a>{% else %}<a class="button" href="/review/{{ run.run_id }}">Review</a>{% endif %}
+      <span class="src">run {{ run.run_id }} · {{ run.companies }} companies · {{ run.to_send or 0 }} to send{% if run.errors %} · {{ run.errors }} errors{% endif %} · {{ (run.finished or "")[:10] }}</span>
       {% if run.errors %}
       <form method="post" action="/jobs/retry"><input type="hidden" name="value" value="{{ run.run_id }}"><button class="small" {% if job and job.running %}disabled{% endif %}>Retry errors</button></form>
       {% endif %}

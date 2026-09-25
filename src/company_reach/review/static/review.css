@@ -145,3 +145,10 @@ body.home{overflow:auto}
 .home .run{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--line)}
 .home .run .src{font-size:13px;color:var(--muted);flex:1;min-width:200px}
 .home .blocked{color:var(--warn-ink)}
+.home a.button{display:inline-block;font-weight:700;padding:8px 14px;border-radius:8px;border:1px solid var(--line);background:var(--surface);color:var(--ink);text-decoration:none}
+.home a.button:hover{border-color:var(--blue);color:var(--blue);text-decoration:none}
+.home a.button.primary{background:var(--blue);border-color:var(--blue);color:var(--on-blue)}
+.home a.button.primary:hover{background:var(--blue-hover);color:var(--on-blue)}
+.home .waiting{display:flex;flex-wrap:wrap;align-items:center;gap:12px 20px;padding:16px;border-radius:10px;background:var(--tint);color:var(--tint-ink)}
+.home .waiting p{flex:1;min-width:220px}
+.bar .home-link{white-space:nowrap;font-weight:700}

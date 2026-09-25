@@ -14,6 +14,7 @@
 <input type="hidden" name="body_sha256" value="{{ card.draft.body_sha256 }}">
 {% endif %}
   <header class="bar">
+    <a class="home-link" href="/">← Home</a>
     <div class="goal"><strong>{{ goal }}</strong></div>
     <div class="progress" aria-hidden="true">
       {% for other in cards %}<i class="{% if loop.index0 == n %}now{% elif other.decision == 'sent' %}sent{% elif other.decision %}skipped{% endif %}"></i>{% endfor %}
