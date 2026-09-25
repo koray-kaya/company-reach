@@ -37,7 +37,6 @@ from company_reach.profile import goal_hash, load_profile
 from company_reach.settings import Settings, get_settings
 from company_reach.tools import llm
 from company_reach.tools.db import (
-    closed_because,
     connect,
     copy_database,
     count_brave_queries,
@@ -46,6 +45,7 @@ from company_reach.tools.db import (
     errored_uids,
     init_db,
     load_criteria,
+    off_limits_because,
     pool_standing,
     record_run,
     score_run_criteria,
@@ -805,7 +805,8 @@ def enrich(
 
     The milestone's demo, and the way to look at a single disagreement
     between the register and a website without drawing a batch. A company
-    a reviewer decided about, or on the never-again list, is refused.
+    on the never-again list, marked never, or already written to is
+    refused; a skipped one is not.
     """
     if until not in ("site", "profile", "contact", "draft"):
         raise typer.BadParameter(
@@ -814,11 +815,12 @@ def enrich(
 
     s = get_settings()
     with connect(s.db_path) as conn:
-        closed = closed_because(conn, uid)
-    if closed:
-        # the same rule as retry: nothing more is collected about a company
-        # a reviewer decided about or that asked never to hear from us
-        typer.echo(f"{uid}: not enriched — {closed}.", err=True)
+        refused = off_limits_because(conn, uid)
+    if refused:
+        # nothing more is collected about a company that asked never to
+        # hear from us or was already written to; a skip does not stop a
+        # person from looking
+        typer.echo(f"{uid}: not enriched — {refused}.", err=True)
         raise typer.Exit(2)
     rid = _run_id(run_id)
     child = build_child(settings=s, until=until)

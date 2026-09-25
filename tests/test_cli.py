@@ -591,6 +591,27 @@ def test_enrich_refuses_a_suppressed_uid(settings, monkeypatch, closed):
         assert conn.execute("select count(*) from searches").fetchone()[0] == 0
 
 
+def test_enrich_looks_at_a_skipped_company(settings, monkeypatch):
+    """Review: a skip — imported from v0, or "Not a fit" on the card —
+    says nothing about being written to or asking not to be. `enrich` may
+    look; only retry and a resumed batch leave every decided company alone."""
+    from company_reach.tools.db import record_decision
+
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    _seed_one_company(settings)
+    with connect(settings.db_path) as conn:
+        record_decision(conn, "CHE000000046", "skipped", run_id="v0", note="v0")
+
+    class NoSite:
+        async def ainvoke(self, state, config=None):
+            return {"reason": "no website found after 3 searches"}
+
+    monkeypatch.setattr(cli, "build_child", lambda settings, until: NoSite())
+    r = runner.invoke(cli.app, ["enrich", "--uid", "CHE000000046", "--until", "site"])
+    assert r.exit_code == 0, r.output
+    assert "no website" in r.output
+
+
 def test_enrich_on_an_unknown_company_says_so(settings, monkeypatch):
     monkeypatch.setattr(cli, "get_settings", lambda: settings)
     init_db(settings.db_path)

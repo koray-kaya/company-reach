@@ -982,9 +982,10 @@ def delete_draft(conn: sqlite3.Connection, run_id: str, uid: str) -> None:
 
 # A company a reviewer decided about — sent, skipped, never, bounced, even a
 # skip since undone — or one on the never-again list. Nothing more is
-# collected about it: `retry`, `retry --no-site`, a resumed batch and
-# `enrich` all read this one rule (audit H7), and `closed_because` is the
-# same rule for one company.
+# collected about it by the batch machinery: `retry`, `retry --no-site` and
+# a resumed batch all read this one rule (audit H7), and `closed_because`
+# is the same rule for one company. `enrich`, a person looking at one
+# company, reads the narrower `off_limits_because`.
 _CLOSED = "(uid in (select uid from ledger) or uid in (select key from suppression))"
 
 
@@ -1031,6 +1032,22 @@ def closed_because(conn: sqlite3.Connection, uid: str) -> str | None:
     ).fetchone()
     if row is not None:
         return f"a reviewer decided about it ({row['status']})"
+    return None
+
+
+def off_limits_because(conn: sqlite3.Connection, uid: str) -> str | None:
+    """Why `enrich` may not look at this company, or None: it is on the
+    never-again list, a reviewer marked it never, or it was written to
+    (a mail not taken back). A skip says only that it was not a fit then."""
+    if is_suppressed(conn, uid):
+        return "it is on the never-again list"
+    never = conn.execute(
+        "select 1 from ledger where uid = ? and status = 'never' limit 1", (uid,)
+    ).fetchone()
+    if never is not None:
+        return "a reviewer marked it never"
+    if was_contacted(conn, uid):
+        return "it was already written to"
     return None
 
 
