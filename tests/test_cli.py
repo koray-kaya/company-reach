@@ -16,6 +16,7 @@ from company_reach.tools import llm
 from company_reach.tools.db import (
     connect,
     init_db,
+    record_seen,
     store_criteria,
     upsert_companies,
     upsert_scores,
@@ -40,9 +41,11 @@ def test_pool_then_screen(settings, monkeypatch):
     assert "kept 2" in r.output and "dropped 1" in r.output
 
 
-def _seed_scored_pool(settings, scores: dict[str, int]) -> None:
+def _seed_scored_pool(
+    settings, scores: dict[str, int], *, prompt_version: str | None = None
+) -> None:
     init_db(settings.db_path)
-    version, _ = llm.load_prompt("score")
+    version = prompt_version or llm.load_prompt("score")[0]
     with connect(settings.db_path) as conn:
         upsert_companies(
             conn,
@@ -139,6 +142,58 @@ def test_run_dry_on_an_empty_database_says_what_to_run(settings, monkeypatch):
 
     assert r.exit_code != 0
     assert "pool" in r.output and "screen" in r.output and "score" in r.output
+
+
+def _dry_run(run_id: str = "r1"):
+    return runner.invoke(
+        cli.app, ["run", "--dry", "--goal", "make and sell", "--run-id", run_id]
+    )
+
+
+def test_a_prompt_bump_says_rescore(settings, monkeypatch):
+    """Audit: after a score.md version bump the guard still passed, and the
+    run said "pool exhausted" with exit 0 about a pool that only needed
+    scoring again."""
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    _seed_scored_pool(
+        settings, {"CHE000000001": 9, "CHE000000002": 8}, prompt_version="0"
+    )
+
+    r = _dry_run()
+
+    assert r.exit_code == 2
+    version, _ = llm.load_prompt("score")
+    assert f"0 companies clear score >= 7 for score@{version} / test-model" in r.output
+    assert "2 are scored under another prompt version (score@0)" in r.output
+    assert "run `score`" in r.output
+    assert "pool exhausted" not in r.output
+
+
+def test_nothing_above_the_threshold_says_so(settings, monkeypatch):
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    _seed_scored_pool(settings, {"CHE000000001": 6, "CHE000000002": 5})
+
+    r = _dry_run()
+
+    assert r.exit_code == 2
+    assert "0 companies clear score >= 7" in r.output
+    assert "2 are scored, the best 6" in r.output
+    assert "pool exhausted" not in r.output
+
+
+def test_a_drawn_out_pool_says_it_is_exhausted(settings, monkeypatch):
+    """Everything that clears the bar was drawn by earlier runs."""
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    _seed_scored_pool(settings, {"CHE000000001": 9})
+    with connect(settings.db_path) as conn:
+        record_seen(conn, ["CHE000000001"], run_id="r1", batch_no=1)
+
+    r = _dry_run("r2")
+
+    assert r.exit_code == 2
+    assert "(1) was drawn, decided or suppressed already" in r.output
+    assert "the pool is exhausted" in r.output
+    assert "pool another municipality" in r.output
 
 
 def _seed_one_company(settings) -> None:

@@ -8,6 +8,7 @@ import json
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from importlib.resources import files
 from pathlib import Path
@@ -338,6 +339,38 @@ def record_run(
         )
 
 
+# What a run may draw, written once. `draw_batch` and the guard in `run` both
+# read this text, so they cannot disagree about it: the guard used to count
+# any score, and passed a pool nothing could be drawn from.
+_DRAWABLE = """
+             from companies c
+             join scores s
+               on s.uid = c.uid and s.goal_hash = :goal_hash
+              and s.prompt_version = :prompt_version and s.model = :model
+              and s.criteria_hash is :criteria_hash
+            where c.screen_reason is null
+              and s.score >= :min_score
+              -- not already drawn in THIS run, or the loop would redraw it
+              and c.uid not in (select uid from seen where run_id = :run_id)
+              -- a reviewer decided about it, or it may never be contacted
+              and c.uid not in (select uid from ledger)
+              and c.uid not in (select key from suppression)
+              -- never drawn at all, or drawn only by earlier runs that failed
+              -- on it: an errored company was never contacted and has no
+              -- draft, so there is nothing to protect it from. "Only" is the
+              -- point — a company another run finished after an error keeps
+              -- that old error row, and may already have been written to.
+              and (c.uid not in (select uid from seen)
+                   or (c.uid in (select uid from results
+                                  where error_kind is not null
+                                    -- still in flight elsewhere, or crashed:
+                                    -- its own run id finishes it, not ours
+                                    and error_kind <> 'interrupted'
+                                    and run_id <> :run_id)
+                       and c.uid not in (select uid from results
+                                          where error_kind is null)))"""
+
+
 def draw_batch(
     conn: sqlite3.Connection,
     *,
@@ -374,47 +407,115 @@ def draw_batch(
         return recorded
 
     rows = conn.execute(
-        """select c.uid
-             from companies c
-             join scores s
-               on s.uid = c.uid and s.goal_hash = ?
-              and s.prompt_version = ? and s.model = ?
-              and s.criteria_hash is ?
-            where c.screen_reason is null
-              and s.score >= ?
-              -- not already drawn in THIS run, or the loop would redraw it
-              and c.uid not in (select uid from seen where run_id = ?)
-              -- never drawn at all, or drawn only by earlier runs that failed
-              -- on it: an errored company was never contacted and has no
-              -- draft, so there is nothing to protect it from. "Only" is the
-              -- point — a company another run finished after an error keeps
-              -- that old error row, and may already have been written to.
-              -- a reviewer decided about it, or it may never be contacted
-              and c.uid not in (select uid from ledger)
-              and c.uid not in (select key from suppression)
-              and (c.uid not in (select uid from seen)
-                   or (c.uid in (select uid from results
-                                  where error_kind is not null
-                                    -- still in flight elsewhere, or crashed:
-                                    -- its own run id finishes it, not ours
-                                    and error_kind <> 'interrupted'
-                                    and run_id <> ?)
-                       and c.uid not in (select uid from results
-                                          where error_kind is null)))
-            order by s.score desc
-            limit ?""",
-        (
-            goal_hash,
-            prompt_version,
-            model,
-            criteria_hash,
-            min_score,
-            run_id,
-            run_id,
-            limit,
-        ),
+        f"select c.uid {_DRAWABLE} order by s.score desc limit :limit",
+        {
+            "run_id": run_id,
+            "goal_hash": goal_hash,
+            "prompt_version": prompt_version,
+            "model": model,
+            "criteria_hash": criteria_hash,
+            "min_score": min_score,
+            "limit": limit,
+        },
     ).fetchall()
     return [r["uid"] for r in rows]
+
+
+@dataclass(frozen=True)
+class Standing:
+    """How the pool stands against one score key: what `run` could draw,
+    and if nothing, why not. Each kept company counts once, under the first
+    of current, earlier_criteria, other_prompt, other_model, unscored."""
+
+    pooled: int
+    kept: int
+    current: int  # scored under this goal, prompt version, model, criteria
+    best: int | None  # the highest current score
+    clear: int  # current scores at or above the bar
+    drawable: int  # of those, what this run may still draw
+    earlier_criteria: int
+    other_prompt: int
+    other_prompt_versions: list[str]
+    other_model: int
+    unscored: int
+
+
+def pool_standing(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    goal_hash: str,
+    prompt_version: str,
+    model: str,
+    criteria_hash: str | None,
+    min_score: int,
+) -> Standing:
+    key = {
+        "run_id": run_id,
+        "goal_hash": goal_hash,
+        "prompt_version": prompt_version,
+        "model": model,
+        "criteria_hash": criteria_hash,
+        "min_score": min_score,
+    }
+    kinds = {
+        r["kind"]: r["n"]
+        for r in conn.execute(
+            """select case
+                 when exists (select 1 from scores s where s.uid = c.uid
+                                and s.goal_hash = :goal_hash
+                                and s.prompt_version = :prompt_version
+                                and s.model = :model
+                                and s.criteria_hash is :criteria_hash)
+                   then 'current'
+                 when exists (select 1 from scores s where s.uid = c.uid
+                                and s.goal_hash = :goal_hash
+                                and s.prompt_version = :prompt_version
+                                and s.model = :model)
+                   then 'earlier_criteria'
+                 when exists (select 1 from scores s where s.uid = c.uid
+                                and s.goal_hash = :goal_hash and s.model = :model)
+                   then 'other_prompt'
+                 when exists (select 1 from scores s where s.uid = c.uid
+                                and s.goal_hash = :goal_hash)
+                   then 'other_model'
+                 else 'unscored' end as kind,
+                 count(*) as n
+                 from companies c where c.screen_reason is null group by kind""",
+            key,
+        )
+    }
+    best, clear = conn.execute(
+        """select max(s.score), count(*) filter (where s.score >= :min_score)
+             from scores s join companies c on c.uid = s.uid
+            where c.screen_reason is null and s.goal_hash = :goal_hash
+              and s.prompt_version = :prompt_version and s.model = :model
+              and s.criteria_hash is :criteria_hash""",
+        key,
+    ).fetchone()
+    versions = [
+        r[0]
+        for r in conn.execute(
+            """select distinct prompt_version from scores
+                where goal_hash = :goal_hash and model = :model
+                  and prompt_version <> :prompt_version
+                order by prompt_version""",
+            key,
+        )
+    ]
+    return Standing(
+        pooled=conn.execute("select count(*) from companies").fetchone()[0],
+        kept=sum(kinds.values()),
+        current=kinds.get("current", 0),
+        best=best,
+        clear=clear,
+        drawable=conn.execute(f"select count(*) {_DRAWABLE}", key).fetchone()[0],
+        earlier_criteria=kinds.get("earlier_criteria", 0),
+        other_prompt=kinds.get("other_prompt", 0),
+        other_prompt_versions=versions,
+        other_model=kinds.get("other_model", 0),
+        unscored=kinds.get("unscored", 0),
+    )
 
 
 def record_seen(

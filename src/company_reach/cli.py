@@ -30,12 +30,15 @@ from company_reach.nodes.write_criteria import (
 )
 from company_reach.profile import goal_hash, load_profile
 from company_reach.settings import get_settings
+from company_reach.tools import llm
 from company_reach.tools.db import (
     connect,
     count_brave_queries,
+    current_criteria_hash,
     errored_uids,
     init_db,
     load_criteria,
+    pool_standing,
     record_run,
     store_criteria,
 )
@@ -59,21 +62,72 @@ def _run_id(explicit: str | None) -> str:
     return explicit or f"r{uuid.uuid4().hex[:8]}"
 
 
-def _require_a_scored_pool(s, goal: str) -> None:
-    """A run over an empty database would print a row of zeros and look like
-    a working run that found nothing. Name the three commands instead."""
+def _require_a_scored_pool(s, goal: str, run_id: str) -> None:
+    """Stop before a run that can draw nothing, and say why.
+
+    A run that draws nothing prints a row of zeros and "pool exhausted",
+    which reads as "this town is done". The guard asks what `draw_batch`
+    asks, through the same SQL; it used to count any score for the goal, so
+    a prompt bump or a pool below the bar passed it. A resumed run passes:
+    it repeats the batches it drew."""
+    version, _ = llm.load_prompt("score")
+    key = goal_hash(goal)
     with connect(s.db_path) as conn:
-        scored = conn.execute(
-            "select count(*) from scores where goal_hash = ? and model = ?",
-            (goal_hash(goal), s.llm_model),
-        ).fetchone()[0]
-    if scored == 0:
+        if conn.execute("select 1 from seen where run_id = ?", (run_id,)).fetchone():
+            return
+        standing = pool_standing(
+            conn,
+            run_id=run_id,
+            goal_hash=key,
+            prompt_version=version,
+            model=s.llm_model,
+            criteria_hash=current_criteria_hash(conn, key),
+            min_score=s.draw_min_score,
+        )
+    if standing.drawable:
+        return
+    if standing.pooled == 0:
         typer.echo(
-            "No company is scored for this goal yet. Run `pool`, then `screen`,"
-            " then `score` before `run`.",
+            "No company is pooled yet. Run `pool`, then `screen`, then `score`"
+            " before `run`.",
             err=True,
         )
         raise typer.Exit(2)
+
+    bar = f"score >= {s.draw_min_score} for score@{version} / {s.llm_model}"
+    if standing.clear:
+        head = (
+            f"everything that clears {bar} ({standing.clear}) was drawn, "
+            "decided or suppressed already: the pool is exhausted"
+        )
+    else:
+        head = f"0 companies clear {bar}"
+    reasons = []
+    if standing.current and not standing.clear:
+        reasons.append(f"{standing.current} are scored, the best {standing.best}")
+    if standing.earlier_criteria:
+        reasons.append(
+            f"{standing.earlier_criteria} are scored under earlier criteria"
+            " — run `score`"
+        )
+    if standing.other_prompt:
+        versions = ", ".join(f"score@{v}" for v in standing.other_prompt_versions)
+        reasons.append(
+            f"{standing.other_prompt} are scored under another prompt version "
+            f"({versions}) — run `score`"
+        )
+    if standing.other_model:
+        reasons.append(
+            f"{standing.other_model} are scored with another model — run `score`"
+        )
+    if standing.unscored:
+        reasons.append(
+            f"{standing.unscored} kept companies are not scored yet — run `score`"
+        )
+    if not (standing.earlier_criteria or standing.other_prompt or standing.unscored):
+        reasons.append("pool another municipality to go on")
+    typer.echo("; ".join([head, *reasons]), err=True)
+    raise typer.Exit(2)
 
 
 @app.command()
@@ -222,7 +276,7 @@ def run(
     s = get_settings()
     text = _resolve_goal(goal)
     rid = _run_id(run_id)
-    _require_a_scored_pool(s, text)
+    _require_a_scored_pool(s, text, rid)
 
     with connect(s.db_path) as conn:
         stored = load_criteria(conn, goal_hash(text))
