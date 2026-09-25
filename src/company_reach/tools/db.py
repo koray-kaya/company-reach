@@ -51,8 +51,6 @@ _ADDED_COLUMNS = {
     ("contacts", "addresses"): "TEXT",
     ("searches", "result_count"): "INTEGER",
     ("searches", "error"): "TEXT",
-
-
     ("contacts", "salutation"): "TEXT",
     # frame@1: a draft of the M6/M7 shape has none of these, so it can
     # never pass for a current one

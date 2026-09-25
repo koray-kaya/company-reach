@@ -23,7 +23,7 @@ from company_reach.tools import llm
 from company_reach.tools.db import connect, init_db
 from company_reach.tools.invitation import assemble, subject, survey_link
 from company_reach.tools.mailto import build
-from company_reach.tools.search import _brave, ask_searxng, search
+from company_reach.tools.search import _brave, ask_searxng
 
 MARKER = "COMPANY-REACH-OK"
 # Every prompt a run loads, so a broken header fails here rather than at the
