@@ -24,7 +24,6 @@ from company_reach.errors import SearchError
 from company_reach.settings import Settings
 from company_reach.tools.gates import gate
 
-_SERPER_URL = "https://google.serper.dev/search"
 _TIMEOUT = httpx.Timeout(10.0, connect=5.0)
 
 
@@ -101,48 +100,10 @@ async def _searxng(query: str, *, settings: Settings, limit: int) -> list[Result
     ]
 
 
-async def _serper(query: str, *, settings: Settings, limit: int) -> list[Result]:
-    key = settings.serper_api_key
-    try:
-        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-            answer = await client.post(
-                _SERPER_URL,
-                headers={"X-API-KEY": key.get_secret_value()},
-                json={"q": query, "gl": "ch", "hl": "de", "num": limit},
-            )
-    except httpx.HTTPError as error:
-        raise SearchError(f"Serper unreachable: {error}") from error
-
-    if answer.status_code != 200:
-        raise SearchError(f"Serper answered HTTP {answer.status_code}")
-
-    return [
-        Result(
-            url=item.get("link", ""),
-            title=item.get("title", ""),
-            snippet=item.get("snippet", ""),
-            engine="serper",
-        )
-        for item in (answer.json().get("organic") or [])[:limit]
-        if item.get("link")
-    ]
-
-
 async def search(query: str, *, settings: Settings, limit: int = 10) -> list[Result]:
-    """One query, through the gate.
-
-    Serper is tried **only** after a `SearchError`, never after an empty
-    result. Falling back on empty would spend paid queries on precisely the
-    companies that have no website — the ones where the free search was
-    already right.
-    """
+    """One query, through the gate."""
     async with _gate(settings.search_concurrency):
-        try:
-            results = await _searxng(query, settings=settings, limit=limit)
-        except SearchError:
-            if settings.serper_api_key is None:
-                raise
-            results = await _serper(query, settings=settings, limit=limit)
+        results = await _searxng(query, settings=settings, limit=limit)
         # Inside the gate: the gap is between queries leaving, not between
         # callers arriving, or two waiting tasks would fire back to back.
         await asyncio.sleep(settings.search_gap_s)

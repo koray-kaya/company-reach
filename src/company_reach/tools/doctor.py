@@ -51,7 +51,7 @@ def _settings_check(settings: Settings) -> Check:
         f"model={settings.llm_model} effort={settings.llm_reasoning_effort} "
         f"max_tokens={settings.llm_max_tokens} concurrency={settings.llm_concurrency} "
         f"sending_approved={settings.sending_approved} "
-        f"paid_fallback={'serper' if settings.serper_api_key else 'none'}",
+        f"paid_fallback={'brave' if settings.brave_search_api_key else 'none'}",
     )
 
 

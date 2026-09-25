@@ -48,7 +48,10 @@ class Settings(BaseSettings):
     llm_concurrency: int = 3
 
     searxng_url: str = "http://searxng:8080"
-    serper_api_key: SecretStr | None = None
+    # The paid second opinion (decided 2026-09-25): asked when SearXNG fails,
+    # when it answered nothing at all, and before any "no website" verdict.
+    # Unset, search is SearXNG alone.
+    brave_search_api_key: SecretStr | None = None
     # Ten children starting find_site at once would fire 30-40 queries from
     # one IP in the first seconds, which is the pattern that gets an engine
     # suspended. The fetcher's per-host delay does not cover these.
@@ -90,7 +93,7 @@ class Settings(BaseSettings):
     max_batches_per_run: int = 3
     langsmith_tracing: bool = False
 
-    @field_validator("serper_api_key", "playwright_url", mode="before")
+    @field_validator("brave_search_api_key", "playwright_url", mode="before")
     @classmethod
     def _blank_is_none(cls, value):
         """An unset optional key is None, however the .env line was written.

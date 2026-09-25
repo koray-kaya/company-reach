@@ -20,7 +20,6 @@ from company_reach.tools import search as search_module
 from company_reach.tools.search import Result, search
 
 SEARXNG = "http://searxng:8080/search"
-SERPER = "https://google.serper.dev/search"
 
 
 @pytest.fixture
@@ -140,70 +139,12 @@ async def test_results_present_never_raise_whatever_is_unresponsive(s: Settings)
     assert len(await search("anything", settings=s)) == 1
 
 
-# --- the Serper fallback -----------------------------------------------------
-
-
-@respx.mock
-async def test_serper_is_not_called_when_searxng_answers(s: Settings, monkeypatch):
-    monkeypatch.setenv("SERPER_API_KEY", "k")
-    s = Settings(_env_file=None, data_dir=s.data_dir)
-    respx.get(SEARXNG).mock(
-        return_value=httpx.Response(200, json=searxng_body([one_result()]))
-    )
-    route = respx.post(SERPER)
-    await search("anything", settings=s)
-    assert not route.called
-
-
-@respx.mock
-async def test_serper_is_not_called_for_an_empty_result(s: Settings, monkeypatch):
-    """Falling back on empty results would spend paid queries on exactly the
-    companies that have no website."""
-    monkeypatch.setenv("SERPER_API_KEY", "k")
-    s = Settings(_env_file=None, data_dir=s.data_dir)
-    respx.get(SEARXNG).mock(return_value=httpx.Response(200, json=searxng_body([])))
-    route = respx.post(SERPER)
-    assert await search("anything", settings=s) == []
-    assert not route.called
-
-
-@respx.mock
-async def test_serper_takes_over_after_a_search_error(s: Settings, monkeypatch):
-    monkeypatch.setenv("SERPER_API_KEY", "k")
-    s = Settings(_env_file=None, data_dir=s.data_dir)
-    respx.get(SEARXNG).mock(side_effect=httpx.ConnectError("down"))
-    respx.post(SERPER).mock(
-        return_value=httpx.Response(
-            200,
-            json={
-                "organic": [
-                    {
-                        "link": "https://muster-metallbau.ch/",
-                        "title": "Muster Metallbau AG",
-                        "snippet": "Metallteile",
-                    }
-                ]
-            },
-        )
-    )
-    found = await search("anything", settings=s)
-    assert found[0].url == "https://muster-metallbau.ch/"
-    assert found[0].engine == "serper"
+# --- without a paid provider -------------------------------------------------
 
 
 @respx.mock
 async def test_without_a_key_the_search_error_stands(s: Settings):
     respx.get(SEARXNG).mock(side_effect=httpx.ConnectError("down"))
-    with pytest.raises(SearchError):
-        await search("anything", settings=s)
-
-
-@respx.mock
-async def test_serper_failing_too_raises(s: Settings, monkeypatch):
-    monkeypatch.setenv("SERPER_API_KEY", "k")
-    s = Settings(_env_file=None, data_dir=s.data_dir)
-    respx.get(SEARXNG).mock(side_effect=httpx.ConnectError("down"))
-    respx.post(SERPER).mock(return_value=httpx.Response(429))
     with pytest.raises(SearchError):
         await search("anything", settings=s)
 

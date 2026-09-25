@@ -45,7 +45,8 @@ in the repository's history. The Docker image contains the code only;
 | Recipient | What it receives | When |
 |---|---|---|
 | **The language model endpoint** you configure (`LLM_BASE_URL`) | register purposes (scoring); the text of candidate and company pages, which can contain names and addresses (site choice, page choice, extraction); the company description, the contact's role and your `about_me` (drafting) | every run |
-| **Search engines**, through your SearXNG instance (and Serper, only if you set a key) | company names, UIDs and addresses; for a LinkedIn lead, a person's name with the company name | finding a site; a lead |
+| **Search engines**, through your SearXNG instance | company names, UIDs and addresses; for a LinkedIn lead, a person's name with the company name | finding a site; a lead |
+| **Brave Search API**, only if you set `BRAVE_SEARCH_API_KEY` | company names, UIDs and addresses; for a LinkedIn lead, a person's name with the company name | only when SearXNG fails, when it answered nothing, and before a company is recorded as having no website. Brave's results are not stored: for a Brave query the tool keeps the query, the number of results and any error |
 | **Company websites** | ordinary page requests, identified by the tool's user agent and a link to this repository | reading a site |
 | **LINDAS and SHAB** | a municipality number or a company's UID | building the pool; SHAB only when a site names nobody |
 
