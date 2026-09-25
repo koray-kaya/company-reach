@@ -8,6 +8,7 @@ through every superstep.
 """
 
 import asyncio
+import inspect
 import operator
 from collections.abc import Callable
 from functools import partial
@@ -49,6 +50,7 @@ from company_reach.tools.db import (
     no_site_uids,
     record_pending,
     record_seen,
+    record_stage,
 )
 from company_reach.tools.db import draw_batch as db_draw_batch
 from company_reach.tools.fetcher import Fetcher
@@ -243,6 +245,34 @@ def build_stub_child():
 
 Until = Literal["site", "profile", "contact", "draft"]
 
+# What the front page says while a company is in a step of its graph
+# (issue #60). Every node of the child has words here; a test holds it so.
+STAGES = {
+    "load_company": "starting",
+    "find_site": "searching for the website",
+    "pick_pages": "choosing the pages to read",
+    "read_pages": "reading the website",
+    "extract": "reading what the company does",
+    "check_profile": "checking the facts",
+    "find_contact": "choosing the person to write to",
+    "recommend": "deciding",
+    "draft": "writing the mail",
+    "check_draft": "checking the mail",
+}
+
+
+def staged(name: str, node: Callable, settings: Settings) -> Callable:
+    """`node`, recording in `progress` that the company entered this step
+    before the step starts, so the front page can say where it is."""
+
+    async def step(state):
+        with connect(settings.db_path) as conn:
+            record_stage(conn, state["run_id"], state["uid"], name)
+        out = node(state)
+        return await out if inspect.isawaitable(out) else out
+
+    return step
+
 
 def build_child(
     *, settings: Settings, fetcher=None, until: Until = "draft"
@@ -255,8 +285,12 @@ def build_child(
     would forget both between the nodes of one company's graph."""
     shared = fetcher or Fetcher(settings)
     builder = StateGraph(ChildState)
-    builder.add_node("load_company", partial(load_company, settings=settings))
-    builder.add_node("find_site", partial(find_site, settings=settings, fetcher=shared))
+
+    def add(name: str, node: Callable) -> None:
+        builder.add_node(name, staged(name, node, settings))
+
+    add("load_company", partial(load_company, settings=settings))
+    add("find_site", partial(find_site, settings=settings, fetcher=shared))
 
     builder.add_edge(START, "load_company")
     builder.add_edge("load_company", "find_site")
@@ -269,12 +303,10 @@ def build_child(
         builder.add_edge("find_site", END)
         return builder.compile()
 
-    builder.add_node("pick_pages", partial(pick_pages, settings=settings))
-    builder.add_node(
-        "read_pages", partial(read_pages, settings=settings, fetcher=shared)
-    )
-    builder.add_node("extract", partial(extract, settings=settings))
-    builder.add_node("check_profile", partial(check_profile, settings=settings))
+    add("pick_pages", partial(pick_pages, settings=settings))
+    add("read_pages", partial(read_pages, settings=settings, fetcher=shared))
+    add("extract", partial(extract, settings=settings))
+    add("check_profile", partial(check_profile, settings=settings))
 
     builder.add_conditional_edges("find_site", has_site, ["pick_pages", END])
     builder.add_edge("pick_pages", "read_pages")
@@ -284,16 +316,16 @@ def build_child(
         builder.add_edge("check_profile", END)
         return builder.compile()
 
-    builder.add_node("find_contact", partial(find_contact, settings=settings))
-    builder.add_node("recommend", recommend)
+    add("find_contact", partial(find_contact, settings=settings))
+    add("recommend", recommend)
     builder.add_edge("check_profile", "find_contact")
     builder.add_edge("find_contact", "recommend")
     if until == "contact":
         builder.add_edge("recommend", END)
         return builder.compile()
 
-    builder.add_node("draft", partial(draft, settings=settings))
-    builder.add_node("check_draft", partial(check_draft, settings=settings))
+    add("draft", partial(draft, settings=settings))
+    add("check_draft", partial(check_draft, settings=settings))
     builder.add_conditional_edges("recommend", is_send, ["draft", END])
     builder.add_edge("draft", "check_draft")
     builder.add_edge("check_draft", END)

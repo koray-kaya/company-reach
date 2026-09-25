@@ -18,6 +18,7 @@ POST, so the page works without its small script. Jinja2 autoescapes the
 all started as text a website wrote.
 """
 
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
 
@@ -29,6 +30,7 @@ from fastapi.templating import Jinja2Templates
 
 from company_reach.campaign import COLUMNS, campaign_status
 from company_reach.errors import ProfileError
+from company_reach.graph import STAGES
 from company_reach.models import Contact
 from company_reach.nodes.check_draft import reassemble
 from company_reach.profile import load_profile
@@ -48,6 +50,7 @@ from company_reach.tools.db import (
     readdress_contact,
     record_decision,
     rewrite_draft,
+    run_progress,
     sent_this_month,
     set_salutation,
     suppress,
@@ -64,6 +67,39 @@ SALUTATIONS = ("Frau", "Herr", "ohne")
 # another site in the same browser — the company's own site, one click away
 # on the card — and must not be able to decide anything (audit:242).
 _SAME_ORIGIN = ("same-origin", "none")
+
+
+def _progress_rows(rows: list) -> list[dict]:
+    """One line per company of a running round: how it ended, or the step
+    it is in, in the words the front page uses (issue #60)."""
+    lines = []
+    for r in rows:
+        if r["error_kind"]:
+            state, tone, why = f"error ({r['error_kind']})", "bad", ""
+        elif r["recommendation"] == "send":
+            state, tone, why = "mail ready", "good", ""
+        elif r["recommendation"] == "hold":
+            state, tone, why = "on hold", "done", r["reason"] or ""
+        elif r["recommendation"]:
+            state, tone, why = "skipped", "done", r["reason"] or ""
+        elif r["stage"]:
+            state, tone, why = STAGES.get(r["stage"], r["stage"]) + " …", "now", ""
+        else:
+            state, tone, why = "waiting its turn", "wait", ""
+        lines.append(
+            {
+                "name": r["name"],
+                "batch": r["batch_no"],
+                "state": state,
+                "tone": tone,
+                "why": why,
+            }
+        )
+    # the newest batch first; in a batch, what is being worked on on top
+    order = {"now": 0, "wait": 1, "good": 2, "bad": 3, "done": 4}
+    return sorted(
+        lines, key=lambda x: (-(x["batch"] or 0), order[x["tone"]], x["name"])
+    )
 
 
 def create_app(settings: Settings, *, jobs: Jobs | None = None) -> FastAPI:
@@ -120,7 +156,10 @@ def create_app(settings: Settings, *, jobs: Jobs | None = None) -> FastAPI:
                 )
                 for run in rows
             }
-        job = jobs.current
+            job = jobs.current
+            # a round, or a retry of one: its companies and where each stands
+            run_id = job.run_id if job and job.action in ("round", "retry") else None
+            progress = _progress_rows(run_progress(conn, run_id)) if run_id else []
         first_waiting = next((r["run_id"] for r in rows if waiting[r["run_id"]]), None)
         return templates.TemplateResponse(
             request,
@@ -136,6 +175,14 @@ def create_app(settings: Settings, *, jobs: Jobs | None = None) -> FastAPI:
                 "runs": rows,
                 "job": job,
                 "job_tail": job.tail() if job else "",
+                "run_id": run_id,
+                "progress": progress,
+                "ready": sum(p["state"] == "mail ready" for p in progress),
+                "target": 10,
+                "batch": max((p["batch"] or 0 for p in progress), default=0),
+                "minutes": int((datetime.now() - job.started).total_seconds() // 60)
+                if job
+                else 0,
                 "done": done,
             },
         )

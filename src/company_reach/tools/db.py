@@ -1405,3 +1405,30 @@ def count_brave_queries(conn: sqlite3.Connection, run_id: str) -> int:
         "select count(*) from searches where run_id = ? and provider = 'brave'",
         (run_id,),
     ).fetchone()[0]
+
+
+def record_stage(conn: sqlite3.Connection, run_id: str, uid: str, stage: str) -> None:
+    """The company has entered this step of its graph (issue #60)."""
+    conn.execute(
+        """insert into progress (run_id, uid, stage, updated_at) values (?,?,?,?)
+           on conflict (run_id, uid) do update
+              set stage = excluded.stage, updated_at = excluded.updated_at""",
+        (run_id, uid, stage, now()),
+    )
+
+
+def run_progress(conn: sqlite3.Connection, run_id: str) -> list[sqlite3.Row]:
+    """Every company a run drew or finished, newest batch first: its name,
+    batch, the step it is in, and how it ended once it has."""
+    return conn.execute(
+        """select c.uid, c.name, s.batch_no, p.stage,
+                  r.recommendation, r.reason, r.error_kind
+             from (select uid from seen where run_id = :run
+                   union select uid from results where run_id = :run) d
+             join companies c on c.uid = d.uid
+             left join seen s on s.uid = d.uid and s.run_id = :run
+             left join progress p on p.uid = d.uid and p.run_id = :run
+             left join results r on r.uid = d.uid and r.run_id = :run
+            order by coalesce(s.batch_no, 0) desc, c.name""",
+        {"run": run_id},
+    ).fetchall()

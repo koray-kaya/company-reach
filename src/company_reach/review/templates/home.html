@@ -59,7 +59,18 @@
   <section id="job">
     <p class="label">{% if job.running %}running{% elif job.returncode is none %}ended{% elif job.returncode == 0 %}finished{% else %}failed (exit {{ job.returncode }}){% endif %} · started {{ job.started.strftime("%H:%M") }}</p>
     {% if job.running %}<p class="state">This page refreshes by itself until the command ends.</p>{% endif %}
+    {% if run_id %}
+    <p class="round-summary"><strong>{{ ready }} of {{ target }} mails ready</strong> · run {{ run_id }} · batch {{ batch }} of at most 3 · {{ progress | length }} companies drawn · {{ minutes }} min</p>
+    <table class="stages">
+      <tr><th>company</th><th>batch</th><th>where it is</th></tr>
+      {% for p in progress %}
+      <tr class="{{ p.tone }}"><td>{{ p.name }}</td><td>{{ p.batch or "" }}</td><td><span class="stage">{{ p.state }}</span>{% if p.why %} <span class="why">{{ p.why }}</span>{% endif %}</td></tr>
+      {% endfor %}
+    </table>
+    <details class="output"><summary>Command output</summary><pre class="log">{{ job_tail }}</pre></details>
+    {% else %}
     <pre class="log">{{ job_tail }}</pre>
+    {% endif %}
   </section>
   {% endif %}
 

@@ -33,7 +33,7 @@ Only on the machine that runs it, under `data/`:
 
 | Place | What |
 |---|---|
-| `data/company_reach.db` (SQLite) | companies, scores, site evidence, the search log (each query, and SearXNG's first ten result URLs — never Brave's), page text, profiles, contacts, drafts, results, the ledger of decisions (for a mail sent: the address, the subject and a hash of the text), the never-again list, and — once imported from the survey's export — when each company's response started and finished (by UID; `report` prints only counts) |
+| `data/company_reach.db` (SQLite) | companies, scores, site evidence, the search log (each query, and SearXNG's first ten result URLs — never Brave's), page text, profiles, contacts, drafts, results, the step each company of a running round is in (a step's name only), the ledger of decisions (for a mail sent: the address, the subject and a hash of the text), the never-again list, and — once imported from the survey's export — when each company's response started and finished (by UID; `report` prints only counts) |
 | `data/cache/` | the HTML of every page fetched |
 | `data/runs/<run>/manifest.json` | each run's settings, prompt versions and counts, and your own goal and `about_me` — nobody else's personal data |
 | `data/jobs/`, `data/logs/` | the output of the commands the front page started (the last 20 are kept) and the page's own log; both can name companies and contacts |
