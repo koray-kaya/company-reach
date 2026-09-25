@@ -57,6 +57,47 @@ def test_scripts_and_styles_are_not_text():
     assert "186px" not in text
 
 
+# --- the footer --------------------------------------------------------------
+# A one-page site keeps its Impressum in the footer. Once the main text has
+# 80 words the fallback never runs, and the extractor drops the footer as
+# furniture: name, address and UID were gone (audit).
+
+FOOTER = (
+    "<p>Inhaber: Hans Muster</p>"
+    "<p>Muster Metallbau AG, Beispielstrasse 1, 8000 Musterstadt</p>"
+    "<p>UID: CHE-000.000.046</p>"
+)
+
+
+def long_page(footer: str) -> str:
+    main = "<p>" + "Wir fertigen Metallteile fuer den Maschinenbau. " * 20 + "</p>"
+    body = f"<main><h1>Muster Metallbau</h1>{main}</main>{footer}"
+    return f"<html><body>{body}</body></html>"
+
+
+def test_the_footer_survives_a_long_main_text():
+    text = textify(long_page(f"<footer>{FOOTER}</footer>"))
+    assert "Metallteile" in text
+    for line in (
+        "Hans Muster",
+        "Beispielstrasse 1, 8000 Musterstadt",
+        "CHE-000.000.046",
+    ):
+        assert line in text
+
+
+def test_a_footer_div_survives_with_its_visible_address():
+    footer = f"<div id='footer'>{FOOTER}<p>info@muster-metallbau.ch</p></div>"
+    text = textify(long_page(footer))
+    assert "Hans Muster" in text
+    assert "info@muster-metallbau.ch" in text
+
+
+def test_a_footer_the_text_already_has_is_not_written_twice():
+    text = textify(IMPRESSUM)
+    assert text.count("8000 Musterstadt") == 1
+
+
 # --- addresses the text would otherwise lose ---------------------------------
 # Found in the M6 live run: a site whose Impressum carries its address only as
 # a mailto: link behind the word "E-Mail", and one whose contact page has it
