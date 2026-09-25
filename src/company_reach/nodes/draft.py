@@ -33,6 +33,7 @@ from company_reach.tools import llm
 from company_reach.tools.db import connect, record_draft
 from company_reach.tools.invitation import (
     FRAME_VERSION,
+    arm_for,
     assemble,
     subject,
     survey_link,
@@ -57,7 +58,7 @@ async def draft(state: dict[str, Any], *, settings: Settings) -> dict:
     # Built before the model is asked, too: a UID the survey would reject
     # should cost nothing.
     link = survey_link(me.survey_url, record.uid)
-    arm = "voll"
+    arm = arm_for(record.uid, experiment=me.invitation.experiment)
 
     feedback = state.get("draft_feedback") or ""
     if feedback:

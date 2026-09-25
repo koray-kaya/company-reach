@@ -14,6 +14,7 @@ from company_reach.models import Contact
 from company_reach.profile import Invitation, Sender
 from company_reach.tools.invitation import (
     InvitationError,
+    arm_for,
     assemble,
     closing,
     falls_back,
@@ -391,6 +392,30 @@ def test_the_sentence_loses_its_eszett():
     )
     assert "ß" not in body
     assert "Grossküchen" in body
+
+
+def test_the_arm_is_stable_for_a_uid():
+    # sha256(uid) parity: the same company always gets the same arm, so a
+    # redraft keeps it, whatever the spelling of the UID
+    assert arm_for("CHE000000046", experiment=True) == "voll"
+    assert arm_for("CHE900000016", experiment=True) == "kurz"
+    assert arm_for("CHE-900.000.016", experiment=True) == "kurz"
+    # with the experiment off, every mail is the full one
+    assert arm_for("CHE900000016", experiment=False) == "voll"
+
+
+def test_the_kurz_arm_is_the_voll_mail_without_two_lines():
+    c = person("Anna Muster", "Inhaberin")
+    voll = assemble(c, "Ich schreibe Ihnen, weil x.", link=LINK, sender=SENDER, inv=INV)
+    kurz = assemble(
+        c, "Ich schreibe Ihnen, weil x.", link=LINK, sender=SENDER, inv=INV, short=True
+    )
+    gone = {
+        "Als Dank können Sie am Schluss die Ergebnisse anfordern.",
+        "Der Link enthält die UID Ihrer Firma; veröffentlicht werden nur "
+        "zusammengefasste Ergebnisse.",
+    }
+    assert set(voll.split("\n")) - set(kurz.split("\n")) == gone
 
 
 @pytest.mark.parametrize("mail", EXAMPLES["mails"], ids=lambda m: m["kind"])

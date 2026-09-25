@@ -148,6 +148,19 @@ def test_send_records_first_then_hands_over_the_mailto(client, review):
     assert row["draft_id"] is not None
 
 
+def test_send_copies_frame_arm_and_contact_kind(client, review):
+    client.post(
+        f"/decide/{RUN}/{SEND}?n=0",
+        data={"action": "send", "to": "info@muster-metallbau.ch"},
+        headers=SAME,
+    )
+    with connect(review.db_path) as conn:
+        row = conn.execute(
+            "select frame_version, arm, contact_kind from ledger"
+        ).fetchone()
+    assert tuple(row) == ("frame@1", "voll", "generic/site/named")
+
+
 def test_send_goes_only_to_an_address_the_card_offered(client, review):
     r = client.post(
         f"/decide/{RUN}/{SEND}?n=0",

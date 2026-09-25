@@ -28,6 +28,7 @@ smoke test, so an invalid UID must fail here rather than produce a link that
 looks right and records nothing.
 """
 
+import hashlib
 import re
 from datetime import date
 from typing import Literal, NamedTuple
@@ -80,6 +81,18 @@ def survey_link(survey_url: str, uid: str, *, lang: str = "de") -> str:
     if not uid_is_valid(uid):
         raise InvitationError(f"{uid!r} is not a UID with a valid check digit")
     return f"{survey_url.rstrip('/')}/?c={_compact(uid)}&l={lang}"
+
+
+def arm_for(uid: str, *, experiment: bool) -> Literal["voll", "kurz"]:
+    """The length A/B (`[invitation] experiment`): "kurz" leaves out the
+    results line and the UID line, which the survey's first page carries
+    anyway. The arm is the parity of sha256(UID), so it needs no stored
+    state, and a redraft of the same company is always the same arm. With
+    the experiment off, every mail is "voll"."""
+    if not experiment:
+        return "voll"
+    key = _compact(uid) or uid
+    return "kurz" if int(hashlib.sha256(key.encode()).hexdigest(), 16) % 2 else "voll"
 
 
 # --- names -------------------------------------------------------------------

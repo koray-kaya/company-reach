@@ -34,7 +34,7 @@ from company_reach.tools.db import (
     set_salutation,
     suppress,
 )
-from company_reach.tools.invitation import assemble, subject
+from company_reach.tools.invitation import assemble, named, subject
 from company_reach.tools.mailto import build
 
 HERE = Path(__file__).parent
@@ -194,9 +194,21 @@ def create_app(settings: Settings) -> FastAPI:
             # the way a hostile page plants a contact: shown, never sent to
             raise HTTPException(409, "an address on another domain is never sent to")
         draft = card.draft
+        # "generic/site/named": the kind of the address actually chosen, no
+        # personal data; the survey's answers are compared by it
+        kind = f"{offered[to]}/{card.contact.source}/"
+        kind += "named" if named(card.contact) else "none"
         with connect(settings.db_path) as conn:
             record_decision(
-                conn, card.uid, "sent", address=to, draft_id=draft.id, run_id=run_id
+                conn,
+                card.uid,
+                "sent",
+                address=to,
+                draft_id=draft.id,
+                run_id=run_id,
+                frame_version=draft.frame_version,
+                arm=draft.arm,
+                contact_kind=kind,
             )
         link = build(to, draft.subject, draft.body)
         if not link.fits:

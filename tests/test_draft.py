@@ -224,6 +224,30 @@ async def test_the_draft_is_stored_with_its_provenance(db_settings, shown):
     )
 
 
+async def test_the_arm_is_stable_for_a_uid(db_settings, shown):
+    """With the experiment on, the arm follows the UID: a redraft of the
+    same company is the same arm, and the "kurz" mail leaves out the
+    results line and the UID line."""
+    db_settings.profile_path.write_text(
+        profile_text(SURVEY).replace(
+            "no_login = true\n", "no_login = true\nexperiment = true\n"
+        )
+    )
+    kurz_uid = "CHE900000016"
+    st = state() | {
+        "uid": kurz_uid,
+        "company": COMPANY.model_copy(update={"uid": kurz_uid}),
+    }
+    first = (await draft(st, settings=db_settings))["draft"]
+    again = (await draft(st, settings=db_settings))["draft"]
+    assert (first.arm, again.arm) == ("kurz", "kurz")
+    assert "Als Dank" not in first.body
+    assert "Der Link enthält die UID" not in first.body
+    voll = (await draft(state(), settings=db_settings))["draft"]
+    assert voll.arm == "voll"
+    assert "Der Link enthält die UID" in voll.body
+
+
 # --- what stops a draft ------------------------------------------------------
 
 

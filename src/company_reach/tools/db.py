@@ -60,6 +60,9 @@ _ADDED_COLUMNS = {
     ("drafts", "frame_version"): "TEXT",
     ("drafts", "arm"): "TEXT",
     ("drafts", "problems"): "TEXT",
+    ("ledger", "frame_version"): "TEXT",
+    ("ledger", "arm"): "TEXT",
+    ("ledger", "contact_kind"): "TEXT",
 }
 
 
@@ -653,15 +656,35 @@ def record_decision(
     run_id: str | None = None,
     note: str | None = None,
     decided_at: str | None = None,
+    frame_version: str | None = None,
+    arm: str | None = None,
+    contact_kind: str | None = None,
 ) -> int:
     """Append one decision. Nothing in the ledger is ever updated or
-    deleted by the page: undoing a skip is an `undone` row after it."""
+    deleted by the page: undoing a skip is an `undone` row after it.
+
+    A `sent` row carries the draft's frame and arm and the kind of contact
+    it went to, copied here because `forget` and `purge` delete drafts and
+    contacts but keep the ledger — and the survey's answers are compared by
+    them."""
     if status not in DECISIONS:
         raise ValueError(f"status must be one of {DECISIONS}, not {status!r}")
     cur = conn.execute(
         """INSERT INTO ledger (uid, status, address, draft_id, run_id, note,
-             decided_at) VALUES (?,?,?,?,?,?,?)""",
-        (uid, status, address, draft_id, run_id, note, decided_at or now()),
+             decided_at, frame_version, arm, contact_kind)
+           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+        (
+            uid,
+            status,
+            address,
+            draft_id,
+            run_id,
+            note,
+            decided_at or now(),
+            frame_version,
+            arm,
+            contact_kind,
+        ),
     )
     return cur.lastrowid
 

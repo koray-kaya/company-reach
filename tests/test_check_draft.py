@@ -308,6 +308,15 @@ def test_a_mail_of_1300_characters_is_long_enough():
     assert not any("longer than" in p for p in found(padded))
 
 
+def test_a_kurz_draft_passes_and_is_checked_as_kurz():
+    c = contact()
+    short = assemble(c, GOOD, link=LINK, sender=SENDER, inv=INVITATION, short=True)
+    kurz = make(GOOD, body=short, arm="kurz")
+    assert found(kurz) == []
+    # the same body claimed as "voll" is not what the frame writes
+    assert any("frame" in p for p in found(make(GOOD, body=short)))
+
+
 def test_the_five_example_mails_pass():
     import json
     from pathlib import Path

@@ -212,6 +212,17 @@ def test_an_old_database_gains_the_new_columns(tmp_path: Path):
              source_date TEXT, linkedin_lead TEXT, alternatives TEXT,
              addresses TEXT)"""
     )
+    conn.execute(
+        """CREATE TABLE ledger (
+             id INTEGER PRIMARY KEY, uid TEXT NOT NULL, status TEXT NOT NULL,
+             address TEXT, draft_id INTEGER, run_id TEXT, note TEXT,
+             decided_at TEXT NOT NULL)"""
+    )
+    conn.execute(
+        "insert into ledger (uid, status, decided_at) values ('CHE000000046',"
+        " 'skipped', '2026-09-24T10:00:00+00:00')"
+    )
+    conn.commit()
     conn.close()
 
     init_db(path)
@@ -220,7 +231,13 @@ def test_an_old_database_gains_the_new_columns(tmp_path: Path):
     conn = sqlite3.connect(path)
     drafts = {row[1] for row in conn.execute("pragma table_info(drafts)")}
     contacts = {row[1] for row in conn.execute("pragma table_info(contacts)")}
+    ledger = {row[1] for row in conn.execute("pragma table_info(ledger)")}
+    kept = conn.execute("select count(*) from ledger").fetchone()[0]
     conn.close()
+    # the survey's answers are compared per frame, arm and kind of contact,
+    # and a ledger with decisions in it is extended, never replaced
+    assert {"frame_version", "arm", "contact_kind"} <= ledger
+    assert kept == 1
     assert {"model_text", "frame_version", "arm"} <= drafts
     # the outcome of check_draft: null = never checked, "" = passed
     assert "problems" in drafts
