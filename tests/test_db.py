@@ -268,6 +268,35 @@ def test_an_old_database_gains_the_new_columns(tmp_path: Path):
     assert {"salutation", "salutation_origin"} <= contacts
 
 
+def test_an_older_drafts_table_never_reuses_a_draft_id(tmp_path: Path):
+    """Without AUTOINCREMENT, SQLite gives a new row the highest id plus
+    one, so replacing the newest draft reused its id and a sent row's
+    `draft_id` came to name the new text. An older table is rebuilt with
+    AUTOINCREMENT, its drafts kept."""
+    path = tmp_path / "old.db"
+    conn = sqlite3.connect(path)
+    conn.execute(
+        """CREATE TABLE drafts (
+             id INTEGER PRIMARY KEY, run_id TEXT, uid TEXT, contact_id INTEGER,
+             subject TEXT, body TEXT, mailto_fits INTEGER, prompt_version TEXT,
+             model TEXT, created_at TEXT)"""
+    )
+    conn.execute(
+        "insert into drafts (id, run_id, uid, body) values (7, 'r1', 'u', 'b')"
+    )
+    conn.commit()
+    conn.close()
+
+    init_db(path)
+    init_db(path)
+    with connect(path) as c:
+        rows = [tuple(r) for r in c.execute("select id, body from drafts")]
+        assert rows == [(7, "b")]
+        c.execute("delete from drafts")
+        new = c.execute("insert into drafts (uid) values ('u')")
+        assert new.lastrowid == 8
+
+
 def test_any_connection_brings_an_older_database_up_to_date(tmp_path: Path):
     # found live: `enrich` opened a database created before `addresses`
     # existed and failed on its first contact, because only some commands

@@ -16,26 +16,32 @@ Send is refused, with the reason the card shows, when any of these holds
 * the draft no longer matches today's profile or contact — a new closing
   date, a supervisor taken out, a newer contact found by a retry: the frame
   is checked again here, in code, on every load;
+* no address the card offers may be written to: each is on the never-again
+  list, or was already written to for another company (each row says which;
+  a row like that is refused on its own too, D3);
 * ethics approval is not recorded (`SENDING_APPROVED` in `.env`);
 * the draft's survey link is a placeholder, or points somewhere other than
   the profile's current `survey_url`.
 """
 
+import hashlib
 import json
 import re
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
 from company_reach.models import CompanyProfile, Contact, Draft, dotted_uid
 from company_reach.nodes.check_draft import problems
 from company_reach.profile import Profile
 from company_reach.tools.db import (
+    address_block,
     company_by_uid,
     contact_for,
     decision_for,
     is_suppressed,
     search_log,
+    undoable_bounce,
 )
 from company_reach.tools.invitation import (
     FRAME_VERSION,
@@ -94,6 +100,13 @@ class DraftView:
             arm=self.arm or "voll",
         )
 
+    @property
+    def body_sha256(self) -> str:
+        """The card's form carries it and Send compares it: the salutation
+        toggle rebuilds a draft under the same id, so the id alone cannot
+        tell the text the reviewer read from the one in the table now."""
+        return hashlib.sha256(self.body.encode("utf-8")).hexdigest()
+
 
 @dataclass(frozen=True)
 class Card:
@@ -126,6 +139,13 @@ class Card:
     can_choose_salutation: bool = False
     # an undecided current draft: another address rebuilds it for that row
     can_readdress: bool = False
+    # offered addresses Send refuses, with why: on the never-again list, or
+    # already written to for another company
+    address_blocks: dict[str, str] = field(default_factory=dict)
+    # the row selected when the card opens: the first one Send accepts
+    default_to: str | None = None
+    # its bounce is the ledger's newest row: a mistaken click is undone
+    can_undo_bounce: bool = False
 
 
 def safe_url(url: str | None) -> str | None:
@@ -192,6 +212,27 @@ def _draft(conn: sqlite3.Connection, run_id: str, uid: str) -> DraftView | None:
     )
 
 
+def _address_blocks(
+    conn: sqlite3.Connection, uid: str, contact: Contact | None
+) -> dict[str, str]:
+    if contact is None:
+        return {}
+    blocks = {}
+    for row in contact.addresses:
+        if row.kind == "third_party":
+            continue  # never sent to anyway, and says so on its row
+        if why := address_block(conn, row.email, uid=uid):
+            blocks[row.email] = why
+    return blocks
+
+
+def _default_to(contact: Contact | None, blocks: dict[str, str]) -> str | None:
+    for row in contact.addresses if contact else []:
+        if row.kind != "third_party" and row.email not in blocks:
+            return row.email
+    return None
+
+
 def _send_block(
     *,
     run_id: str,
@@ -202,6 +243,7 @@ def _send_block(
     survey_url: str,
     sending_approved: bool,
     drift: str | None = None,
+    no_address: str | None = None,
 ) -> str | None:
     if decision is not None:
         return f"Already decided: {decision}."
@@ -219,6 +261,8 @@ def _send_block(
         return f"The draft was never checked; run `company-reach redraft {run_id}`."
     if draft.problems:
         return f"The draft failed its checks ({draft.problems}); redraft it."
+    if no_address:
+        return no_address
     if drift:
         return f"{drift[:1].upper()}{drift[1:]}; run `company-reach redraft {run_id}`."
     if not sending_approved:
@@ -295,6 +339,25 @@ def load_cards(
             and bool(draft.model_text)
         )
         surname = bool(contact and contact.name and split_name(contact.name).surname)
+        blocks = _address_blocks(conn, uid, contact)
+        # frame@1 writes the mail for one address (contact.email); only that
+        # row is sent from, and only while nothing refuses it (D3). Another
+        # acceptable row is offered as a rebuild, never as a silent switch.
+        written = contact.email if contact and contact.email else None
+        default_to = written if written and written not in blocks else None
+        if blocks and _default_to(contact, blocks) is None:
+            no_address = (
+                "No address on this card may be written to: "
+                + "; ".join(f"{a} is {why}" for a, why in blocks.items())
+                + "."
+            )
+        elif written and written in blocks:
+            no_address = (
+                f"{written} is {blocks[written]}; choose another address below "
+                "and read the rebuilt mail."
+            )
+        else:
+            no_address = None
         cards.append(
             Card(
                 uid=uid,
@@ -328,12 +391,16 @@ def load_cards(
                     suppressed=is_suppressed(conn, uid),
                     survey_url=survey_url,
                     sending_approved=sending_approved,
+                    no_address=no_address,
                 ),
                 salutation=salutation(contact)[0] if contact else None,
                 salutation_origin=_ORIGINS[salutation(contact)[1]] if contact else None,
                 check_salutation=bool(contact and draft and needs_check(contact)),
                 can_choose_salutation=rebuildable and surname and decision is None,
                 can_readdress=rebuildable and decision is None,
+                address_blocks=blocks,
+                default_to=default_to,
+                can_undo_bounce=undoable_bounce(conn, uid) is not None,
             )
         )
     return cards

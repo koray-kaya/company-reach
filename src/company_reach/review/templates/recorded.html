@@ -18,6 +18,11 @@
   <pre class="letter" style="padding:16px;white-space:pre-wrap">{{ body_to_copy }}</pre>
   {% endif %}
   <p style="margin-top:24px"><a href="{{ next_url }}">Next company →</a></p>
+  <form method="post" action="/decide/{{ run_id }}/{{ card.uid }}?n={{ n }}" style="margin-top:32px">
+    <input type="hidden" name="sent_id" value="{{ sent_id }}">
+    <p class="hint">Your mail client did not open, or you closed the mail without sending it? Take the send back while nothing else is decided; the card opens again.</p>
+    <button class="btn quiet" name="action" value="not_sent" style="margin-top:8px">It was not sent</button>
+  </form>
 </main>
 </body>
 </html>

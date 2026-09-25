@@ -9,6 +9,10 @@
 <body>
 {% set c = card.contact %}
 <form class="app" method="post" action="/decide/{{ run_id }}/{{ card.uid }}?n={{ n }}">
+{% if card.draft %}{# Send names the text this card showed; the server refuses any other #}
+<input type="hidden" name="draft_id" value="{{ card.draft.id }}">
+<input type="hidden" name="body_sha256" value="{{ card.draft.body_sha256 }}">
+{% endif %}
   <header class="bar">
     <div class="goal"><strong>{{ goal }}</strong></div>
     <div class="progress" aria-hidden="true">
@@ -61,9 +65,10 @@
           <div class="addrs" role="radiogroup" aria-label="Address">
             {% for a in c.addresses %}
             {% set written_for = a.email == c.email %}
-            <label class="addr"><input type="radio" name="to" value="{{ a.email }}"{% if written_for %} checked{% endif %}{% if card.send_block or a.kind == 'third_party' or not written_for %} disabled{% endif %}><span class="mail">{{ a.email }}</span><span class="kind {{ a.kind }}">{{ a.kind | replace('_', ' ') }}</span>
-              <span class="rowhint">{% if a.kind == 'seen' %}Their own address on the company's site.{% elif a.kind == 'generic' %}The inbox the site publishes.{% if c.name and written_for %} The first line of the mail asks whoever reads it to pass it to {{ c.name }}.{% endif %}{% elif a.kind == 'constructed' %}Not seen anywhere: info@ on the site's domain, guessed. A bounce is visible and harmless.{% elif a.kind == 'third_party' %}On another domain than the verified site — the way a hostile page plants a contact. Never sent to from here.{% endif %}</span></label>
-            {% if not written_for and a.kind != 'third_party' and card.can_readdress %}<p class="hint" style="margin:0 0 0 30px"><button class="btn small" name="action" value="address:{{ a.email }}">Write to this address instead</button> The mail is rebuilt for it; read it again before sending.</p>{% endif %}
+            {% set refused = card.address_blocks.get(a.email) %}
+            <label class="addr"><input type="radio" name="to" value="{{ a.email }}"{% if a.email == card.default_to %} checked{% endif %}{% if card.send_block or a.kind == 'third_party' or refused or not written_for %} disabled{% endif %}><span class="mail">{{ a.email }}</span><span class="kind {{ a.kind }}">{{ a.kind | replace('_', ' ') }}</span>
+              <span class="rowhint">{% if refused %}<strong>Not sent to: {{ refused }}.</strong> {% endif %}{% if a.kind == 'seen' %}Their own address on the company's site.{% elif a.kind == 'generic' %}The inbox the site publishes.{% if c.name and written_for %} The first line of the mail asks whoever reads it to pass it to {{ c.name }}.{% endif %}{% elif a.kind == 'constructed' %}Not seen anywhere: info@ on the site's domain, guessed. A bounce is visible and harmless.{% elif a.kind == 'third_party' %}On another domain than the verified site — the way a hostile page plants a contact. Never sent to from here.{% endif %}</span></label>
+            {% if not written_for and a.kind != 'third_party' and not refused and card.can_readdress %}<p class="hint" style="margin:0 0 0 30px"><button class="btn small" name="action" value="address:{{ a.email }}">Write to this address instead</button> The mail is rebuilt for it; read it again before sending.</p>{% endif %}
             {% if a.note %}<p class="hint" style="margin:0 0 0 30px">{{ a.email }}: {{ a.note }}</p>{% endif %}
             {% endfor %}
           </div>
@@ -117,8 +122,10 @@
     {% if card.decision %}
     <span class="banner">Recorded: {{ card.decision }}.
       {% if card.decision == 'skipped' %}<button class="btn quiet" name="action" value="undo">Undo</button>{% endif %}
+      {% if card.decision == 'sent' %}<button class="btn quiet" id="bounced" name="action" value="bounced" title="The mail came back: its address goes on the never-again list, and the card opens again for another address.">Bounced</button>{% endif %}
     </span>
     {% else %}
+    {% if card.can_undo_bounce %}<button class="btn quiet" name="action" value="undo" title="Clicked by mistake: the send stands again, and the address leaves the never-again list.">Undo bounce</button>{% endif %}
     <span class="lbl">Skip:</span>
     {% for reason in skip_reasons %}<button class="btn" name="action" value="skip:{{ reason }}">{{ reason }}</button>
     {% endfor %}

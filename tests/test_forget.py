@@ -68,8 +68,19 @@ def test_the_database_and_the_cache_no_longer_name_the_person(settings, data):
     text = everything_under(data, skip=data / "v0" / "outreach.md")
     assert NAME not in text
     assert OTHER not in text  # the alternatives named beside her
-    assert "info@muster-metallbau.ch" not in text
-    assert report.suppressed == [SEND]
+    # the address the mail went to stays where the promise keeps it — on
+    # the never-again list — and nowhere else
+    assert report.suppressed == [SEND, "info@muster-metallbau.ch"]
+    with connect(settings.db_path) as conn:
+        tables = conn.execute(
+            "select name from sqlite_master"
+            " where type = 'table' and name <> 'suppression'"
+        ).fetchall()
+        for (table,) in tables:
+            rows = [tuple(r) for r in conn.execute(f"select * from {table}")]
+            assert "info@muster-metallbau.ch" not in repr(rows), table
+    for path in (data / "cache").iterdir():
+        assert "info@muster-metallbau.ch" not in path.read_text()
 
 
 def test_other_sites_in_the_cache_are_left_alone(settings, data):
@@ -185,3 +196,258 @@ def test_the_promise_matches_what_forget_deletes(settings, data):
     with connect(settings.db_path) as conn:
         assert conn.execute("select count(*) from drafts").fetchone()[0] == 0
         assert is_suppressed(conn, "info@muster-metallbau.ch")
+
+
+# --- copies the tool did not make (audit: backups and logs under data/) ------
+
+
+def test_a_backup_database_is_reported(settings, data):
+    """A copy of the database taken before a risky step, and a log of a
+    run, both name the person. forget does not edit them, so it lists them;
+    the live database, which it just cleaned, is not listed."""
+    import sqlite3
+
+    backups = data / "backups"
+    backups.mkdir()
+    source = sqlite3.connect(settings.db_path)
+    copy = sqlite3.connect(backups / "company_reach-before.db")
+    source.backup(copy)
+    copy.close()
+    source.close()
+    (data / "audit").mkdir()
+    (data / "audit" / "run.log").write_text(f"contact: {NAME} <info@x.example>\n")
+
+    report = forget(settings, SEND)
+    assert backups / "company_reach-before.db" in report.still_named
+    assert data / "audit" / "run.log" in report.still_named
+    assert settings.db_path not in report.still_named
+
+
+def test_after_a_purge_forget_still_finds_the_backups(settings, data):
+    """Review: a purge deletes the contact, so `forget <UID>` a year later
+    had no name to look for and listed nothing. The address the mail went
+    to is still in the ledger, and a backup made before the purge holds it."""
+    import sqlite3
+
+    from company_reach.forget import purge
+
+    backups = data / "backups"
+    backups.mkdir()
+    source = sqlite3.connect(settings.db_path)
+    copy = sqlite3.connect(backups / "company_reach-before.db")
+    source.backup(copy)
+    copy.close()
+    source.close()
+    purge(settings, older_than_days=365, today="2028-01-01")
+
+    report = forget(settings, SEND)
+    assert backups / "company_reach-before.db" in report.still_named
+
+
+def test_a_name_across_a_read_boundary_is_found(settings, data, monkeypatch):
+    """Files are read in blocks, never whole — a backup can be gigabytes.
+    A name split between two blocks is still found."""
+    import company_reach.forget as forget_module
+
+    monkeypatch.setattr(forget_module, "_BLOCK", 4)
+    (data / "notes.log").write_text(f"xxxxxx{NAME.upper()}xxxxxx")
+    report = forget(settings, SEND)
+    assert data / "notes.log" in report.still_named
+
+
+def test_any_file_naming_the_person_is_reported_whatever_its_ending(settings, data):
+    """Review: an allow-list of endings skipped files data/ holds today — a
+    command's .out, a hand-made .bak. Only code, binaries and tool folders
+    are left out."""
+    (data / "export.out").write_text(f"{NAME}\n")
+    (data / "backups").mkdir()
+    (data / "backups" / "company_reach.db.bak").write_text(f"x {NAME} x")
+    (data / ".git").mkdir()
+    (data / ".git" / "COMMIT_EDITMSG").write_text(NAME)
+    (data / "helper.py").write_text(f"# {NAME}")
+    report = forget(settings, SEND)
+    assert data / "export.out" in report.still_named
+    assert data / "backups" / "company_reach.db.bak" in report.still_named
+    assert data / ".git" / "COMMIT_EDITMSG" not in report.still_named
+    assert data / "helper.py" not in report.still_named
+
+
+def test_a_file_that_cannot_be_searched_is_named(settings, data, monkeypatch):
+    """A compressed backup or a file the tool may not read could name the
+    person; it is listed as not searched, never passed over in silence."""
+    import gzip
+
+    from typer.testing import CliRunner
+
+    from company_reach import cli
+
+    (data / "backup.db.gz").write_bytes(gzip.compress(NAME.encode()))
+    locked = data / "locked.txt"
+    locked.write_text(NAME)
+    locked.chmod(0)
+    try:
+        monkeypatch.setattr(cli, "get_settings", lambda: settings)
+        r = CliRunner().invoke(cli.app, ["forget", SEND])
+    finally:
+        locked.chmod(0o600)
+    assert r.exit_code == 0, r.output
+    assert f"not searched: {data / 'backup.db.gz'}" in r.output
+    assert f"not searched: {locked}" in r.output
+
+
+# --- forget by address (audit: a reply from another address deletes nothing) --
+
+
+def test_forget_by_an_address_only_in_a_profile(settings, data):
+    """The site named her with her own address; the mail went to the inbox.
+    She answers from her own address, which only her profile holds."""
+    own = "anna.muster@muster-metallbau.ch"
+    persons = [{"name": NAME, "role": "Inhaberin", "email": own}]
+    with connect(settings.db_path) as conn:
+        conn.execute(
+            "update profiles set profile = ? where uid = ?",
+            (json.dumps({"description": "Stahltreppen.", "persons": persons}), SEND),
+        )
+    report = forget(settings, own)
+    assert report.companies == [SEND]
+    with connect(settings.db_path) as conn:
+        left = conn.execute(
+            "select count(*) from profiles where uid = ?", (SEND,)
+        ).fetchone()[0]
+        assert left == 0
+        assert is_suppressed(conn, SEND)
+        assert is_suppressed(conn, own)
+
+
+def test_forget_after_purge_still_suppresses(settings, data):
+    """A purge keeps a sent row's address as the key to a later request.
+    A year on, the contact is gone and only the ledger knows the address."""
+    from company_reach.forget import purge
+
+    purge(settings, older_than_days=365, today="2028-01-01")
+    report = forget(settings, "info@muster-metallbau.ch")
+    assert report.companies == [SEND]
+    with connect(settings.db_path) as conn:
+        row = conn.execute("select address from ledger where uid = ?", (SEND,))
+        assert row.fetchone()["address"] is None
+        assert is_suppressed(conn, SEND)
+        assert is_suppressed(conn, "info@muster-metallbau.ch")
+
+
+def test_an_address_matches_exactly_not_as_a_pattern(settings, data):
+    # LIKE reads "_" as any character: inf_@ matched info@ of another firm
+    report = forget(settings, "inf_@muster-metallbau.ch")
+    assert report.companies == []
+    with connect(settings.db_path) as conn:
+        assert not is_suppressed(conn, SEND)
+
+
+def test_an_idn_address_matches_its_ascii_form(settings, data):
+    from company_reach.models import Contact, ContactAddress
+    from company_reach.tools.db import record_contact
+
+    unicode_form = "info@müller-druck.ch"
+    with connect(settings.db_path) as conn:
+        record_contact(
+            conn,
+            "r1",
+            SKIP,
+            Contact(
+                email=unicode_form,
+                email_kind="generic",
+                source="site",
+                addresses=[ContactAddress(email=unicode_form, kind="generic")],
+            ),
+        )
+    ascii_form = "INFO@" + "müller-druck.ch".encode("idna").decode()
+    report = forget(settings, ascii_form)
+    assert report.companies == [SKIP]
+
+
+def test_forget_by_uid_keeps_the_sent_address_on_the_never_again_list(settings, data):
+    """The ledger loses the address; the never-again list keeps it, so a
+    sister company sharing the inbox is not written to again (D3)."""
+    forget(settings, SEND)
+    with connect(settings.db_path) as conn:
+        assert is_suppressed(conn, "info@muster-metallbau.ch")
+
+
+def test_an_unknown_address_explains_and_exits_2(settings, data, monkeypatch):
+    """Review focus 4: an address the tool never stored. It is suppressed,
+    and the operator is told how to find the company — the UID in the
+    quoted survey link — instead of reading "0 companies" as success."""
+    from typer.testing import CliRunner
+
+    from company_reach import cli
+
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    r = CliRunner().invoke(cli.app, ["forget", "someone@nowhere.example"])
+    assert r.exit_code == 2, r.output
+    assert "c=" in r.output
+    assert "company-reach forget CHE" in r.output
+    with connect(settings.db_path) as conn:
+        assert is_suppressed(conn, "someone@nowhere.example")
+
+
+def forget_cli(settings, monkeypatch, key: str):
+    from typer.testing import CliRunner
+
+    from company_reach import cli
+
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    return CliRunner().invoke(cli.app, ["forget", key])
+
+
+def suppression_keys(settings) -> set[str]:
+    with connect(settings.db_path) as conn:
+        return {r["key"] for r in conn.execute("select key from suppression")}
+
+
+def test_a_uid_with_a_wrong_check_digit_is_refused(settings, data, monkeypatch):
+    """Review: a mistyped UID was suppressed and reported as a success."""
+    r = forget_cli(settings, monkeypatch, "CHE-000.000.047")
+    assert r.exit_code == 2, r.output
+    assert "check digit" in r.output
+    assert suppression_keys(settings) == set()
+
+
+def test_a_uid_in_no_table_exits_2(settings, data, monkeypatch):
+    """A valid UID the tool never held: nothing to delete, which must not
+    read as a deletion done."""
+    r = forget_cli(settings, monkeypatch, "CHE-900.000.016")
+    assert r.exit_code == 2, r.output
+    assert "No record of CHE900000016" in r.output
+    assert suppression_keys(settings) == {"CHE900000016"}
+
+
+def test_a_pasted_survey_link_forgets_its_uid(settings, data):
+    """The reply quotes the invitation; its link is what gets pasted. The
+    link's c= UID is the key — the link itself is no suppression key."""
+    report = forget(settings, f"https://survey.test/form/?c={SEND}&l=de")
+    assert report.companies == [SEND]
+    assert suppression_keys(settings) == {SEND, "info@muster-metallbau.ch"}
+
+
+def test_a_key_that_is_neither_is_refused(settings, data, monkeypatch):
+    r = forget_cli(settings, monkeypatch, "Anna Muster")
+    assert r.exit_code == 2, r.output
+    assert "neither" in r.output
+    assert suppression_keys(settings) == set()
+
+
+def test_an_unknown_address_forgotten_twice_still_exits_2(settings, data, monkeypatch):
+    """Review: the first run suppressed the address, and the second read
+    that as a known address and reported success — although no company was
+    ever found and nothing was ever deleted."""
+    from typer.testing import CliRunner
+
+    from company_reach import cli
+
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    runner = CliRunner()
+    first = runner.invoke(cli.app, ["forget", "someone@nowhere.example"])
+    second = runner.invoke(cli.app, ["forget", "Someone@Nowhere.example"])
+    assert (first.exit_code, second.exit_code) == (2, 2), second.output
+    assert "already on the never-again list since" in second.output
+    assert "no company found" in second.output
+    assert "company-reach forget CHE" in second.output

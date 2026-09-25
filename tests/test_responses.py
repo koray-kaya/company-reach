@@ -210,3 +210,31 @@ def test_the_commands_import_and_report(settings, monkeypatch, tmp_path):
     assert "voll" in r.output and "kurz" in r.output
     assert "100.0% [20.7–100.0]" in r.output  # 1 of 1 started, Wilson 95%
     assert "responses without a sent invitation: 1" in r.output
+
+
+def test_a_bounce_counts_until_another_address_is_written_to(db, tmp_path):
+    """Delivered is sent minus bounced, per company: a bounce followed by a
+    mail to another address is delivered, and a send taken back as
+    not_sent was never a mail."""
+
+    def first_mail(conn, uid) -> int:
+        return record_decision(
+            conn,
+            uid,
+            "sent",
+            frame_version="frame@1",
+            arm="voll",
+            contact_kind="generic/site/named",
+        )
+
+    with connect(db) as conn:
+        record_decision(conn, A, "bounced", reverses=first_mail(conn, A))
+        sent(conn, A, kind="seen/site/named")
+        record_decision(conn, B, "bounced", reverses=first_mail(conn, B))
+        record_decision(conn, C, "not_sent", reverses=first_mail(conn, C))
+        rows, _ = report_rows(conn)
+    generic = group(rows, "voll", "generic/site/named")
+    assert (generic.sent, generic.bounced, generic.delivered) == (1, 1, 0)
+    seen = group(rows, "voll", "seen/site/named")
+    assert (seen.sent, seen.bounced, seen.delivered) == (1, 0, 1)
+    assert sum(r.sent for r in rows) == 2  # C's mail never left

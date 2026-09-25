@@ -5,6 +5,8 @@ a request from an old client or a script looks like; every POST here says
 which kind of request it is on purpose.
 """
 
+import re
+
 import pytest
 from fastapi.testclient import TestClient
 from fictional_profile import profile_text
@@ -96,6 +98,30 @@ def test_a_position_past_the_end_is_404(client):
 # --- deciding ----------------------------------------------------------------
 
 
+def shown(html: str) -> dict[str, str]:
+    """The draft the card rendered into its form: Send names what it sends."""
+    return dict(re.findall(r'name="(draft_id|body_sha256)" value="([^"]*)"', html))
+
+
+def post_send(
+    client: TestClient,
+    to: str,
+    *,
+    uid: str = SEND,
+    n: int = 0,
+    card: dict[str, str] | None = None,
+):
+    """Send as the page does: from the card as it was opened, unless `card`
+    says what an earlier view of it showed."""
+    if card is None:
+        card = shown(client.get(f"/review/{RUN}/{n}").text)
+    return client.post(
+        f"/decide/{RUN}/{uid}?n={n}",
+        data={"action": "send", "to": to, **card},
+        headers=SAME,
+    )
+
+
 def decision(review: Settings, uid: str) -> str | None:
     with connect(review.db_path) as conn:
         row = decision_for(conn, uid)
@@ -131,11 +157,7 @@ def test_a_typed_url_counts_as_this_page(client, review):
 
 
 def test_send_records_first_then_hands_over_the_mailto(client, review):
-    r = client.post(
-        f"/decide/{RUN}/{SEND}?n=0",
-        data={"action": "send", "to": "info@muster-metallbau.ch"},
-        headers=SAME,
-    )
+    r = post_send(client, "info@muster-metallbau.ch")
     assert r.status_code == 200
     assert decision(review, SEND) == "sent"
     assert 'http-equiv="refresh"' in r.text
@@ -161,11 +183,7 @@ def test_a_profile_change_blocks_send_on_the_server(client, review):
 
 
 def test_send_copies_frame_arm_and_contact_kind(client, review):
-    client.post(
-        f"/decide/{RUN}/{SEND}?n=0",
-        data={"action": "send", "to": "info@muster-metallbau.ch"},
-        headers=SAME,
-    )
+    post_send(client, "info@muster-metallbau.ch")
     with connect(review.db_path) as conn:
         row = conn.execute(
             "select frame_version, arm, contact_kind from ledger"
@@ -174,11 +192,7 @@ def test_send_copies_frame_arm_and_contact_kind(client, review):
 
 
 def test_send_goes_only_to_an_address_the_card_offered(client, review):
-    r = client.post(
-        f"/decide/{RUN}/{SEND}?n=0",
-        data={"action": "send", "to": "someone@elsewhere.example"},
-        headers=SAME,
-    )
+    r = post_send(client, "someone@elsewhere.example")
     assert r.status_code == 400
     assert ledger_rows(review) == 0
 
@@ -208,11 +222,33 @@ def test_a_held_company_cannot_be_sent_by_posting_anyway(client, review):
 
 
 def test_a_company_is_sent_once(client, review):
-    data = {"action": "send", "to": "info@muster-metallbau.ch"}
-    client.post(f"/decide/{RUN}/{SEND}?n=0", data=data, headers=SAME)
-    r = client.post(f"/decide/{RUN}/{SEND}?n=0", data=data, headers=SAME)
+    card = shown(client.get(f"/review/{RUN}/0").text)
+    post_send(client, "info@muster-metallbau.ch", card=card)
+    r = post_send(client, "info@muster-metallbau.ch", card=card)
     assert r.status_code == 409
     assert ledger_rows(review) == 1
+
+
+def test_a_changed_draft_is_not_sent(client, review):
+    """The reviewer approves the text on screen; meanwhile the draft is
+    rebuilt in place, under the same id — the salutation toggle in another
+    tab, a redraft in a terminal. Send must not mail the text nobody read."""
+    before = shown(client.get(f"/review/{RUN}/0").text)
+    assert set(before) == {"draft_id", "body_sha256"}
+    client.post(
+        f"/decide/{RUN}/{SEND}?n=0", data={"action": "salutation:ohne"}, headers=SAME
+    )
+    after = shown(client.get(f"/review/{RUN}/0").text)
+    assert after["draft_id"] == before["draft_id"]  # the id alone cannot tell
+
+    r = post_send(client, "info@muster-metallbau.ch", card=before)
+    assert r.status_code == 409
+    assert "the draft changed; reload the card" in r.text
+    r = post_send(client, "info@muster-metallbau.ch", card={})  # names none
+    assert r.status_code == 409
+    assert ledger_rows(review) == 0
+
+    assert post_send(client, "info@muster-metallbau.ch", card=after).status_code == 200
 
 
 def test_skip_records_the_reason_and_moves_on(client, review):
@@ -236,11 +272,7 @@ def test_undo_takes_a_skip_back_with_a_new_row(client, review):
 
 
 def test_undo_never_takes_back_a_send(client, review):
-    client.post(
-        f"/decide/{RUN}/{SEND}?n=0",
-        data={"action": "send", "to": "info@muster-metallbau.ch"},
-        headers=SAME,
-    )
+    post_send(client, "info@muster-metallbau.ch")
     r = client.post(f"/decide/{RUN}/{SEND}?n=0", data={"action": "undo"}, headers=SAME)
     assert r.status_code == 409
     assert decision(review, SEND) == "sent"
@@ -362,11 +394,7 @@ def test_an_unknown_salutation_is_refused(client, review):
 
 
 def test_a_decided_card_keeps_its_salutation(client, review):
-    client.post(
-        f"/decide/{RUN}/{SEND}?n=0",
-        data={"action": "send", "to": "info@muster-metallbau.ch"},
-        headers=SAME,
-    )
+    assert post_send(client, "info@muster-metallbau.ch").status_code == 200
     r = client.post(
         f"/decide/{RUN}/{SEND}?n=0", data={"action": "salutation:Herr"}, headers=SAME
     )
@@ -376,12 +404,9 @@ def test_a_decided_card_keeps_its_salutation(client, review):
 def test_a_third_party_row_cannot_be_sent(client, review):
     html = client.get(f"/review/{RUN}/0").text
     assert 'value="studio@agentur.example" disabled' in html
-    r = client.post(
-        f"/decide/{RUN}/{SEND}?n=0",
-        data={"action": "send", "to": "studio@agentur.example"},
-        headers=SAME,
-    )
+    r = post_send(client, "studio@agentur.example", card=shown(html))
     assert r.status_code == 409
+    assert "another domain" in r.text
     assert ledger_rows(review) == 0
 
 
@@ -456,9 +481,7 @@ def test_another_seen_row_rebuilds_the_mail_for_its_owner(two_seen):
     assert body.startswith("Guten Tag Beat Beispiel\n\n")  # his own address
     assert "Anna" not in body
 
-    r = client.post(
-        f"/decide/{RUN}/{SEND}?n=0", data={"action": "send", "to": BEAT}, headers=SAME
-    )
+    r = post_send(client, BEAT)
     assert r.status_code == 200
     with connect(two_seen.db_path) as conn:
         row = conn.execute("select address, contact_kind from ledger").fetchone()
@@ -473,9 +496,7 @@ def test_the_inbox_row_gets_the_inbox_frame(two_seen):
     assert body.startswith("Zuhanden Frau Muster – besten Dank fürs Weiterleiten")
     assert "Ihren Namen und diese Adresse habe ich von Ihrer Website" in body
     assert subject == "Für Frau Muster: Masterarbeit an der OST"
-    client.post(
-        f"/decide/{RUN}/{SEND}?n=0", data={"action": "send", "to": INBOX}, headers=SAME
-    )
+    assert post_send(client, INBOX).status_code == 200
     with connect(two_seen.db_path) as conn:
         kind = conn.execute("select contact_kind from ledger").fetchone()[0]
     assert kind == "generic/site/named"
@@ -483,12 +504,284 @@ def test_the_inbox_row_gets_the_inbox_frame(two_seen):
 
 def test_send_to_a_row_the_mail_was_not_written_for_is_refused(two_seen):
     client = TestClient(create_app(two_seen), follow_redirects=False)
-    r = client.post(
-        f"/decide/{RUN}/{SEND}?n=0", data={"action": "send", "to": BEAT}, headers=SAME
-    )
+    r = post_send(client, BEAT)
     assert r.status_code == 409
+    assert "written for" in r.text
     assert ledger_rows(two_seen) == 0
 
 
 def test_a_third_party_row_cannot_be_chosen(client, review):
     assert choose(client, "studio@agentur.example").status_code == 409
+
+
+# --- the address, not only the company (audit: address-level suppression) ---
+
+
+def test_an_address_already_mailed_is_refused(client, review):
+    """A sister company on the same site, with the same inbox, was written
+    to in an earlier run: one inbox, one invitation."""
+    from company_reach.tools.db import record_decision
+
+    with connect(review.db_path) as conn:
+        record_decision(
+            conn, "CHE999999999", "sent", address="Info@Muster-Metallbau.ch"
+        )
+    html = client.get(f"/review/{RUN}/0").text
+    assert 'value="info@muster-metallbau.ch" disabled' in html
+    assert "already written to" in html
+    r = post_send(client, "info@muster-metallbau.ch")
+    assert r.status_code == 409
+    assert "already written to" in r.text
+    assert ledger_rows(review) == 1  # the sister's row only
+
+
+def test_a_suppressed_address_is_refused(client, review):
+    """The inbox asked to be forgotten through another company's mail."""
+    from company_reach.tools.db import suppress
+
+    with connect(review.db_path) as conn:
+        suppress(conn, "info@muster-metallbau.ch", reason="forgotten on request")
+    html = client.get(f"/review/{RUN}/0").text
+    assert 'value="info@muster-metallbau.ch" disabled' in html
+    assert "never-again list" in html
+    r = post_send(client, "info@muster-metallbau.ch")
+    assert r.status_code == 409
+    assert "never-again list" in r.text
+    assert ledger_rows(review) == 0
+
+
+# --- a mail nobody received is not a contact (open point 4) ------------------
+
+
+def statuses(review: Settings, uid: str = SEND) -> list[tuple]:
+    with connect(review.db_path) as conn:
+        return [
+            tuple(r)
+            for r in conn.execute(
+                "select status, reverses from ledger where uid = ? order by id", (uid,)
+            )
+        ]
+
+
+def take_back(client: TestClient, sent_id: str, *, confirm: bool = True):
+    data = {"action": "not_sent", "sent_id": sent_id}
+    return client.post(
+        f"/decide/{RUN}/{SEND}?n=0",
+        data=data | ({"confirm": "yes"} if confirm else {}),
+        headers=SAME,
+    )
+
+
+def bounce(client: TestClient, *, confirm: bool = True):
+    data = {"action": "bounced"} | ({"confirm": "yes"} if confirm else {})
+    return client.post(f"/decide/{RUN}/{SEND}?n=0", data=data, headers=SAME)
+
+
+OWN = "anna.muster@muster-metallbau.ch"
+
+
+def with_two_addresses(review: Settings) -> None:
+    """The contact offers the inbox and her own address, so a bounce of
+    one leaves the other."""
+    from company_reach.models import Contact, ContactAddress
+    from company_reach.tools.db import record_contact
+
+    with connect(review.db_path) as conn:
+        contact_id = record_contact(
+            conn,
+            RUN,
+            SEND,
+            Contact(
+                name="Anna Muster",
+                role="Inhaberin",
+                email="info@muster-metallbau.ch",
+                email_kind="generic",
+                source="site",
+                source_url="https://muster-metallbau.ch/team",
+                addresses=[
+                    ContactAddress(email="info@muster-metallbau.ch", kind="generic"),
+                    ContactAddress(email=OWN, kind="seen"),
+                ],
+            ),
+        )
+        # the seeded draft was written for Anna at the inbox: it stays the
+        # draft of this contact (Phase C checks the draft's contact is current)
+        conn.execute(
+            "update drafts set contact_id = ? where run_id = ? and uid = ?",
+            (contact_id, RUN, SEND),
+        )
+
+
+def test_not_sent_reopens_the_card(client, review):
+    """The mail client never opened, or the reviewer closed the mail
+    unsent: the recorded page takes the send back, and the card is open
+    again — the same address included, since no mail left."""
+    from company_reach.tools.db import was_contacted
+
+    recorded = post_send(client, "info@muster-metallbau.ch")
+    sent_id = re.search(r'name="sent_id" value="(\d+)"', recorded.text).group(1)
+    assert 'value="not_sent"' in recorded.text
+
+    r = take_back(client, sent_id)
+    assert r.status_code == 303
+    assert decision(review, SEND) is None
+    assert statuses(review) == [("sent", None), ("not_sent", int(sent_id))]
+    with connect(review.db_path) as conn:
+        assert not was_contacted(conn, SEND)
+    assert post_send(client, "info@muster-metallbau.ch").status_code == 200
+
+
+def test_not_sent_only_before_the_reviewer_moves_on(client, review):
+    """Taking a send back belongs to the moment after it: once anything
+    else is decided, `sent` is final."""
+    recorded = post_send(client, "info@muster-metallbau.ch")
+    sent_id = re.search(r'name="sent_id" value="(\d+)"', recorded.text).group(1)
+    client.post(
+        f"/decide/{RUN}/{SKIP}?n=2", data={"action": "skip:Not a fit"}, headers=SAME
+    )
+    r = take_back(client, sent_id)
+    assert r.status_code == 409
+    assert decision(review, SEND) == "sent"
+
+
+def test_bounced_allows_another_address(client, review):
+    """The inbox bounced. Its address goes on the never-again list, the
+    card opens again, and another address may be tried — never the one
+    that bounced."""
+    from company_reach.tools.db import was_contacted
+
+    with_two_addresses(review)
+    assert post_send(client, "info@muster-metallbau.ch").status_code == 200
+    assert 'value="bounced"' in client.get(f"/review/{RUN}/0").text
+
+    r = bounce(client)
+    assert r.status_code == 303
+    assert decision(review, SEND) is None
+    html = client.get(f"/review/{RUN}/0").text
+    assert 'value="info@muster-metallbau.ch" disabled' in html
+    assert "(bounced)" in html
+    # the mail was written for the inbox that bounced: the other address is
+    # offered as a rebuild (Phase C), not preselected for a silent switch
+    assert f'value="address:{OWN}"' in html
+    assert post_send(client, "info@muster-metallbau.ch").status_code == 409
+    assert post_send(client, OWN).status_code == 409  # not written for it yet
+
+    r = client.post(
+        f"/decide/{RUN}/{SEND}?n=0", data={"action": f"address:{OWN}"}, headers=SAME
+    )
+    assert r.status_code == 303
+    assert f'value="{OWN}" checked' in client.get(f"/review/{RUN}/0").text
+    assert post_send(client, OWN).status_code == 200
+    assert [s for s, _ in statuses(review)] == ["sent", "bounced", "sent"]
+    with connect(review.db_path) as conn:
+        assert is_suppressed(conn, "info@muster-metallbau.ch")
+        assert was_contacted(conn, SEND)
+
+
+def test_only_a_sent_company_can_bounce(client, review):
+    assert bounce(client).status_code == 409
+    assert ledger_rows(review) == 0
+
+
+@pytest.mark.parametrize("what", ["bounced", "not_sent"])
+def test_taking_a_send_back_asks_first_when_the_script_did_not(client, review, what):
+    """Review: both put an address or a company back in play, and Bounced
+    suppresses an address for good. Without the page's script, the server
+    asks on a page of its own, as it does for Never again."""
+    recorded = post_send(client, "info@muster-metallbau.ch")
+    sent_id = re.search(r'name="sent_id" value="(\d+)"', recorded.text).group(1)
+    r = (
+        bounce(client, confirm=False)
+        if what == "bounced"
+        else (take_back(client, sent_id, confirm=False))
+    )
+    assert r.status_code == 200
+    assert 'name="confirm" value="yes"' in r.text
+    assert f'value="{what}"' in r.text
+    if what == "not_sent":
+        assert f'name="sent_id" value="{sent_id}"' in r.text
+    assert decision(review, SEND) == "sent"
+    assert ledger_rows(review) == 1
+
+
+def test_a_bounce_can_be_undone_while_it_is_the_newest_row(client, review):
+    """A bounce clicked by mistake: taken back before anything else is
+    decided, the send stands again and the address leaves the list."""
+    from company_reach.responses import report_rows
+    from company_reach.tools.db import was_contacted
+
+    with_two_addresses(review)
+    post_send(client, "info@muster-metallbau.ch")
+    bounce(client)
+    assert "Undo bounce" in client.get(f"/review/{RUN}/0").text
+
+    r = client.post(f"/decide/{RUN}/{SEND}?n=0", data={"action": "undo"}, headers=SAME)
+    assert r.status_code == 303
+    assert decision(review, SEND) == "sent"
+    with connect(review.db_path) as conn:
+        assert not is_suppressed(conn, "info@muster-metallbau.ch")
+        assert was_contacted(conn, SEND)
+        rows, _ = report_rows(conn)
+    assert (rows[0].sent, rows[0].bounced) == (1, 0)
+    assert "Undo bounce" not in client.get(f"/review/{RUN}/0").text
+
+
+def test_a_reopened_card_rebuilds_into_a_new_draft(client, review):
+    """Review: after a bounce the card is open again, and its salutation
+    toggle rewrote in place the draft the sent row names. The text that
+    went out stays under its id; the rebuilt mail is a new draft."""
+    import hashlib
+
+    with_two_addresses(review)
+    post_send(client, "info@muster-metallbau.ch")
+    bounce(client)
+    with connect(review.db_path) as conn:
+        sent = conn.execute(
+            "select draft_id, body_sha256 from ledger where status = 'sent'"
+        ).fetchone()
+
+    r = client.post(
+        f"/decide/{RUN}/{SEND}?n=0", data={"action": "salutation:ohne"}, headers=SAME
+    )
+    assert r.status_code == 303
+    with connect(review.db_path) as conn:
+        kept = conn.execute(
+            "select body from drafts where id = ?", (sent["draft_id"],)
+        ).fetchone()
+    assert hashlib.sha256(kept["body"].encode()).hexdigest() == sent["body_sha256"]
+    html = client.get(f"/review/{RUN}/0").text
+    assert shown(html)["draft_id"] != str(sent["draft_id"])
+    assert "Guten Tag Anna Muster" in html
+
+
+def test_a_bounce_is_final_once_something_else_is_decided(client, review):
+    with_two_addresses(review)
+    post_send(client, "info@muster-metallbau.ch")
+    bounce(client)
+    client.post(
+        f"/decide/{RUN}/{SKIP}?n=2", data={"action": "skip:Not a fit"}, headers=SAME
+    )
+    assert "Undo bounce" not in client.get(f"/review/{RUN}/0").text
+    r = client.post(f"/decide/{RUN}/{SEND}?n=0", data={"action": "undo"}, headers=SAME)
+    assert r.status_code == 409
+    assert decision(review, SEND) is None
+
+
+def test_a_refused_row_cannot_be_chosen_for_a_rebuild(client, review):
+    """Integration of C and D: the rebuild action obeys the same per-inbox
+    refusals as Send. Rebuilding a mail for an inbox on the never-again list
+    would only lead to a Send that is refused, and would overwrite the draft
+    the reviewer could still send."""
+    from company_reach.tools.db import suppress
+
+    with_two_addresses(review)
+    with connect(review.db_path) as conn:
+        suppress(conn, OWN, reason="forgotten on request")
+        before = conn.execute("select id, body from drafts where uid = ?", (SEND,))
+        before = before.fetchall()
+    r = choose(client, OWN)
+    assert r.status_code == 409
+    assert "never-again list" in r.text
+    with connect(review.db_path) as conn:
+        after = conn.execute("select id, body from drafts where uid = ?", (SEND,))
+        assert after.fetchall() == before

@@ -130,7 +130,7 @@ with its 95% interval. It prints counts only, no names.
 The tool handles real people's names and addresses. [PRIVACY.md](PRIVACY.md)
 says what it collects, where it keeps it and where it sends it — above all,
 the model endpoint you choose receives the page text it reads. Two commands
-delete: `company-reach forget <uid|email>` on request, and
+delete: `company-reach forget <uid|email|survey link>` on request, and
 `company-reach purge --older-than 365` for data nobody has touched for a
 year.
 

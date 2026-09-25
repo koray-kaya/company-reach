@@ -487,6 +487,56 @@ async def test_a_crashed_batch_finishes_on_the_same_run_id(settings):
     assert sorted(child.seen) == ["CHE000000001", "CHE000000002"]
 
 
+async def test_retry_skips_a_forgotten_company(settings):
+    """Audit H7: a company errors, its person asks to be forgotten, and the
+    run is retried. Retrying would search, read and name the person again."""
+    from company_reach.forget import forget
+
+    # forget checks a UID's check digit, so these three are real-shaped
+    forgotten, kept, no_site = "CHE000000046", "CHE123456788", "CHE111111118"
+    _seed(settings, {forgotten: 9, kept: 9, no_site: 9})
+    with connect(settings.db_path) as conn:
+        for uid, rec, reason, kind in (
+            (forgotten, None, None, "search"),
+            (kept, None, None, "search"),
+            (no_site, "skip", "no website found after 3 searches", None),
+        ):
+            conn.execute(
+                "insert into results (run_id, uid, recommendation, reason,"
+                " error_kind, finished_at)"
+                " values ('r1', ?, ?, ?, ?, '2026-09-24T00:00:00+00:00')",
+                (uid, rec, reason, kind),
+            )
+    forget(settings, forgotten)
+    forget(settings, no_site)
+
+    child = ChildByUid({kept: "send"})
+    await retry_errors("r1", settings=settings, child=child, dry=True, no_site=True)
+    assert child.seen == [kept]
+
+
+async def test_a_resumed_batch_leaves_a_company_marked_never_alone(settings):
+    """A crashed batch shows its companies as unfinished cards. The reviewer
+    marks one Never, then runs the same id again: the resume finishes the
+    others and collects nothing more about that one."""
+    from company_reach.tools.db import record_decision, result_for, suppress
+
+    _seed(settings, {"CHE000000001": 9, "CHE000000002": 8})
+    graph_module.draw_batch(_start(settings), settings=settings)  # then "crash"
+    with connect(settings.db_path) as conn:
+        suppress(conn, "CHE000000001", reason="never again, from the review page")
+        record_decision(conn, "CHE000000001", "never", run_id="r1")
+
+    child = ChildByUid({"CHE000000002": "send"})
+    await run_graph(_start(settings), settings=settings, dry=True, child=child)
+    assert child.seen == ["CHE000000002"]
+    with connect(settings.db_path) as conn:
+        assert errored_uids(conn, "r1") == []
+        result = result_for(conn, "CHE000000001", run_id="r1")
+    assert (result.recommendation, result.error_kind) == ("skip", None)
+    assert "never-again" in result.reason
+
+
 def test_the_pending_text_is_true_while_running_and_after_a_crash(settings):
     """The review page shows this text while the run is still going; it must
     not claim the run stopped."""

@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 import httpx
+import pytest
 import respx
 from search_fakes import as_outcome
 from typer.testing import CliRunner
@@ -565,6 +566,52 @@ def test_enrich_refuses_a_stopping_point_it_does_not_have(settings, monkeypatch)
     assert r.exit_code != 0
 
 
+@pytest.mark.parametrize("closed", ["suppressed", "never", "sent"])
+def test_enrich_refuses_a_suppressed_uid(settings, monkeypatch, closed):
+    """Audit: `enrich --uid` bypassed seen, the ledger and suppression, and
+    collected a person the company had asked never to hear from again."""
+    from company_reach.tools.db import record_decision, suppress
+
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    _seed_one_company(settings)
+    with connect(settings.db_path) as conn:
+        if closed == "suppressed":
+            suppress(conn, "CHE000000046", reason="forgotten on request")
+        else:
+            record_decision(conn, "CHE000000046", closed)
+
+    def no_child(**kwargs):
+        raise AssertionError("enrich built a child for a closed company")
+
+    monkeypatch.setattr(cli, "build_child", no_child)
+    r = runner.invoke(cli.app, ["enrich", "--uid", "CHE000000046", "--until", "site"])
+    assert r.exit_code == 2, r.output
+    assert "CHE000000046" in r.output
+    with connect(settings.db_path) as conn:
+        assert conn.execute("select count(*) from searches").fetchone()[0] == 0
+
+
+def test_enrich_looks_at_a_skipped_company(settings, monkeypatch):
+    """Review: a skip — imported from v0, or "Not a fit" on the card —
+    says nothing about being written to or asking not to be. `enrich` may
+    look; only retry and a resumed batch leave every decided company alone."""
+    from company_reach.tools.db import record_decision
+
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    _seed_one_company(settings)
+    with connect(settings.db_path) as conn:
+        record_decision(conn, "CHE000000046", "skipped", run_id="v0", note="v0")
+
+    class NoSite:
+        async def ainvoke(self, state, config=None):
+            return {"reason": "no website found after 3 searches"}
+
+    monkeypatch.setattr(cli, "build_child", lambda settings, until: NoSite())
+    r = runner.invoke(cli.app, ["enrich", "--uid", "CHE000000046", "--until", "site"])
+    assert r.exit_code == 0, r.output
+    assert "no website" in r.output
+
+
 def test_enrich_on_an_unknown_company_says_so(settings, monkeypatch):
     monkeypatch.setattr(cli, "get_settings", lambda: settings)
     init_db(settings.db_path)
@@ -716,11 +763,13 @@ def test_review_serves_on_the_loopback_interface_by_default(settings, monkeypatc
 
 
 def test_forget_suppresses_and_names_what_is_left_to_do(settings, monkeypatch):
+    # a key no table holds exits 2 (test_forget); a company in the pool is
+    # suppressed by its UID
     monkeypatch.setattr(cli, "get_settings", lambda: settings)
-    init_db(settings.db_path)
-    r = runner.invoke(cli.app, ["forget", "someone@nowhere.example"])
+    _seed_one_company(settings)
+    r = runner.invoke(cli.app, ["forget", "CHE-000.000.046"])
     assert r.exit_code == 0, r.output
-    assert "suppressed: someone@nowhere.example" in r.output
+    assert "suppressed: CHE000000046" in r.output
 
 
 def test_purge_says_what_it_removed(settings, monkeypatch):

@@ -89,3 +89,19 @@ def inbox_domain(url: str) -> str | None:
     if found.is_private or found.suffix in _SITE_BUILDERS:
         return None
     return host if host == _apex(host) else None
+
+
+def address_key(email: str) -> str:
+    """How two spellings of one address compare: `Info@Müller.ch` and
+    `info@xn--mller-kva.ch` are the same mailbox. Case is folded, and an
+    internationalised domain takes its ASCII (punycode) form — the form a
+    mail client may show in a reply. A domain the codec cannot encode is
+    kept as written."""
+    local, at, domain = email.strip().lower().rpartition("@")
+    if not at:
+        return domain
+    try:
+        domain = domain.encode("idna").decode("ascii")
+    except UnicodeError:
+        pass
+    return f"{local}@{domain}"

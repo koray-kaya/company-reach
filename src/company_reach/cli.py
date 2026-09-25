@@ -45,6 +45,7 @@ from company_reach.tools.db import (
     errored_uids,
     init_db,
     load_criteria,
+    off_limits_because,
     pool_standing,
     record_run,
     score_run_criteria,
@@ -654,20 +655,62 @@ def review(
 
 @app.command()
 def forget(
-    key: Annotated[str, typer.Argument(help="A company's UID or a person's address.")],
+    key: Annotated[
+        str,
+        typer.Argument(
+            help="A company's UID, a person's address, or the invitation's"
+            " survey link (its c= UID)."
+        ),
+    ],
 ) -> None:
     """Honour a deletion request: remove the person from the database and the
     page cache, and never contact the company or address again."""
     from company_reach.forget import forget as forget_key
 
-    report = forget_key(get_settings(), key)
+    try:
+        report = forget_key(get_settings(), key)
+    except CompanyReachError as error:  # a mistyped UID, a line of text
+        typer.echo(str(error), err=True)
+        raise typer.Exit(2) from error
     typer.echo(
         f"{len(report.companies)} companies · {report.rows_deleted} rows and "
         f"{report.cache_files_deleted} cache files deleted"
     )
     typer.echo(f"suppressed: {', '.join(report.suppressed)}")
     for path in report.still_named:
-        typer.echo(f"still named in {path} — a hand-kept file; edit it by hand")
+        typer.echo(
+            f"still named in {path} — not cleaned by the tool (a hand-kept file,"
+            " a backup or a log); edit or delete it by hand"
+        )
+    for path in report.not_searched:
+        typer.echo(
+            f"not searched: {path} — compressed or unreadable; open it and check"
+            " by hand"
+        )
+    if report.unknown:
+        # "0 companies" must not read as a deletion done (review focus 4),
+        # the second time as little as the first
+        if report.already:
+            typer.echo(
+                f"{report.key} was already on the never-again list {report.already}.",
+                err=True,
+            )
+        if report.by_uid:
+            typer.echo(
+                f"No record of {report.key} in the database, so nothing was"
+                " deleted; the UID is on the never-again list. Check it against"
+                " the survey link the reply quotes (?c=CHE…).",
+                err=True,
+            )
+        else:
+            typer.echo(
+                f"No company holds {report.key}, so nothing was deleted; the"
+                " address is on the never-again list. The reply quotes the"
+                " invitation, whose survey link ends in ?c=CHE…: run"
+                " `company-reach forget CHE…` with that UID, or paste the link.",
+                err=True,
+            )
+        raise typer.Exit(2)
 
 
 @app.command()
@@ -779,7 +822,9 @@ def enrich(
     """Run one company through the child graph and print what it found.
 
     The milestone's demo, and the way to look at a single disagreement
-    between the register and a website without drawing a batch.
+    between the register and a website without drawing a batch. A company
+    on the never-again list, marked never, or already written to is
+    refused; a skipped one is not.
     """
     if until not in ("site", "profile", "contact", "draft"):
         raise typer.BadParameter(
@@ -787,6 +832,14 @@ def enrich(
         )
 
     s = get_settings()
+    with connect(s.db_path) as conn:
+        refused = off_limits_because(conn, uid)
+    if refused:
+        # nothing more is collected about a company that asked never to
+        # hear from us or was already written to; a skip does not stop a
+        # person from looking
+        typer.echo(f"{uid}: not enriched — {refused}.", err=True)
+        raise typer.Exit(2)
     rid = _run_id(run_id)
     child = build_child(settings=s, until=until)
 

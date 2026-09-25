@@ -20,7 +20,8 @@ use it.
   the pages publish.
 - **What the tool writes** — a short description of each company, the
   contact it chose and why, an invitation draft, and the reviewer's decision
-  (sent, skipped, never again).
+  (sent, skipped, never again, and a send taken back as not sent or
+  bounced).
 
 It does not collect anything from LinkedIn. When no address was found, a
 web search restricted to LinkedIn profiles may record a profile *URL* as a
@@ -32,7 +33,7 @@ Only on the machine that runs it, under `data/`:
 
 | Place | What |
 |---|---|
-| `data/company_reach.db` (SQLite) | companies, scores, site evidence, the search log (each query, and SearXNG's first ten result URLs — never Brave's), page text, profiles, contacts, drafts, results, the ledger of decisions, the never-again list, and — once imported from the survey's export — when each company's response started and finished (by UID; `report` prints only counts) |
+| `data/company_reach.db` (SQLite) | companies, scores, site evidence, the search log (each query, and SearXNG's first ten result URLs — never Brave's), page text, profiles, contacts, drafts, results, the ledger of decisions (for a mail sent: the address, the subject and a hash of the text), the never-again list, and — once imported from the survey's export — when each company's response started and finished (by UID; `report` prints only counts) |
 | `data/cache/` | the HTML of every page fetched |
 | `data/runs/<run>/manifest.json` | each run's settings, prompt versions and counts — no personal data |
 
@@ -86,9 +87,16 @@ gets it. Everything else is written by code (`tools/invitation.py`):
   SHAB is never given as the source of an address, and a guessed address
   is not said to come from anywhere.
 - **One mail only.** "Ich schreibe Ihnen nur dieses eine Mal." The ledger
-  keeps that promise. Only if the profile allows one reminder (which needs
-  ethics approval first) does the mail say "Ich erinnere Sie höchstens
-  einmal daran" instead.
+  keeps that promise, for the company and for the inbox: the review page
+  refuses an address that is on the never-again list or was already written
+  to for another company, such as a sister firm sharing one info@. A mail
+  nobody received is not a contact: one that never left the mail client is
+  taken back on the page, and one that bounced puts its address on the
+  never-again list (a bounce clicked by mistake is undone before anything
+  else is decided); either way the company may be written to at another
+  address. Only if the profile allows one reminder (which needs ethics
+  approval first) does the mail say "Ich erinnere Sie höchstens einmal
+  daran" instead.
 - **How to be deleted.** When someone is named: "Ein kurzes «Nein» genügt,
   dann lösche ich Ihren Namen." It promises the name, not the address,
   because `forget` keeps the address on the never-again list for good.
@@ -102,19 +110,35 @@ gets it. Everything else is written by code (`tools/invitation.py`):
 
 ## How it is deleted
 
-- **On request:** `company-reach forget <uid|email>` removes the person
+- **On request:** `company-reach forget <uid|email|survey link>` removes the person
   from the database and the page cache — contacts and everyone named beside
   them, drafts, profiles, site evidence, the search log, the imported survey
   response times for the company, the name in the recommendation — and
   vacuums the database so nothing stays in free pages.
   The company and the address go on the never-again list, so they are never
-  contacted again. The ledger keeps the decision without the address. Files
-  the tool did not write are not edited; any that still name the person are
-  listed.
+  contacted again. The ledger keeps the decision without the address or
+  the mail's subject; the address a mail went to moves to the never-again
+  list instead. An address
+  is looked up in the contacts, the persons a profile names and the ledger.
+  When no company holds it, `forget` still puts it on the never-again list,
+  says that nothing was deleted, and exits with status 2: the company is
+  found by the UID in the survey link the reply quotes (`?c=CHE…`), and
+  `forget <UID>`, or `forget` with the pasted link, deletes it. A UID
+  whose check digit does not match is refused, and one no table holds is
+  handled like an unknown address: listed, nothing deleted, status 2.
+  Files the tool did not write are not edited;
+  any that still name the person are listed — including a copy of the
+  database (a backup under `data/`, with its `-wal` file) and a log, which
+  have to be deleted or cleaned by hand. A file it cannot search — a
+  compressed archive, a PDF, one it may not read — is listed as not
+  searched.
 - **After a year:** `company-reach purge --older-than 365` removes the same
-  data for every company nobody has touched for that long. It keeps the
+  data for every company nobody has touched for that long — one a run drew,
+  and one only `enrich --uid` or an evaluation looked at, whose age is its
+  newest search or draft. It keeps the
   ledger and the never-again list, including the address of a mail that was
-  sent, because "contacted once, ever" rests on them. `company-reach doctor`
+  sent, because "contacted once, ever" rests on them; only the mail's
+  subject, which can name the person, is cleared. `company-reach doctor`
   reports how many companies a purge would clear.
 
 ## Before the first real invitation

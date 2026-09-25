@@ -12,9 +12,11 @@ Each rate carries its Wilson 95% interval. At thesis scale a start rate of
 invites reading a difference into noise (the measurement plan's
 pre-registered rule decides the A/B, not this table).
 
-Delivered is sent minus bounced; `bounced` becomes a decision in a later
-phase and counts zero until then. "Never" counts sent companies that are
-now on the never-again list — a «Nein» reply ends in `forget`.
+Delivered is sent minus bounced, per company: each company counts by its
+latest mail, so a bounce followed by a mail to another address is
+delivered. A send taken back as `not_sent` was never a mail and does not
+count at all. "Never" counts sent companies that are now on the never-again
+list — a «Nein» reply ends in `forget`.
 """
 
 import csv
@@ -25,10 +27,14 @@ from datetime import datetime
 from pathlib import Path
 
 from company_reach.errors import CompanyReachError
-from company_reach.tools.db import now
+from company_reach.tools.db import NEVER_LEFT, UNDONE, now
 from company_reach.tools.invitation import compact_uid
 
 _COLUMNS = ("uid", "started_at", "completed_at")
+# companies a mail left for: a sent row not taken back as never sent
+_MAILED_UIDS = (
+    f"(select uid from ledger where status = 'sent' and id not in {NEVER_LEFT})"
+)
 
 
 @dataclass(frozen=True)
@@ -100,8 +106,7 @@ def import_responses(conn: sqlite3.Connection, path: Path) -> ImportReport:
         [(uid, s, c, now()) for uid, (s, c) in found.items()],
     )
     matched = conn.execute(
-        """select count(*) from responses
-            where uid in (select uid from ledger where status = 'sent')"""
+        f"select count(*) from responses where uid in {_MAILED_UIDS}"
     ).fetchone()[0]
     return ImportReport(rows=len(found), matched=matched)
 
@@ -110,9 +115,10 @@ def report_rows(
     conn: sqlite3.Connection, *, within_days: int | None = 21
 ) -> tuple[list[Group], int]:
     """Counts per (frame version, arm, contact kind), from each company's
-    latest `sent` row, and how many responses have no `sent` row at all.
-    With `within_days`, a start or completion counts only that many days
-    after the mail — the plan's primary metric uses 21."""
+    latest mail — its latest `sent` row not taken back as never sent — and
+    how many responses have no such row at all. With `within_days`, a start
+    or completion counts only that many days after the mail — the plan's
+    primary metric uses 21."""
     # whole days from the day of the mail: 0 is the day it was sent, and a
     # start before it (the owner trying the link, an older forward) is no
     # answer to it
@@ -124,19 +130,21 @@ def report_rows(
     )
     params: list = [] if within_days is None else [within_days, within_days]
     rows = conn.execute(
-        f"""with sent as (
-                select l.uid, l.decided_at,
+        f"""with mails as (
+                select * from ledger
+                 where status = 'sent' and id not in {NEVER_LEFT}),
+            sent as (
+                select l.id, l.uid, l.decided_at,
                        coalesce(l.frame_version, '-') as frame_version,
                        coalesce(l.arm, '-') as arm,
                        coalesce(l.contact_kind, '-') as contact_kind
-                  from ledger l
-                 where l.status = 'sent'
-                   and l.id = (select max(id) from ledger
-                                where uid = l.uid and status = 'sent'))
+                  from mails l
+                 where l.id = (select max(id) from mails where uid = l.uid))
             select s.frame_version, s.arm, s.contact_kind,
                    count(*) as sent,
                    sum(exists (select 1 from ledger b
-                                where b.uid = s.uid and b.status = 'bounced'))
+                                where b.reverses = s.id and b.status = 'bounced'
+                                  and b.id not in {UNDONE}))
                        as bounced,
                    sum(exists (select 1 from suppression x where x.key = s.uid)
                        or exists (select 1 from ledger n
@@ -165,8 +173,7 @@ def report_rows(
         for r in rows
     ]
     unmatched = conn.execute(
-        """select count(*) from responses
-            where uid not in (select uid from ledger where status = 'sent')"""
+        f"select count(*) from responses where uid not in {_MAILED_UIDS}"
     ).fetchone()[0]
     return groups, unmatched
 

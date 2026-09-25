@@ -25,10 +25,15 @@ from company_reach.models import (
     StoredCriteria,
 )
 from company_reach.screen import screen_reason
+from company_reach.tools.urls import address_key
 
 if TYPE_CHECKING:  # avoids pulling langchain into every db import
     from company_reach.tools.llm import Provenance
     from company_reach.tools.search import Asked
+
+
+def _sql_address_key(value: str | None) -> str | None:
+    return address_key(value) if value else None
 
 
 def _open(path: Path) -> sqlite3.Connection:
@@ -41,6 +46,9 @@ def _open(path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
     conn.execute("PRAGMA foreign_keys=ON")
+    # `address_key(x)` in SQL is the Python function: an address compares
+    # the same way in a query as in code (case, internationalised domains)
+    conn.create_function("address_key", 1, _sql_address_key, deterministic=True)
     conn.autocommit = False
     return conn
 
@@ -66,6 +74,12 @@ _ADDED_COLUMNS = {
     ("ledger", "arm"): "TEXT",
     ("ledger", "contact_kind"): "TEXT",
     ("scores", "criteria_hash"): "TEXT",
+    # what went out, snapshotted at Send (D4)
+    ("ledger", "subject"): "TEXT",
+    ("ledger", "body_sha256"): "TEXT",
+    ("ledger", "prompt_version"): "TEXT",
+    # the sent row a not_sent or bounced takes back (D5)
+    ("ledger", "reverses"): "INTEGER",
 }
 
 
@@ -85,6 +99,26 @@ def _replace_ledger_of_one_row_per_company(conn: sqlite3.Connection) -> None:
     conn.execute("drop table ledger")
 
 
+def _drafts_never_reuse_ids(conn: sqlite3.Connection, schema: str) -> None:
+    """Without AUTOINCREMENT a new row takes the highest id plus one, so
+    replacing the newest draft handed its id on, and a sent row's
+    `draft_id` came to name text that was never sent (audit, D4). A table
+    from before is rebuilt once, every draft and id kept."""
+    sql = conn.execute(
+        "select sql from sqlite_master where type = 'table' and name = 'drafts'"
+    ).fetchone()["sql"]
+    if "AUTOINCREMENT" in sql.upper():
+        return
+    columns = ", ".join(r["name"] for r in conn.execute("pragma table_info(drafts)"))
+    conn.execute("alter table drafts rename to drafts_before_autoincrement")
+    conn.executescript(schema)  # creates drafts anew; the rest exists
+    conn.execute(
+        f"insert into drafts ({columns})"
+        f" select {columns} from drafts_before_autoincrement"
+    )
+    conn.execute("drop table drafts_before_autoincrement")
+
+
 def init_db(path: Path) -> None:
     schema = files("company_reach").joinpath("schema.sql").read_text()
     conn = _open(path)
@@ -96,6 +130,7 @@ def init_db(path: Path) -> None:
                 have = {r["name"] for r in conn.execute(f"pragma table_info({table})")}
                 if column not in have:
                     conn.execute(f"alter table {table} add column {column} {kind}")
+            _drafts_never_reuse_ids(conn, schema)
     finally:
         conn.close()
     _current.add(path.resolve())
@@ -907,23 +942,41 @@ def rewrite_draft(
     """The same draft rebuilt by code around the same sentence — the card's
     salutation or address, or `redraft` after the profile or the contact
     changed — with the outcome of checking it again. `contact_id` moves the
-    draft to the contact it now addresses."""
+    draft to the contact it now addresses.
+
+    In place, unless a ledger row names the draft: a card reopened by a
+    bounce still has the text that went out under that id, and it stays;
+    the rebuilt mail becomes a new draft, the card's latest (D, review 7)."""
+    values = (
+        draft.subject,
+        draft.body,
+        int(draft.mailto_fits),
+        draft.model_text,
+        draft.frame_version,
+        draft.arm,
+        "; ".join(found),
+        contact_id,
+    )
+    named = conn.execute(
+        "select 1 from ledger where draft_id = ? limit 1", (draft_id,)
+    ).fetchone()
+    if named is None:
+        conn.execute(
+            """update drafts set subject = ?, body = ?, mailto_fits = ?,
+                 model_text = ?, frame_version = ?, arm = ?, problems = ?,
+                 contact_id = coalesce(?, contact_id)
+                where id = ?""",
+            (*values, draft_id),
+        )
+        return
     conn.execute(
-        """update drafts set subject = ?, body = ?, mailto_fits = ?,
-             model_text = ?, frame_version = ?, arm = ?, problems = ?,
-             contact_id = coalesce(?, contact_id)
-            where id = ?""",
-        (
-            draft.subject,
-            draft.body,
-            int(draft.mailto_fits),
-            draft.model_text,
-            draft.frame_version,
-            draft.arm,
-            "; ".join(found),
-            contact_id,
-            draft_id,
-        ),
+        """insert into drafts (run_id, uid, contact_id, subject, body,
+             mailto_fits, model_text, frame_version, arm, problems,
+             prompt_version, model, created_at)
+           select run_id, uid, coalesce(?, contact_id), ?, ?, ?, ?, ?, ?, ?,
+                  prompt_version, model, ?
+             from drafts where id = ?""",
+        (contact_id, *values[:7], now(), draft_id),
     )
 
 
@@ -945,20 +998,27 @@ def delete_draft(conn: sqlite3.Connection, run_id: str, uid: str) -> None:
     conn.execute("delete from drafts where run_id = ? and uid = ?", (run_id, uid))
 
 
+# A company a reviewer decided about — sent, skipped, never, bounced, even a
+# skip since undone — or one on the never-again list. Nothing more is
+# collected about it by the batch machinery: `retry`, `retry --no-site` and
+# a resumed batch all read this one rule (audit H7), and `closed_because`
+# is the same rule for one company. `enrich`, a person looking at one
+# company, reads the narrower `off_limits_because`.
+_CLOSED = "(uid in (select uid from ledger) or uid in (select key from suppression))"
+
+
 def no_site_uids(conn: sqlite3.Connection, run_id: str) -> list[str]:
-    """The companies of a run written off as having no website, that no
-    reviewer has decided about and nobody asked never to hear from: what
-    `retry --no-site` redoes after a run whose search turned out to have
-    been throttled (#20)."""
+    """The companies of a run written off as having no website, that are
+    not closed: what `retry --no-site` redoes after a run whose search
+    turned out to have been throttled (#20)."""
     return [
         r["uid"]
         for r in conn.execute(
-            """select uid from results
-                where run_id = ? and recommendation = 'skip'
-                  and reason like 'no website found%'
-                  and uid not in (select uid from ledger)
-                  and uid not in (select key from suppression)
-                order by uid""",
+            f"""select uid from results
+                 where run_id = ? and recommendation = 'skip'
+                   and reason like 'no website found%'
+                   and not {_CLOSED}
+                 order by uid""",
             (run_id,),
         )
     ]
@@ -966,24 +1026,75 @@ def no_site_uids(conn: sqlite3.Connection, run_id: str) -> list[str]:
 
 def errored_uids(conn: sqlite3.Connection, run_id: str) -> list[str]:
     """The companies of a run whose result is an error: what `retry` redoes.
-    Not one a reviewer decided about or that is on the never-again list —
-    retrying it would collect data about it for nothing."""
+    Not a closed one — retrying it would collect data about it for
+    nothing, or against a deletion request."""
     return [
         r["uid"]
         for r in conn.execute(
-            """select uid from results
-                where run_id = ? and error_kind is not null
-                  and uid not in (select uid from ledger)
-                  and uid not in (select key from suppression)
-                order by uid""",
+            f"""select uid from results
+                 where run_id = ? and error_kind is not null
+                   and not {_CLOSED}
+                 order by uid""",
             (run_id,),
         )
     ]
 
 
+def closed_because(conn: sqlite3.Connection, uid: str) -> str | None:
+    """Why nothing more may be collected about this company, or None: the
+    rule of `_CLOSED`, for one company, in words a command can print."""
+    if is_suppressed(conn, uid):
+        return "it is on the never-again list"
+    row = conn.execute(
+        "select status from ledger where uid = ? order by id desc limit 1", (uid,)
+    ).fetchone()
+    if row is not None:
+        return f"a reviewer decided about it ({row['status']})"
+    return None
+
+
+def off_limits_because(conn: sqlite3.Connection, uid: str) -> str | None:
+    """Why `enrich` may not look at this company, or None: it is on the
+    never-again list, a reviewer marked it never, or it was written to
+    (a mail not taken back). A skip says only that it was not a fit then."""
+    if is_suppressed(conn, uid):
+        return "it is on the never-again list"
+    never = conn.execute(
+        "select 1 from ledger where uid = ? and status = 'never' limit 1", (uid,)
+    ).fetchone()
+    if never is not None:
+        return "a reviewer marked it never"
+    if was_contacted(conn, uid):
+        return "it was already written to"
+    return None
+
+
 # --- the ledger and suppression (M7) ----------------------------------------
 
-DECISIONS = ("sent", "skipped", "never", "undone")
+# `not_sent` and `bounced` take one `sent` row back (open point 4): the mail
+# client never opened, or the mail came back. Either way nobody received
+# it, so the company opens again for another address. Each names the row it
+# takes back in `reverses` — by id, since forget clears the address.
+DECISIONS = ("sent", "skipped", "never", "undone", "not_sent", "bounced")
+_REOPENS = ("undone", "not_sent", "bounced")
+
+# An `undone` row that names a row in `reverses` takes that row back as if it
+# had not happened: a bounce clicked by mistake, while it is still the
+# ledger's newest row. A skip's `undone` names nothing and reopens the card,
+# as it always did.
+UNDONE = (
+    "(select reverses from ledger where status = 'undone' and reverses is not null)"
+)
+
+# The ids of sent rows that were never a mail, and of those nobody received.
+NEVER_LEFT = (
+    "(select reverses from ledger where status = 'not_sent'"
+    f" and reverses is not null and id not in {UNDONE})"
+)
+TAKEN_BACK = (
+    "(select reverses from ledger where status in ('not_sent', 'bounced')"
+    f" and reverses is not null and id not in {UNDONE})"
+)
 
 
 def record_decision(
@@ -999,20 +1110,28 @@ def record_decision(
     frame_version: str | None = None,
     arm: str | None = None,
     contact_kind: str | None = None,
+    subject: str | None = None,
+    body_sha256: str | None = None,
+    prompt_version: str | None = None,
+    reverses: int | None = None,
 ) -> int:
     """Append one decision. Nothing in the ledger is ever updated or
-    deleted by the page: undoing a skip is an `undone` row after it.
+    deleted by the page: undoing a skip is an `undone` row after it, and
+    taking a send back a `not_sent` or `bounced` row naming it.
 
     A `sent` row carries the draft's frame and arm and the kind of contact
     it went to, copied here because `forget` and `purge` delete drafts and
     contacts but keep the ledger — and the survey's answers are compared by
-    them."""
+    them. It also snapshots the subject, the body's sha256 and the prompt
+    version, so the record of what went out does not depend on a draft row
+    that a redraft replaces or a purge deletes."""
     if status not in DECISIONS:
         raise ValueError(f"status must be one of {DECISIONS}, not {status!r}")
     cur = conn.execute(
         """INSERT INTO ledger (uid, status, address, draft_id, run_id, note,
-             decided_at, frame_version, arm, contact_kind)
-           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+             decided_at, frame_version, arm, contact_kind, subject, body_sha256,
+             prompt_version, reverses)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             uid,
             status,
@@ -1024,6 +1143,10 @@ def record_decision(
             frame_version,
             arm,
             contact_kind,
+            subject,
+            body_sha256,
+            prompt_version,
+            reverses,
         ),
     )
     return cur.lastrowid
@@ -1031,18 +1154,39 @@ def record_decision(
 
 def decision_for(conn: sqlite3.Connection, uid: str) -> sqlite3.Row | None:
     """The company's current decision, or None while it is undecided —
-    never decided, or its last decision undone."""
-    row = conn.execute(
-        "select * from ledger where uid = ? order by id desc limit 1", (uid,)
-    ).fetchone()
-    return None if row is None or row["status"] == "undone" else row
+    never decided, its skip undone, or its send taken back as not sent or
+    bounced (the card is open again). A row an `undone` took back, and that
+    `undone` itself, are passed over: an undone bounce leaves the send."""
+    rows = conn.execute(
+        "select * from ledger where uid = ? order by id desc", (uid,)
+    ).fetchall()
+    taken_back = {r["reverses"] for r in rows if r["status"] == "undone"}
+    for row in rows:
+        if row["id"] in taken_back or (row["status"] == "undone" and row["reverses"]):
+            continue
+        return None if row["status"] in _REOPENS else row
+    return None
+
+
+def undoable_bounce(conn: sqlite3.Connection, uid: str) -> sqlite3.Row | None:
+    """The company's bounce, while it is still the ledger's newest row —
+    before the reviewer decided anything else — or None."""
+    row = conn.execute("select * from ledger order by id desc limit 1").fetchone()
+    if row is None or (row["uid"], row["status"]) != (uid, "bounced"):
+        return None
+    return row
 
 
 def was_contacted(conn: sqlite3.Connection, uid: str) -> bool:
-    """Any `sent` row, ever. "Contacted once, ever" rests on this."""
+    """A `sent` row that no `not_sent` or `bounced` took back, ever.
+    "Contacted once, ever" rests on this; a mail nobody received is not a
+    contact (open point 4)."""
     return (
         conn.execute(
-            "select 1 from ledger where uid = ? and status = 'sent' limit 1", (uid,)
+            f"""select 1 from ledger
+                 where uid = ? and status = 'sent' and id not in {TAKEN_BACK}
+                 limit 1""",
+            (uid,),
         ).fetchone()
         is not None
     )
@@ -1050,32 +1194,70 @@ def was_contacted(conn: sqlite3.Connection, uid: str) -> bool:
 
 def sent_this_month(conn: sqlite3.Connection, *, today: str | None = None) -> int:
     """How many were sent this calendar month. A number the page shows, not
-    a limit: there is no cap by design."""
+    a limit: there is no cap by design. A send taken back as not sent was
+    no mail; a bounced one was."""
     month = (today or now())[:7]
     return conn.execute(
-        "select count(*) from ledger"
-        " where status = 'sent' and substr(decided_at, 1, 7) = ?",
+        f"""select count(*) from ledger
+             where status = 'sent' and id not in {NEVER_LEFT}
+               and substr(decided_at, 1, 7) = ?""",
         (month,),
     ).fetchone()[0]
 
 
 def _key(key: str) -> str:
-    return key.strip().lower() if "@" in key else key.strip()
+    return address_key(key) if "@" in key else key.strip()
 
 
 def suppress(conn: sqlite3.Connection, key: str, *, reason: str) -> None:
-    """A uid or an e-mail address that is never contacted again. Permanent."""
+    """A uid or an e-mail address that is never contacted again. Permanent,
+    with one exception: `unsuppress_bounced`."""
     conn.execute(
         "INSERT OR IGNORE INTO suppression (key, reason, added_at) VALUES (?,?,?)",
         (_key(key), reason, now()),
     )
 
 
-def is_suppressed(conn: sqlite3.Connection, key: str) -> bool:
-    return (
-        conn.execute("select 1 from suppression where key = ?", (_key(key),)).fetchone()
-        is not None
+def unsuppress_bounced(conn: sqlite3.Connection, address: str) -> None:
+    """A bounce taken back takes its address off the list — only a row the
+    bounce wrote; one there for another reason stays."""
+    conn.execute(
+        "delete from suppression where key = ? and reason = 'bounced'",
+        (_key(address),),
     )
+
+
+def is_suppressed(conn: sqlite3.Connection, key: str) -> bool:
+    return suppression_for(conn, key) is not None
+
+
+def suppression_for(conn: sqlite3.Connection, key: str) -> sqlite3.Row | None:
+    """The key's never-again row — its reason and since when — or None."""
+    return conn.execute(
+        "select reason, added_at from suppression where key = ?", (_key(key),)
+    ).fetchone()
+
+
+def address_block(conn: sqlite3.Connection, address: str, *, uid: str) -> str | None:
+    """Why `address` may not be written to for company `uid`, or None.
+    The never-again list and "contacted once" hold for an inbox as well as
+    for a company: sister firms share a site and an info@, and a person who
+    asked to be forgotten through one of them must not hear from the other."""
+    row = suppression_for(conn, address)
+    if row is not None:
+        return f"on the never-again list since {row['added_at'][:10]} ({row['reason']})"
+    # a send taken back reached nobody; a bounced address is suppressed above
+    row = conn.execute(
+        f"""select l.decided_at, coalesce(c.name, l.uid) as company
+              from ledger l left join companies c on c.uid = l.uid
+             where l.status = 'sent' and l.id not in {TAKEN_BACK}
+               and l.uid <> ? and address_key(l.address) = ?
+             order by l.id limit 1""",
+        (uid, address_key(address)),
+    ).fetchone()
+    if row is not None:
+        return f"already written to on {row['decided_at'][:10]}, for {row['company']}"
+    return None
 
 
 def record_site(

@@ -4,14 +4,14 @@
   var prev = document.getElementById("prev");
   var next = document.getElementById("next");
   var send = document.getElementById("send");
-  var never = document.getElementById("never");
   var toast = document.getElementById("toast");
 
-  // Never again asks here, in the browser; without this script the server
-  // asks on a page of its own instead.
-  if (never) {
-    never.addEventListener("click", function (e) {
-      if (!confirm("Never contact this company again? This cannot be undone.")) {
+  // Never again and Bounced ask here, in the browser; without this script
+  // the server asks on a page of its own instead (confirm=yes skips it).
+  function confirmFirst(button, question) {
+    if (!button) return;
+    button.addEventListener("click", function (e) {
+      if (!confirm(question)) {
         e.preventDefault();
         return;
       }
@@ -19,9 +19,13 @@
       yes.type = "hidden";
       yes.name = "confirm";
       yes.value = "yes";
-      never.form.appendChild(yes);
+      button.form.appendChild(yes);
     });
   }
+  confirmFirst(document.getElementById("never"),
+    "Never contact this company again? This cannot be undone.");
+  confirmFirst(document.getElementById("bounced"),
+    "Did the mail come back? Its address goes on the never-again list, and the card opens again for another address.");
 
   document.addEventListener("keydown", function (e) {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
