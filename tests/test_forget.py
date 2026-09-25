@@ -198,6 +198,42 @@ def test_the_promise_matches_what_forget_deletes(settings, data):
         assert is_suppressed(conn, "info@muster-metallbau.ch")
 
 
+# --- copies the tool did not make (audit: backups and logs under data/) ------
+
+
+def test_a_backup_database_is_reported(settings, data):
+    """A copy of the database taken before a risky step, and a log of a
+    run, both name the person. forget does not edit them, so it lists them;
+    the live database, which it just cleaned, is not listed."""
+    import sqlite3
+
+    backups = data / "backups"
+    backups.mkdir()
+    source = sqlite3.connect(settings.db_path)
+    copy = sqlite3.connect(backups / "company_reach-before.db")
+    source.backup(copy)
+    copy.close()
+    source.close()
+    (data / "audit").mkdir()
+    (data / "audit" / "run.log").write_text(f"contact: {NAME} <info@x.example>\n")
+
+    report = forget(settings, SEND)
+    assert backups / "company_reach-before.db" in report.still_named
+    assert data / "audit" / "run.log" in report.still_named
+    assert settings.db_path not in report.still_named
+
+
+def test_a_name_across_a_read_boundary_is_found(settings, data, monkeypatch):
+    """Files are read in blocks, never whole — a backup can be gigabytes.
+    A name split between two blocks is still found."""
+    import company_reach.forget as forget_module
+
+    monkeypatch.setattr(forget_module, "_BLOCK", 4)
+    (data / "notes.log").write_text(f"xxxxxx{NAME.upper()}xxxxxx")
+    report = forget(settings, SEND)
+    assert data / "notes.log" in report.still_named
+
+
 # --- forget by address (audit: a reply from another address deletes nothing) --
 
 

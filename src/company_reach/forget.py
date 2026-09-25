@@ -25,16 +25,20 @@ own mailbox rather than the inbox the mail went to. An address found
 nowhere is still suppressed, and the command says how to find the company:
 by the `c=` UID in the survey link the reply quotes.
 
-Hand-kept research files (`data/v0`, `data/golden`) are not edited by code.
-Every file that still names the person is reported, so a human can.
+Hand-kept research files (`data/v0`, `data/golden`) are not edited by code,
+and neither are copies: a database backup under `data/` or a log. Every
+file that still names the person is reported, so a human can edit or
+delete it; a copy is read block by block, never whole.
 
 `purge` is the same deletion without a request: personal data of companies
-nobody has touched for a year (#27, decided with Koray). It suppresses
-nobody, and it leaves the ledger whole but for a sent row's subject — a
-`sent` row keeps its address as the record of what was sent and the key to
-a later deletion request.
+nobody has touched for a year (#27, decided with Koray) — drawn a year ago,
+or never drawn (`enrich --uid`, an evaluation) and last written a year ago.
+It suppresses nobody, and it leaves the ledger whole but for a sent row's
+subject — a `sent` row keeps its address as the record of what was sent and
+the key to a later deletion request.
 """
 
+import codecs
 import json
 import re
 import sqlite3
@@ -48,7 +52,13 @@ from company_reach.tools.db import connect, is_suppressed, suppress
 from company_reach.tools.urls import address_key, email_domain, registered_domain
 
 _UID = re.compile(r"^CHE[-.\s\d]+$", re.IGNORECASE)
-_TEXT_FILES = {".md", ".json", ".jsonl", ".txt", ".html", ".csv"}
+# Text the tool or a person writes, and copies of the database and logs —
+# the backup made before a risky step is where a name survives unnoticed.
+_SEARCHED = {
+    *(".md", ".json", ".jsonl", ".txt", ".html", ".csv", ".log"),
+    *(".db", ".db-wal", ".sqlite", ".sqlite3"),
+}
+_BLOCK = 1 << 20  # bytes read at a time
 
 
 @dataclass
@@ -218,13 +228,38 @@ def _compact(path: Path) -> None:
         conn.close()
 
 
-def _still_named(data_dir: Path, names: set[str]) -> list[Path]:
+def _names_in(path: Path, needles: list[str]) -> bool:
+    """Whether the file holds any of `needles` (lower case), read block by
+    block: a database copy can be gigabytes, and is never read whole. The
+    decoder keeps a character split between two blocks, and the tail of
+    each block is searched again with the next, so a name split between
+    them is found too."""
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="ignore")
+    keep = max(len(n) for n in needles) - 1
+    tail = ""
+    with path.open("rb") as f:
+        while block := f.read(_BLOCK):
+            text = tail + decoder.decode(block).lower()
+            if any(n in text for n in needles):
+                return True
+            tail = text[-keep:] if keep else ""
+    return False
+
+
+def _still_named(data_dir: Path, names: set[str], *, db_path: Path) -> list[Path]:
+    """Every file under `data/` the tool did not clean that still names
+    someone: hand-kept notes, and copies — a database backup (with its
+    WAL) or a log. The live database, just vacuumed, is left out: its
+    never-again list keeps addresses on purpose."""
+    needles = sorted({n.lower() for n in names})
+    if not needles:
+        return []
+    live = {db_path.resolve(), Path(f"{db_path}-wal").resolve()}
     found = []
     for path in sorted(data_dir.rglob("*")):
-        if not path.is_file() or path.suffix not in _TEXT_FILES:
+        if not path.is_file() or path.suffix not in _SEARCHED:
             continue
-        text = path.read_text(encoding="utf-8", errors="ignore").lower()
-        if any(n.lower() in text for n in names):
+        if path.resolve() not in live and _names_in(path, needles):
             found.append(path)
     return found
 
@@ -255,25 +290,35 @@ def forget(settings: Settings, key: str) -> Report:
     report.companies = uids
     report.cache_files_deleted = _delete_cache(settings.data_dir / "cache", domains)
     _compact(settings.db_path)
-    report.still_named = _still_named(settings.data_dir, names)
+    report.still_named = _still_named(
+        settings.data_dir, names, db_path=settings.db_path
+    )
     return report
 
 
 def stale_uids(conn: sqlite3.Connection, *, cutoff: str) -> list[str]:
-    """Companies drawn before `cutoff` with no decision since, that still
-    have personal data to purge."""
+    """Companies that still hold personal data and that nobody touched
+    since `cutoff`: no decision since, and drawn before it — or, never
+    drawn at all (`enrich --uid`, an evaluation: K8), last written before
+    it. Such a company's age is its newest dated row, a search or a draft;
+    one with no dated row at all counts as old."""
     rows = conn.execute(
-        """select s.uid from seen s
-            where s.drawn_at < ?
-              and not exists (select 1 from ledger l
-                               where l.uid = s.uid and l.decided_at >= ?)
-              and (exists (select 1 from contacts c where c.uid = s.uid)
-                   or exists (select 1 from profiles p where p.uid = s.uid)
-                   or exists (select 1 from sites t where t.uid = s.uid)
-                   -- a company whose search or site failed has only this
-                   or exists (select 1 from searches x where x.uid = s.uid))
-            order by s.uid""",
-        (cutoff, cutoff),
+        """with held as (
+               select uid from contacts union select uid from profiles
+               union select uid from sites union select uid from drafts
+               -- a company whose search or site failed has only this
+               union select uid from searches)
+           select h.uid from held h left join seen s on s.uid = h.uid
+            where not exists (select 1 from ledger l
+                               where l.uid = h.uid and l.decided_at >= :cutoff)
+              and case when s.uid is not null then s.drawn_at < :cutoff
+                       else max(coalesce((select max(created_at) from drafts d
+                                           where d.uid = h.uid), ''),
+                                coalesce((select max(at) from searches x
+                                           where x.uid = h.uid), '')) < :cutoff
+                  end
+            order by h.uid""",
+        {"cutoff": cutoff},
     )
     return [r["uid"] for r in rows]
 

@@ -123,9 +123,13 @@ gets it. Everything else is written by code (`tools/invitation.py`):
   says that nothing was deleted, and exits with status 2: the company is
   found by the UID in the survey link the reply quotes (`?c=CHE…`), and
   `forget <UID>` deletes it. Files the tool did not write are not edited;
-  any that still name the person are listed.
+  any that still name the person are listed — including a copy of the
+  database (a backup under `data/`, with its `-wal` file) and a log, which
+  have to be deleted or cleaned by hand.
 - **After a year:** `company-reach purge --older-than 365` removes the same
-  data for every company nobody has touched for that long. It keeps the
+  data for every company nobody has touched for that long — one a run drew,
+  and one only `enrich --uid` or an evaluation looked at, whose age is its
+  newest search or draft. It keeps the
   ledger and the never-again list, including the address of a mail that was
   sent, because "contacted once, ever" rests on them; only the mail's
   subject, which can name the person, is cleared. `company-reach doctor`

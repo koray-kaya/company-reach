@@ -668,7 +668,10 @@ def forget(
     )
     typer.echo(f"suppressed: {', '.join(report.suppressed)}")
     for path in report.still_named:
-        typer.echo(f"still named in {path} — a hand-kept file; edit it by hand")
+        typer.echo(
+            f"still named in {path} — not cleaned by the tool (a hand-kept file,"
+            " a backup or a log); edit or delete it by hand"
+        )
     if report.unknown:
         # "0 companies" must not read as a deletion done (review focus 4)
         typer.echo(

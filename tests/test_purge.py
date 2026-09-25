@@ -115,3 +115,59 @@ def test_a_company_that_only_has_a_search_log_is_purged(settings, data):
             "select count(*) from searches where uid = ?", (old,)
         ).fetchone()[0]
     assert left == 0
+
+
+def enriched(settings, uid: str, *, on: str) -> None:
+    """What `enrich --uid` (or an evaluation) leaves: rows under a run
+    nobody drew, and no `seen` row — the clock purge read never started."""
+    from company_reach.models import Contact
+    from company_reach.tools.db import record_contact, record_searches
+    from company_reach.tools.search import Asked
+
+    with connect(settings.db_path) as conn:
+        record_searches(
+            conn, "rX", uid, [Asked('"Erfunden AG" Musterstadt', "searxng")]
+        )
+        conn.execute(
+            "update searches set at = ? where uid = ?", (f"{on}T09:00:00", uid)
+        )
+        record_contact(
+            conn,
+            "rX",
+            uid,
+            Contact(
+                name="Klara Erfunden",
+                email="info@erfunden.example",
+                email_kind="generic",
+                source="site",
+            ),
+        )
+        conn.execute(
+            "insert into profiles values ('rX', ?, ?)",
+            (uid, json.dumps({"description": "Erfindet Dinge."})),
+        )
+
+
+def test_an_enriched_uid_is_purged(settings, data):
+    """K8: `enrich --uid` rows were beyond purge's reach, for ever."""
+    enriched(settings, "CHE333333337", on="2026-09-24")
+    report = purge(settings, older_than_days=365, today=A_YEAR_LATER)
+    assert "CHE333333337" in report.companies
+    with connect(settings.db_path) as conn:
+        for table in ("contacts", "profiles", "searches"):
+            left = conn.execute(
+                f"select count(*) from {table} where uid = 'CHE333333337'"
+            ).fetchone()[0]
+            assert left == 0, table
+
+
+def test_a_recent_enrich_is_kept(settings, data):
+    # its age is its newest dated row, not "never drawn, so always old"
+    enriched(settings, "CHE333333337", on="2027-09-20")
+    report = purge(settings, older_than_days=365, today=A_YEAR_LATER)
+    assert "CHE333333337" not in report.companies
+    with connect(settings.db_path) as conn:
+        left = conn.execute(
+            "select count(*) from profiles where uid = 'CHE333333337'"
+        ).fetchone()[0]
+    assert left == 1
