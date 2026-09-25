@@ -17,6 +17,7 @@ run retries.
 
 import asyncio
 from dataclasses import dataclass
+from typing import Literal
 
 import httpx
 
@@ -25,14 +26,23 @@ from company_reach.settings import Settings
 from company_reach.tools.gates import gate
 
 _TIMEOUT = httpx.Timeout(10.0, connect=5.0)
+_BRAVE_URL = "https://api.search.brave.com/res/v1/web/search"
+# Brave's own ceiling for one request.
+_BRAVE_MAX_COUNT = 20
 
 
 @dataclass(frozen=True)
 class Result:
+    """`engine` is what answered inside a provider; `provider` is whom we
+    asked. They are kept apart because SearXNG has an engine called "brave"
+    of its own, and a SearXNG result from it is free to store while a result
+    from the Brave Search API is not (its terms)."""
+
     url: str
     title: str
     snippet: str
     engine: str
+    provider: Literal["searxng", "brave", "guess"] = "searxng"
 
 
 def _gate(concurrency: int) -> asyncio.Semaphore:
@@ -96,6 +106,58 @@ async def _searxng(query: str, *, settings: Settings, limit: int) -> list[Result
             engine=item.get("engine", ""),
         )
         for item in results[:limit]
+        if item.get("url")
+    ]
+
+
+async def _brave(query: str, *, settings: Settings, limit: int) -> list[Result]:
+    """The Brave Search API, the paid second opinion.
+
+    Every answer but a 200 is an error. An earlier project that used Brave
+    let a 5xx come back as `[]`, and its quality dropped for weeks before
+    anyone noticed: an empty list must only ever mean that Brave looked and
+    found nothing. Brave has its own gate, so waiting SearXNG queries never
+    hold up the provider that is asked when SearXNG is in trouble."""
+    key = settings.brave_search_api_key
+    if key is None:
+        raise SearchError("Brave is not configured: BRAVE_SEARCH_API_KEY is not set")
+    async with gate("brave", 2):
+        try:
+            async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+                answer = await client.get(
+                    _BRAVE_URL,
+                    headers={
+                        "Accept": "application/json",
+                        "X-Subscription-Token": key.get_secret_value(),
+                    },
+                    params={
+                        "q": query,
+                        "count": min(limit, _BRAVE_MAX_COUNT),
+                        "country": "CH",
+                        "search_lang": "de",
+                    },
+                )
+        except httpx.HTTPError as error:
+            raise SearchError(f"Brave unreachable: {error}") from error
+
+    if answer.status_code in (401, 403):
+        raise SearchError(
+            f"Brave rejected the key (HTTP {answer.status_code}); "
+            "check BRAVE_SEARCH_API_KEY"
+        )
+    if answer.status_code != 200:
+        raise SearchError(f"Brave answered HTTP {answer.status_code}")
+
+    items = (answer.json().get("web") or {}).get("results") or []
+    return [
+        Result(
+            url=item.get("url", ""),
+            title=item.get("title", ""),
+            snippet=item.get("description", ""),
+            engine="brave-api",
+            provider="brave",
+        )
+        for item in items[:limit]
         if item.get("url")
     ]
 

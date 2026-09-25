@@ -14,7 +14,7 @@ from typing import Any
 
 from company_reach.errors import SearchError
 from company_reach.settings import Settings
-from company_reach.tools.search import search
+from company_reach.tools.search import _brave, search
 
 # Generic and stable: no company, no person, nothing that dates. If this
 # returns nothing, the problem is ours, not the query's.
@@ -22,10 +22,20 @@ PROBE_QUERY = "handelsregister schweiz"
 
 
 async def probe_search(state: dict[str, Any], *, settings: Settings) -> dict:
+    """With a Brave key, Brave is probed too. It is asked before any company
+    is written off, so a rejected key or a spent quota would otherwise turn
+    those companies into errors one at a time (review focus 5)."""
     results = await search(PROBE_QUERY, settings=settings, limit=3)
     if not results:
         raise SearchError(
             f"the probe query {PROBE_QUERY!r} returned nothing; search is not "
             "working, and every company would be recorded as having no website"
+        )
+    if settings.brave_search_api_key is not None and not await _brave(
+        PROBE_QUERY, settings=settings, limit=3
+    ):
+        raise SearchError(
+            f"Brave returned nothing for the probe query {PROBE_QUERY!r}; "
+            "no company could be confirmed as having no website"
         )
     return {}

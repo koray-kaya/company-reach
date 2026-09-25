@@ -12,14 +12,16 @@ import asyncio
 import httpx
 import pytest
 import respx
+from pydantic import SecretStr
 
 from company_reach.errors import SearchError
 from company_reach.nodes.probe_search import probe_search
 from company_reach.settings import Settings
 from company_reach.tools import search as search_module
-from company_reach.tools.search import Result, search
+from company_reach.tools.search import Result, _brave, search
 
 SEARXNG = "http://searxng:8080/search"
+BRAVE = "https://api.search.brave.com/res/v1/web/search"
 
 
 @pytest.fixture
@@ -35,6 +37,28 @@ async def _no_sleep(seconds: float) -> None:
 
 def searxng_body(results: list[dict], unresponsive: list | None = None) -> dict:
     return {"results": results, "unresponsive_engines": unresponsive or []}
+
+
+def keyed(settings: Settings) -> Settings:
+    """The same settings with a Brave key: the paid provider is armed."""
+    return settings.model_copy(
+        update={"brave_search_api_key": SecretStr("brave-test-key")}
+    )
+
+
+def brave_body(*urls: str) -> dict:
+    return {
+        "web": {
+            "results": [
+                {
+                    "url": url,
+                    "title": "Muster Metallbau AG",
+                    "description": "Metallbau in Musterstadt.",
+                }
+                for url in urls
+            ]
+        }
+    }
 
 
 def one_result(url: str = "https://muster-metallbau.ch/") -> dict:
@@ -149,6 +173,82 @@ async def test_without_a_key_the_search_error_stands(s: Settings):
         await search("anything", settings=s)
 
 
+# --- the Brave Search API ----------------------------------------------------
+
+
+@respx.mock
+async def test_brave_results_map_to_result(s: Settings):
+    route = respx.get(BRAVE).mock(
+        return_value=httpx.Response(
+            200, json=brave_body("https://muster-metallbau.ch/")
+        )
+    )
+    found = await _brave("Muster Metallbau", settings=keyed(s), limit=10)
+    assert found == [
+        Result(
+            url="https://muster-metallbau.ch/",
+            title="Muster Metallbau AG",
+            snippet="Metallbau in Musterstadt.",
+            engine="brave-api",
+            provider="brave",
+        )
+    ]
+    sent = route.calls.last.request
+    assert sent.headers["X-Subscription-Token"] == "brave-test-key"
+    assert sent.headers["Accept"] == "application/json"
+    assert dict(sent.url.params) == {
+        "q": "Muster Metallbau",
+        "count": "10",
+        "country": "CH",
+        "search_lang": "de",
+    }
+
+
+@respx.mock
+async def test_brave_is_asked_for_at_most_twenty(s: Settings):
+    """Twenty is Brave's own ceiling for one request."""
+    route = respx.get(BRAVE).mock(return_value=httpx.Response(200, json=brave_body()))
+    await _brave("Muster Metallbau", settings=keyed(s), limit=50)
+    assert route.calls.last.request.url.params["count"] == "20"
+
+
+@pytest.mark.parametrize("status", [402, 429, 500, 503])
+@respx.mock
+async def test_brave_429_is_an_error_not_empty(s: Settings, status: int):
+    """The earlier project's lesson: a Brave 5xx came back as `[]`, and
+    quality dropped for weeks before anyone noticed. An empty list must only
+    ever mean "Brave looked and found nothing"."""
+    respx.get(BRAVE).mock(return_value=httpx.Response(status))
+    with pytest.raises(SearchError, match=f"HTTP {status}"):
+        await _brave("Muster Metallbau", settings=keyed(s), limit=10)
+
+
+@pytest.mark.parametrize("status", [401, 403])
+@respx.mock
+async def test_brave_401_names_the_key(s: Settings, status: int):
+    respx.get(BRAVE).mock(return_value=httpx.Response(status))
+    with pytest.raises(SearchError, match="BRAVE_SEARCH_API_KEY"):
+        await _brave("Muster Metallbau", settings=keyed(s), limit=10)
+
+
+@respx.mock
+async def test_brave_unreachable_is_an_error(s: Settings):
+    respx.get(BRAVE).mock(side_effect=httpx.ConnectError("down"))
+    with pytest.raises(SearchError, match="Brave unreachable"):
+        await _brave("Muster Metallbau", settings=keyed(s), limit=10)
+
+
+@respx.mock
+async def test_brave_is_never_asked_without_a_key(s: Settings):
+    respx.get(SEARXNG).mock(side_effect=httpx.ConnectError("down"))
+    route = respx.get(BRAVE)
+    with pytest.raises(SearchError):
+        await search("anything", settings=s)
+    with pytest.raises(SearchError, match="not configured"):
+        await _brave("anything", settings=s, limit=10)
+    assert not route.called
+
+
 # --- rate control ------------------------------------------------------------
 
 
@@ -214,3 +314,42 @@ async def test_the_probe_raises_when_search_is_down(s: Settings):
     respx.get(SEARXNG).mock(side_effect=httpx.ConnectError("down"))
     with pytest.raises(SearchError):
         await probe_search({}, settings=s)
+
+
+@respx.mock
+async def test_the_probe_stops_on_a_rejected_brave_key(s: Settings):
+    """Review focus 5. With a key set, every company search writes off is
+    asked of Brave first; a rejected key would turn each of them into an
+    error one by one. The probe finds out before a batch is drawn."""
+    respx.get(SEARXNG).mock(
+        return_value=httpx.Response(200, json=searxng_body([one_result()]))
+    )
+    respx.get(BRAVE).mock(return_value=httpx.Response(401))
+    with pytest.raises(SearchError, match="BRAVE_SEARCH_API_KEY"):
+        await probe_search({}, settings=keyed(s))
+
+
+@respx.mock
+async def test_the_probe_passes_when_both_providers_answer(s: Settings):
+    respx.get(SEARXNG).mock(
+        return_value=httpx.Response(200, json=searxng_body([one_result()]))
+    )
+    brave = respx.get(BRAVE).mock(
+        return_value=httpx.Response(
+            200, json=brave_body("https://example-register.ch/")
+        )
+    )
+    assert await probe_search({}, settings=keyed(s)) == {}
+    assert brave.called
+
+
+@respx.mock
+async def test_the_probe_stops_when_brave_finds_nothing(s: Settings):
+    """A known query answered with nothing is a broken provider, whatever
+    its status code says — the same rule as for SearXNG."""
+    respx.get(SEARXNG).mock(
+        return_value=httpx.Response(200, json=searxng_body([one_result()]))
+    )
+    respx.get(BRAVE).mock(return_value=httpx.Response(200, json=brave_body()))
+    with pytest.raises(SearchError, match="Brave returned nothing"):
+        await probe_search({}, settings=keyed(s))
