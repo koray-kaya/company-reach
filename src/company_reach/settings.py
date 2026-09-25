@@ -9,7 +9,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import SecretStr
+from pydantic import SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -89,6 +89,18 @@ class Settings(BaseSettings):
     draw_min_score: int = 7
     max_batches_per_run: int = 3
     langsmith_tracing: bool = False
+
+    @field_validator("serper_api_key", "playwright_url", mode="before")
+    @classmethod
+    def _blank_is_none(cls, value):
+        """An unset optional key is None, however the .env line was written.
+        `KEY=   # comment` reaches us as the comment, and an empty string is
+        still a string: either one would arm what the key switches on."""
+        if isinstance(value, str) and (
+            not value.strip() or value.strip().startswith("#")
+        ):
+            return None
+        return value
 
     @property
     def db_path(self) -> Path:
