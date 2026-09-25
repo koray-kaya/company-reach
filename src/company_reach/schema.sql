@@ -15,10 +15,15 @@ CREATE TABLE IF NOT EXISTS scores (
   score INTEGER NOT NULL, reason TEXT, scored_at TEXT NOT NULL, criteria_hash TEXT,
   PRIMARY KEY (uid, goal_hash, prompt_version, model));
 -- One set of criteria per goal, so every `score` pass ranks against the
--- rules the user reviewed. `--new-criteria` replaces the row.
+-- rules the user reviewed. `--new-criteria` replaces the row, and the set
+-- it replaces moves to criteria_history.
 CREATE TABLE IF NOT EXISTS criteria (
   goal_hash TEXT PRIMARY KEY, criteria TEXT NOT NULL, criteria_hash TEXT NOT NULL,
   model TEXT, prompt_version TEXT, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS criteria_history (
+  id INTEGER PRIMARY KEY, goal_hash TEXT NOT NULL, criteria TEXT NOT NULL,
+  criteria_hash TEXT NOT NULL, model TEXT, prompt_version TEXT,
+  created_at TEXT NOT NULL, replaced_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS seen (
   uid TEXT PRIMARY KEY, run_id TEXT NOT NULL, batch_no INTEGER NOT NULL, drawn_at TEXT NOT NULL);
 -- The search log (#20): one row per provider asked for one of find_site's

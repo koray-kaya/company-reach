@@ -275,21 +275,77 @@ def test_two_score_passes_use_one_criteria(settings, monkeypatch):
 
 def test_a_new_criteria_rescores(settings, monkeypatch):
     """`--new-criteria` writes a fresh set, and every score made under the
-    old one stops counting: the whole pool is scored again."""
+    old one stops counting: the whole pool is scored again. `--yes` answers
+    the question for a script."""
     monkeypatch.setattr(cli, "get_settings", lambda: settings)
     seed(settings, 3)
     calls = fake_model(monkeypatch, "makes things", "sells software")
     runner.invoke(cli.app, ["score", "--goal", "goal"])
     before = criteria_hashes(settings)
 
-    r = runner.invoke(cli.app, ["score", "--goal", "goal", "--new-criteria"])
+    r = runner.invoke(cli.app, ["score", "--goal", "goal", "--new-criteria", "--yes"])
 
     assert r.exit_code == 0, r.output
+    assert "[y/N]" not in r.output  # not asked
     assert calls["criteria"] == 2
     assert "3 newly scored" in r.output
     assert "sells software" in r.output
     after = criteria_hashes(settings)
     assert len(after) == 1 and after != before
+
+
+def history(settings) -> list[str]:
+    with connect(settings.db_path) as conn:
+        return [
+            r[0]
+            for r in conn.execute(
+                "select criteria_hash from criteria_history order by id"
+            )
+        ]
+
+
+def test_new_criteria_says_what_stops_counting_and_asks(settings, monkeypatch):
+    """Review of Phase F: `--new-criteria` dropped every current score from
+    the draw without a word about how many, or what rescoring them costs,
+    and the set it replaced was gone."""
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    seed(settings, 3)
+    calls = fake_model(monkeypatch, "makes things", "sells software")
+    runner.invoke(cli.app, ["score", "--goal", "goal"])
+    before = criteria_hashes(settings)
+
+    no = runner.invoke(
+        cli.app, ["score", "--goal", "goal", "--new-criteria"], input="n\n"
+    )
+
+    assert no.exit_code == 1
+    assert "3 current scores stop counting" in no.output
+    assert "500 a pass (SCORE_LIMIT), 1 pass" in no.output
+    assert calls["criteria"] == 1  # declined before a new set was paid for
+    assert criteria_hashes(settings) == before and history(settings) == []
+
+    yes = runner.invoke(
+        cli.app, ["score", "--goal", "goal", "--new-criteria"], input="y\n"
+    )
+
+    assert yes.exit_code == 0, yes.output
+    assert "3 newly scored" in yes.output
+    assert history(settings) == list(before)  # the replaced set is kept
+
+
+def test_the_same_criteria_again_change_nothing(settings, monkeypatch):
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    seed(settings, 3)
+    fake_model(monkeypatch, "makes things", "makes things")
+    runner.invoke(cli.app, ["score", "--goal", "goal"])
+    before = criteria_hashes(settings)
+
+    r = runner.invoke(cli.app, ["score", "--goal", "goal", "--new-criteria", "--yes"])
+
+    assert r.exit_code == 0, r.output
+    assert "reads the same as the stored set; nothing changes" in r.output
+    assert "0 newly scored" in r.output
+    assert criteria_hashes(settings) == before and history(settings) == []
 
 
 def test_scores_carry_the_stored_hash(settings, monkeypatch):

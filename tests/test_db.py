@@ -449,3 +449,36 @@ def test_legacy_scores_adopt_the_first_stored_criteria(tmp_path: Path):
     assert adopted == 1
     assert rows == {"CHE000000001": "h1", "CHE000000002": None, "CHE000000003": None}
     assert kept is not None and kept.criteria == later and kept.criteria_hash == "h2"
+
+
+def test_replaced_criteria_are_kept_in_history(tmp_path: Path):
+    """Review of Phase F: `--new-criteria` overwrote the only copy of the set
+    the pool had been scored against. The set it replaces is kept."""
+    db = tmp_path / "t.db"
+    init_db(db)
+    sets = [
+        SelectionCriteria(must=[must], must_not=[], positive_signals=[])
+        for must in ("makes", "sells", "repairs")
+    ]
+    with connect(db) as conn:
+        for n, rules in enumerate(sets, start=1):
+            store_criteria(
+                conn,
+                "g1",
+                rules,
+                criteria_hash=f"h{n}",
+                model="m1",
+                prompt_version="1",
+                adopt_unlinked=True,
+            )
+    with connect(db) as conn:
+        kept = conn.execute(
+            "select goal_hash, criteria, criteria_hash, replaced_at"
+            " from criteria_history order by id"
+        ).fetchall()
+        current = load_criteria(conn, "g1")
+
+    assert [row["criteria_hash"] for row in kept] == ["h1", "h2"]
+    assert SelectionCriteria.model_validate_json(kept[0]["criteria"]) == sets[0]
+    assert all(row["goal_hash"] == "g1" and row["replaced_at"] for row in kept)
+    assert current is not None and current.criteria_hash == "h3"

@@ -74,7 +74,9 @@ change, `company-reach screen` applies them again to every company. Every
 command is safe to run again: nothing already done is repeated, and scoring
 is incremental. The criteria are written once per goal and stored, so every
 `score` pass ranks against the rules `criteria` showed you;
-`score --new-criteria` writes a fresh set and scores the pool again.
+`score --new-criteria` writes a fresh set and scores the pool again. It says
+first how many scores stop counting and asks (`--yes` answers for a script);
+the set it replaces is kept in the database's `criteria_history`.
 
 `run` finds each company's site, reads it, chooses who to write to and
 drafts an invitation; a company whose search or site failed is recorded as

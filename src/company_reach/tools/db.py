@@ -308,8 +308,18 @@ def store_criteria(
     were stored take their hash (`adopt_unlinked`). They are the baseline
     the owner has; without this, a database from before the table would
     lose every score at once. Not when new criteria were asked for, since
-    the point then is to score again. Returns how many scores took it."""
+    the point then is to score again. Returns how many scores took it.
+
+    A set that is replaced moves to `criteria_history`, so the rules the
+    pool was scored against can still be read, and put back by hand."""
     first = load_criteria(conn, goal_hash) is None
+    conn.execute(
+        """INSERT INTO criteria_history (goal_hash, criteria, criteria_hash,
+             model, prompt_version, created_at, replaced_at)
+           SELECT goal_hash, criteria, criteria_hash, model, prompt_version,
+                  created_at, ? FROM criteria WHERE goal_hash = ?""",
+        (now(), goal_hash),
+    )
     conn.execute(
         """INSERT INTO criteria (goal_hash, criteria, criteria_hash, model,
              prompt_version, created_at) VALUES (?,?,?,?,?,?)

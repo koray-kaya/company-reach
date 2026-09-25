@@ -3,6 +3,7 @@
 
 import asyncio
 import json
+import math
 import tempfile
 import uuid
 from collections.abc import Iterator
@@ -39,6 +40,7 @@ from company_reach.tools.db import (
     connect,
     copy_database,
     count_brave_queries,
+    count_scored,
     current_criteria_hash,
     errored_uids,
     init_db,
@@ -196,17 +198,23 @@ NewCriteria = Annotated[
         "the old set stop counting, so `score` scores the pool again.",
     ),
 ]
+Yes = Annotated[
+    bool,
+    typer.Option("--yes", "-y", help="Answer yes to the --new-criteria question."),
+]
 
 
-def _goal_criteria(s, goal: str, *, new: bool) -> StoredCriteria:
+def _goal_criteria(s, goal: str, *, new: bool, yes: bool = False) -> StoredCriteria:
     """The goal's one set of criteria (audit H10): the stored set; the first
     time, the latest set an earlier `score` run recorded, if there is one;
     otherwise, or with --new-criteria, a freshly written set. Whatever is
     new is stored before anything is scored against it."""
     key = goal_hash(goal)
+    if new:
+        return _replace_criteria(s, goal, key, yes=yes)
     with connect(s.db_path) as conn:
-        stored = None if new else load_criteria(conn, key)
-        earlier = [] if new else score_run_criteria(conn, key)
+        stored = load_criteria(conn, key)
+        earlier = score_run_criteria(conn, key)
     if stored is not None:
         typer.echo(
             f"criteria {stored.criteria_hash} · stored {stored.created_at} · "
@@ -217,6 +225,50 @@ def _goal_criteria(s, goal: str, *, new: bool) -> StoredCriteria:
         return _adopt_the_latest_score_run(s, key, earlier)
 
     written, prov = asyncio.run(write_criteria(goal, settings=s))
+    stored, adopted = _store(s, key, written, prov, adopt_unlinked=True)
+    if adopted:
+        typer.echo(f"{adopted} scores made before criteria were stored count under it")
+    return stored
+
+
+def _replace_criteria(s, goal: str, key: str, *, yes: bool) -> StoredCriteria:
+    """--new-criteria. Every current score stops counting, so first say how
+    many and what scoring them again costs, and ask before a new set is paid
+    for. The set replaced is kept in criteria_history; a new set that reads
+    the same as the stored one replaces nothing."""
+    version, _ = llm.load_prompt("score")
+    with connect(s.db_path) as conn:
+        old = load_criteria(conn, key)
+        current = count_scored(
+            conn, key, version, s.llm_model, old.criteria_hash if old else None
+        )
+    if current:
+        passes = math.ceil(current / s.score_limit)
+        typer.echo(
+            f"--new-criteria: {current} current scores stop counting; `score` "
+            f"scores them again, {s.score_limit} a pass (SCORE_LIMIT), {passes} "
+            f"pass{'es' if passes > 1 else ''}. The set replaced is kept in "
+            "criteria_history."
+        )
+        if not yes:
+            typer.confirm("Write a new set of criteria?", abort=True)
+
+    written, prov = asyncio.run(write_criteria(goal, settings=s))
+    if old is not None and criteria_hash(written) == old.criteria_hash:
+        typer.echo(
+            f"criteria {old.criteria_hash} · the new set reads the same as the "
+            "stored set; nothing changes"
+        )
+        return old
+    stored, _ = _store(s, key, written, prov, adopt_unlinked=False)
+    typer.echo("scores made under earlier criteria no longer count; run `score`")
+    return stored
+
+
+def _store(
+    s, key: str, written: SelectionCriteria, prov, *, adopt_unlinked: bool
+) -> tuple[StoredCriteria, int]:
+    """Store a set the model just wrote; the one place its hash is made."""
     with connect(s.db_path) as conn:
         adopted = store_criteria(
             conn,
@@ -225,18 +277,14 @@ def _goal_criteria(s, goal: str, *, new: bool) -> StoredCriteria:
             criteria_hash=criteria_hash(written),
             model=prov.model,
             prompt_version=prov.prompt_version,
-            adopt_unlinked=not new,
+            adopt_unlinked=adopt_unlinked,
         )
         stored = load_criteria(conn, key)
     typer.echo(
         f"criteria {stored.criteria_hash} · written now by {prov.model} · "
         f"{prov.prompt}@{prov.prompt_version} · {prov.seconds:.1f}s · stored"
     )
-    if adopted:
-        typer.echo(f"{adopted} scores made before criteria were stored count under it")
-    if new:
-        typer.echo("scores made under earlier criteria no longer count; run `score`")
-    return stored
+    return stored, adopted
 
 
 def _adopt_the_latest_score_run(s, key: str, earlier: list) -> StoredCriteria:
@@ -277,14 +325,16 @@ def _adopt_the_latest_score_run(s, key: str, earlier: list) -> StoredCriteria:
 
 
 @app.command()
-def criteria(goal: str | None = None, new_criteria: NewCriteria = False) -> None:
+def criteria(
+    goal: str | None = None, new_criteria: NewCriteria = False, yes: Yes = False
+) -> None:
     """Show the goal's selection criteria before scoring anything. The first
     time they are written and stored; every `score` then uses that set."""
     s = get_settings()
     text = _resolve_goal(goal)
     typer.echo(f"goal     {text}")
     typer.echo(f"hash     {goal_hash(text)}")
-    stored = _goal_criteria(s, text, new=new_criteria)
+    stored = _goal_criteria(s, text, new=new_criteria, yes=yes)
     typer.echo("")
     typer.echo(format_criteria(stored.criteria))
 
@@ -296,6 +346,7 @@ def score(
     seed: int = 0,
     run_id: str | None = None,
     new_criteria: NewCriteria = False,
+    yes: Yes = False,
 ) -> None:
     """Score screened companies against the goal. Incremental and resumable:
     already-scored companies cost nothing, so run it again to score more."""
@@ -303,7 +354,7 @@ def score(
     text = _resolve_goal(goal)
     rid = _run_id(run_id)
 
-    stored = _goal_criteria(s, text, new=new_criteria)
+    stored = _goal_criteria(s, text, new=new_criteria, yes=yes)
     typer.echo(format_criteria(stored.criteria))
     typer.echo("")
 
