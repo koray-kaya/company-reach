@@ -122,6 +122,7 @@
     {% if card.decision %}
     <span class="banner">Recorded: {{ card.decision }}.
       {% if card.decision == 'skipped' %}<button class="btn quiet" name="action" value="undo">Undo</button>{% endif %}
+      {% if card.decision == 'sent' %}<button class="btn quiet" id="bounced" name="action" value="bounced" title="The mail came back: its address goes on the never-again list, and the card opens again for another address.">Bounced</button>{% endif %}
     </span>
     {% else %}
     <span class="lbl">Skip:</span>

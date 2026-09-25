@@ -5,7 +5,17 @@
   var next = document.getElementById("next");
   var send = document.getElementById("send");
   var never = document.getElementById("never");
+  var bounced = document.getElementById("bounced");
   var toast = document.getElementById("toast");
+
+  // A bounce puts the address on the never-again list for good.
+  if (bounced) {
+    bounced.addEventListener("click", function (e) {
+      if (!confirm("Did the mail come back? Its address goes on the never-again list, and the card opens again for another address.")) {
+        e.preventDefault();
+      }
+    });
+  }
 
   // Never again asks here, in the browser; without this script the server
   // asks on a page of its own instead.

@@ -59,7 +59,9 @@ CREATE TABLE IF NOT EXISTS results (
   run_id TEXT NOT NULL, uid TEXT NOT NULL, recommendation TEXT, reason TEXT,
   error_kind TEXT, error_text TEXT, finished_at TEXT NOT NULL, PRIMARY KEY (run_id, uid));
 -- One row per decision, never updated: a company's state is its latest row,
--- and "contacted" is any 'sent' row ever (M7 open point 4). A 'sent' row
+-- and "contacted" is any 'sent' row ever (M7 open point 4) that no later
+-- 'not_sent' or 'bounced' row took back; `reverses` names the 'sent' row
+-- such a row takes back, by id, since forget clears addresses. A 'sent' row
 -- keeps the frame, the A/B arm and the kind of contact ("generic/site/named"),
 -- no personal data, so survey answers can be compared after forget and purge.
 -- It also snapshots what went out — the subject, the body's sha256 and the
@@ -70,7 +72,7 @@ CREATE TABLE IF NOT EXISTS ledger (
   id INTEGER PRIMARY KEY, uid TEXT NOT NULL, status TEXT NOT NULL, address TEXT,
   draft_id INTEGER, run_id TEXT, note TEXT, decided_at TEXT NOT NULL,
   frame_version TEXT, arm TEXT, contact_kind TEXT,
-  subject TEXT, body_sha256 TEXT, prompt_version TEXT);
+  subject TEXT, body_sha256 TEXT, prompt_version TEXT, reverses INTEGER);
 CREATE INDEX IF NOT EXISTS ledger_uid ON ledger (uid);
 -- The survey's export, joined to the ledger by the UID in the link. Replaced
 -- whole on every import; a UID without a 'sent' row is kept and counted.

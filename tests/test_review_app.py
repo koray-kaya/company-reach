@@ -553,3 +553,111 @@ def test_a_suppressed_address_is_refused(client, review):
     assert r.status_code == 409
     assert "never-again list" in r.text
     assert ledger_rows(review) == 0
+
+
+# --- a mail nobody received is not a contact (open point 4) ------------------
+
+
+def statuses(review: Settings, uid: str = SEND) -> list[tuple]:
+    with connect(review.db_path) as conn:
+        return [
+            tuple(r)
+            for r in conn.execute(
+                "select status, reverses from ledger where uid = ? order by id", (uid,)
+            )
+        ]
+
+
+def take_back(client: TestClient, sent_id: str, *, uid: str = SEND, n: int = 0):
+    return client.post(
+        f"/decide/{RUN}/{uid}?n={n}",
+        data={"action": "not_sent", "sent_id": sent_id},
+        headers=SAME,
+    )
+
+
+def test_not_sent_reopens_the_card(client, review):
+    """The mail client never opened, or the reviewer closed the mail
+    unsent: the recorded page takes the send back, and the card is open
+    again — the same address included, since no mail left."""
+    from company_reach.tools.db import was_contacted
+
+    recorded = post_send(client, "info@muster-metallbau.ch")
+    sent_id = re.search(r'name="sent_id" value="(\d+)"', recorded.text).group(1)
+    assert 'value="not_sent"' in recorded.text
+
+    r = take_back(client, sent_id)
+    assert r.status_code == 303
+    assert decision(review, SEND) is None
+    assert statuses(review) == [("sent", None), ("not_sent", int(sent_id))]
+    with connect(review.db_path) as conn:
+        assert not was_contacted(conn, SEND)
+    assert post_send(client, "info@muster-metallbau.ch").status_code == 200
+
+
+def test_not_sent_only_before_the_reviewer_moves_on(client, review):
+    """Taking a send back belongs to the moment after it: once anything
+    else is decided, `sent` is final."""
+    recorded = post_send(client, "info@muster-metallbau.ch")
+    sent_id = re.search(r'name="sent_id" value="(\d+)"', recorded.text).group(1)
+    client.post(
+        f"/decide/{RUN}/{SKIP}?n=2", data={"action": "skip:Not a fit"}, headers=SAME
+    )
+    r = take_back(client, sent_id)
+    assert r.status_code == 409
+    assert decision(review, SEND) == "sent"
+
+
+def test_bounced_allows_another_address(client, review):
+    """The inbox bounced. Its address goes on the never-again list, the
+    card opens again, and another address may be tried — never the one
+    that bounced."""
+    from company_reach.models import Contact, ContactAddress
+    from company_reach.tools.db import record_contact, was_contacted
+
+    own = "anna.muster@muster-metallbau.ch"
+    with connect(review.db_path) as conn:
+        record_contact(
+            conn,
+            RUN,
+            SEND,
+            Contact(
+                name="Anna Muster",
+                role="Inhaberin",
+                email="info@muster-metallbau.ch",
+                email_kind="generic",
+                source="site",
+                source_url="https://muster-metallbau.ch/team",
+                addresses=[
+                    ContactAddress(email="info@muster-metallbau.ch", kind="generic"),
+                    ContactAddress(email=own, kind="seen"),
+                ],
+            ),
+        )
+    assert post_send(client, "info@muster-metallbau.ch").status_code == 200
+    assert 'value="bounced"' in client.get(f"/review/{RUN}/0").text
+
+    r = client.post(
+        f"/decide/{RUN}/{SEND}?n=0", data={"action": "bounced"}, headers=SAME
+    )
+    assert r.status_code == 303
+    assert decision(review, SEND) is None
+    html = client.get(f"/review/{RUN}/0").text
+    assert 'value="info@muster-metallbau.ch" disabled' in html
+    assert "(bounced)" in html
+    assert f'value="{own}" checked' in html
+
+    assert post_send(client, "info@muster-metallbau.ch").status_code == 409
+    assert post_send(client, own).status_code == 200
+    assert [s for s, _ in statuses(review)] == ["sent", "bounced", "sent"]
+    with connect(review.db_path) as conn:
+        assert is_suppressed(conn, "info@muster-metallbau.ch")
+        assert was_contacted(conn, SEND)
+
+
+def test_only_a_sent_company_can_bounce(client, review):
+    r = client.post(
+        f"/decide/{RUN}/{SEND}?n=0", data={"action": "bounced"}, headers=SAME
+    )
+    assert r.status_code == 409
+    assert ledger_rows(review) == 0

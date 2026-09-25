@@ -20,7 +20,8 @@ use it.
   the pages publish.
 - **What the tool writes** — a short description of each company, the
   contact it chose and why, an invitation draft, and the reviewer's decision
-  (sent, skipped, never again).
+  (sent, skipped, never again, and a send taken back as not sent or
+  bounced).
 
 It does not collect anything from LinkedIn. When no address was found, a
 web search restricted to LinkedIn profiles may record a profile *URL* as a
@@ -88,9 +89,13 @@ gets it. Everything else is written by code (`tools/invitation.py`):
 - **One mail only.** "Ich schreibe Ihnen nur dieses eine Mal." The ledger
   keeps that promise, for the company and for the inbox: the review page
   refuses an address that is on the never-again list or was already written
-  to for another company, such as a sister firm sharing one info@. Only if the profile allows one reminder (which needs
-  ethics approval first) does the mail say "Ich erinnere Sie höchstens
-  einmal daran" instead.
+  to for another company, such as a sister firm sharing one info@. A mail
+  nobody received is not a contact: one that never left the mail client is
+  taken back on the page, and one that bounced puts its address on the
+  never-again list; either way the company may be written to at another
+  address. Only if the profile allows one reminder (which needs ethics
+  approval first) does the mail say "Ich erinnere Sie höchstens einmal
+  daran" instead.
 - **How to be deleted.** When someone is named: "Ein kurzes «Nein» genügt,
   dann lösche ich Ihren Namen." It promises the name, not the address,
   because `forget` keeps the address on the never-again list for good.

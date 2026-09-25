@@ -6,7 +6,10 @@ suppression list, and the reviewer's two corrections to a mail: Frau /
 Herr / ohne, and another of the card's addresses. Each rebuilds the draft
 by code around the same sentence, and Send goes only to the address the
 mail was written for. The tool still sends nothing — Send records the
-decision and hands the draft to the reviewer's own mail client.
+decision and hands the draft to the reviewer's own mail client. A mail
+nobody received is not a contact: the recorded page takes a send back as
+not sent, and the card of a sent company marks it bounced; either opens the
+card again for another address.
 
 Every card is its own URL, `/review/{run}/{n}`, and every action is a form
 POST, so the page works without its small script. Jinja2 autoescapes the
@@ -29,6 +32,7 @@ from company_reach.review.cards import Card, first_undecided, load_cards
 from company_reach.settings import Settings
 from company_reach.tools.db import (
     connect,
+    decision_for,
     readdress_contact,
     record_decision,
     rewrite_draft,
@@ -196,8 +200,9 @@ def create_app(settings: Settings) -> FastAPI:
                 record_decision(conn, uid, "never", run_id=run_id)
             return after(run_id, n, "Added to the never-again list")
         if action == "undo":
-            # only a skip is taken back; a send happened in a mail client and
-            # never again was promised to be permanent before the click
+            # only a skip is taken back here; a send is taken back only as
+            # not sent or bounced, and never again was promised to be
+            # permanent before the click
             if card.decision != "skipped":
                 raise HTTPException(409, f"cannot undo {card.decision or 'nothing'}")
             with connect(settings.db_path) as conn:
@@ -205,7 +210,66 @@ def create_app(settings: Settings) -> FastAPI:
             return RedirectResponse(
                 f"/review/{run_id}/{n}?done={quote('Skip undone')}", status_code=303
             )
+        if action == "not_sent":
+            return not_sent(run_id, uid, str(form.get("sent_id", "")), n)
+        if action == "bounced":
+            return bounced(run_id, card, n)
         raise HTTPException(400, f"unknown action {action!r}")
+
+    def not_sent(run_id: str, uid: str, sent_id: str, n: int) -> RedirectResponse:
+        """The mail client never opened, or the mail was closed unsent: the
+        recorded page takes the send back. Only while that send is the
+        ledger's newest row — before the reviewer moved on to decide
+        anything else; after that `sent` is final (open point 4)."""
+        with connect(settings.db_path) as conn:
+            newest = conn.execute(
+                "select id, uid, status from ledger order by id desc limit 1"
+            ).fetchone()
+            if (
+                newest is None
+                or (newest["uid"], newest["status"]) != (uid, "sent")
+                or str(newest["id"]) != sent_id
+            ):
+                raise HTTPException(
+                    409,
+                    "too late to take this send back: another decision came after"
+                    " it. If the mail bounced, mark it Bounced on the card.",
+                )
+            record_decision(conn, uid, "not_sent", run_id=run_id, reverses=newest["id"])
+        done = "Send taken back: no mail went out, and the card is open again"
+        return RedirectResponse(
+            f"/review/{run_id}/{n}?done={quote(done)}", status_code=303
+        )
+
+    def bounced(run_id: str, card: Card, n: int) -> RedirectResponse:
+        """The mail came back. Nobody received it, so it is not a contact:
+        the bounced address goes on the never-again list, and the card
+        opens again for another address (open point 4)."""
+        if card.decision != "sent":
+            raise HTTPException(
+                409, f"only a sent mail can bounce; this card is {card.decision}"
+            )
+        with connect(settings.db_path) as conn:
+            sent = decision_for(conn, card.uid)
+            address = sent["address"]  # None once the company was forgotten
+            record_decision(
+                conn,
+                card.uid,
+                "bounced",
+                address=address,
+                run_id=run_id,
+                reverses=sent["id"],
+            )
+            if address:
+                suppress(conn, address, reason="bounced")
+        done = (
+            f"Bounced: {address} is on the never-again list; try another address"
+            if address
+            else "Bounced"
+        )
+        return RedirectResponse(
+            f"/review/{run_id}/{n}?done={quote(done)}", status_code=303
+        )
 
     def send(
         request: Request,
@@ -255,7 +319,7 @@ def create_app(settings: Settings) -> FastAPI:
         kind = f"{card.contact.email_kind}/{card.contact.source}/"
         kind += "named" if named(card.contact) else "none"
         with connect(settings.db_path) as conn:
-            record_decision(
+            sent_id = record_decision(
                 conn,
                 card.uid,
                 "sent",
@@ -284,6 +348,10 @@ def create_app(settings: Settings) -> FastAPI:
                 "to": to,
                 "body_to_copy": None if link.fits else draft.body,
                 "next_url": next_url(run_id, n),
+                # the take-back form: this send, until anything else is decided
+                "run_id": run_id,
+                "n": n,
+                "sent_id": sent_id,
             },
         )
 

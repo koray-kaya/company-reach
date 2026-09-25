@@ -78,6 +78,8 @@ _ADDED_COLUMNS = {
     ("ledger", "subject"): "TEXT",
     ("ledger", "body_sha256"): "TEXT",
     ("ledger", "prompt_version"): "TEXT",
+    # the sent row a not_sent or bounced takes back (D5)
+    ("ledger", "reverses"): "INTEGER",
 }
 
 
@@ -1034,7 +1036,21 @@ def closed_because(conn: sqlite3.Connection, uid: str) -> str | None:
 
 # --- the ledger and suppression (M7) ----------------------------------------
 
-DECISIONS = ("sent", "skipped", "never", "undone")
+# `not_sent` and `bounced` take one `sent` row back (open point 4): the mail
+# client never opened, or the mail came back. Either way nobody received
+# it, so the company opens again for another address. Each names the row it
+# takes back in `reverses` — by id, since forget clears the address.
+DECISIONS = ("sent", "skipped", "never", "undone", "not_sent", "bounced")
+_REOPENS = ("undone", "not_sent", "bounced")
+
+# The ids of sent rows that were never a mail, and of those nobody received.
+NEVER_LEFT = (
+    "(select reverses from ledger where status = 'not_sent' and reverses is not null)"
+)
+TAKEN_BACK = (
+    "(select reverses from ledger"
+    " where status in ('not_sent', 'bounced') and reverses is not null)"
+)
 
 
 def record_decision(
@@ -1053,9 +1069,11 @@ def record_decision(
     subject: str | None = None,
     body_sha256: str | None = None,
     prompt_version: str | None = None,
+    reverses: int | None = None,
 ) -> int:
     """Append one decision. Nothing in the ledger is ever updated or
-    deleted by the page: undoing a skip is an `undone` row after it.
+    deleted by the page: undoing a skip is an `undone` row after it, and
+    taking a send back a `not_sent` or `bounced` row naming it.
 
     A `sent` row carries the draft's frame and arm and the kind of contact
     it went to, copied here because `forget` and `purge` delete drafts and
@@ -1068,8 +1086,8 @@ def record_decision(
     cur = conn.execute(
         """INSERT INTO ledger (uid, status, address, draft_id, run_id, note,
              decided_at, frame_version, arm, contact_kind, subject, body_sha256,
-             prompt_version)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+             prompt_version, reverses)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             uid,
             status,
@@ -1084,6 +1102,7 @@ def record_decision(
             subject,
             body_sha256,
             prompt_version,
+            reverses,
         ),
     )
     return cur.lastrowid
@@ -1091,18 +1110,24 @@ def record_decision(
 
 def decision_for(conn: sqlite3.Connection, uid: str) -> sqlite3.Row | None:
     """The company's current decision, or None while it is undecided —
-    never decided, or its last decision undone."""
+    never decided, its skip undone, or its send taken back as not sent or
+    bounced (the card is open again)."""
     row = conn.execute(
         "select * from ledger where uid = ? order by id desc limit 1", (uid,)
     ).fetchone()
-    return None if row is None or row["status"] == "undone" else row
+    return None if row is None or row["status"] in _REOPENS else row
 
 
 def was_contacted(conn: sqlite3.Connection, uid: str) -> bool:
-    """Any `sent` row, ever. "Contacted once, ever" rests on this."""
+    """A `sent` row that no `not_sent` or `bounced` took back, ever.
+    "Contacted once, ever" rests on this; a mail nobody received is not a
+    contact (open point 4)."""
     return (
         conn.execute(
-            "select 1 from ledger where uid = ? and status = 'sent' limit 1", (uid,)
+            f"""select 1 from ledger
+                 where uid = ? and status = 'sent' and id not in {TAKEN_BACK}
+                 limit 1""",
+            (uid,),
         ).fetchone()
         is not None
     )
@@ -1110,11 +1135,13 @@ def was_contacted(conn: sqlite3.Connection, uid: str) -> bool:
 
 def sent_this_month(conn: sqlite3.Connection, *, today: str | None = None) -> int:
     """How many were sent this calendar month. A number the page shows, not
-    a limit: there is no cap by design."""
+    a limit: there is no cap by design. A send taken back as not sent was
+    no mail; a bounced one was."""
     month = (today or now())[:7]
     return conn.execute(
-        "select count(*) from ledger"
-        " where status = 'sent' and substr(decided_at, 1, 7) = ?",
+        f"""select count(*) from ledger
+             where status = 'sent' and id not in {NEVER_LEFT}
+               and substr(decided_at, 1, 7) = ?""",
         (month,),
     ).fetchone()[0]
 
@@ -1148,12 +1175,13 @@ def address_block(conn: sqlite3.Connection, address: str, *, uid: str) -> str | 
     ).fetchone()
     if row is not None:
         return f"on the never-again list since {row['added_at'][:10]} ({row['reason']})"
+    # a send taken back reached nobody; a bounced address is suppressed above
     row = conn.execute(
-        """select l.decided_at, coalesce(c.name, l.uid) as company
-             from ledger l left join companies c on c.uid = l.uid
-            where l.status = 'sent' and l.uid <> ?
-              and address_key(l.address) = ?
-            order by l.id limit 1""",
+        f"""select l.decided_at, coalesce(c.name, l.uid) as company
+              from ledger l left join companies c on c.uid = l.uid
+             where l.status = 'sent' and l.id not in {TAKEN_BACK}
+               and l.uid <> ? and address_key(l.address) = ?
+             order by l.id limit 1""",
         (uid, address_key(address)),
     ).fetchone()
     if row is not None:

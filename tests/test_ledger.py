@@ -1,8 +1,9 @@
 """The ledger: every decision a reviewer made, as a log.
 
-A company's state is its latest row; "contacted" is any `sent` row, ever.
-Undoing a skip adds a row rather than deleting one, so the funnel the thesis
-reports keeps its history (M7 open point 4).
+A company's state is its latest row; "contacted" is any `sent` row, ever,
+that no `not_sent` or `bounced` row took back. Undoing a skip adds a row
+rather than deleting one, so the funnel the thesis reports keeps its history
+(M7 open point 4).
 """
 
 import sqlite3
@@ -252,3 +253,37 @@ def test_an_older_ledger_that_holds_decisions_is_not_dropped(tmp_path: Path):
     conn.close()
     with pytest.raises(RuntimeError, match="ledger"):
         init_db(path)
+
+
+def test_contacted_once_survives_forget(settings):
+    """Contacted once, ever: a sent row that no later `not_sent` or
+    `bounced` took back. The pair is kept by the row's id, not by its
+    address, because forget clears the address."""
+    from review_seed import HOLD, SEND, seed
+
+    from company_reach.forget import forget
+
+    seed(settings.db_path)
+    with connect(settings.db_path) as conn:
+        first = record_decision(conn, SEND, "sent", address="info@muster-metallbau.ch")
+        record_decision(
+            conn, SEND, "bounced", address="info@muster-metallbau.ch", reverses=first
+        )
+        record_decision(conn, SEND, "sent", address="anna.muster@muster-metallbau.ch")
+        never_left = record_decision(conn, HOLD, "sent", address="a@x.example")
+        record_decision(conn, HOLD, "not_sent", reverses=never_left)
+    forget(settings, SEND)
+    forget(settings, HOLD)
+    with connect(settings.db_path) as conn:
+        assert was_contacted(conn, SEND)
+        assert not was_contacted(conn, HOLD)
+
+
+def test_a_send_taken_back_is_not_counted_this_month(db: Path):
+    with connect(db) as conn:
+        sent = record_decision(
+            conn, UID, "sent", decided_at="2026-09-02T08:00:00+00:00"
+        )
+        record_decision(conn, UID, "not_sent", reverses=sent)
+        record_decision(conn, UID, "sent", decided_at="2026-09-02T08:05:00+00:00")
+        assert sent_this_month(conn, today="2026-09-24") == 1
