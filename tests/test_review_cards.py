@@ -1,13 +1,17 @@
 """The review page's data: one card per company of a run, and whether it
 may be sent. No HTTP here; the page's own tests are in test_review_app."""
 
+from datetime import date
 from pathlib import Path
 
 import pytest
+from fictional_profile import INVITATION, SENDER
 from review_seed import HOLD, RUN, SEND, SKIP, SURVEY, seed
 
+from company_reach.models import Contact
+from company_reach.profile import Profile
 from company_reach.review.cards import first_undecided, load_cards
-from company_reach.tools.db import connect, record_decision, suppress
+from company_reach.tools.db import connect, record_contact, record_decision, suppress
 
 
 @pytest.fixture
@@ -206,3 +210,58 @@ def test_the_card_shows_where_the_salutation_came_from(
 
 def test_nobody_named_offers_no_salutation(db: Path):
     assert not by_uid(db)[HOLD].can_choose_salutation
+
+
+# --- a draft is checked against today's profile and contact -----------------
+
+PROFILE = Profile(goal="g", survey_url=SURVEY, sender=SENDER, invitation=INVITATION)
+
+
+def with_profile(db: Path, profile: Profile):
+    with connect(db) as conn:
+        return {
+            c.uid: c
+            for c in load_cards(
+                conn, RUN, survey_url=SURVEY, sending_approved=True, profile=profile
+            )
+        }
+
+
+def test_a_draft_that_matches_the_profile_stays_sendable(db: Path):
+    assert with_profile(db, PROFILE)[SEND].send_block is None
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"invitation": INVITATION.model_copy(update={"closes": date(2026, 11, 13)})},
+        {"sender": SENDER.model_copy(update={"supervisor": ""})},
+    ],
+    ids=["closes", "supervisor"],
+)
+def test_a_profile_change_makes_the_draft_unsendable(db: Path, change):
+    """Review: only a changed survey_url was caught. A mail promising the old
+    closing date, or naming a supervisor who withdrew, is just as stale."""
+    block = with_profile(db, PROFILE.model_copy(update=change))[SEND].send_block
+    assert "profile" in block
+    assert "redraft" in block
+
+
+def test_a_newer_contact_makes_the_draft_unsendable(db: Path):
+    # a retry found someone else; the draft still greets the old contact
+    with connect(db) as conn:
+        record_contact(
+            conn,
+            RUN,
+            SEND,
+            Contact(
+                name="Beat Beispiel",
+                role="Geschäftsführer",
+                email="info@muster-metallbau.ch",
+                email_kind="generic",
+                source="site",
+            ),
+        )
+    block = with_profile(db, PROFILE)[SEND].send_block
+    assert "contact" in block
+    assert "redraft" in block

@@ -573,18 +573,31 @@ def record_draft(
 def rewrite_draft(
     conn: sqlite3.Connection,
     draft_id: int,
+    draft: Draft,
     *,
-    subject: str,
-    body: str,
-    mailto_fits: bool,
     found: list[str],
+    contact_id: int | None = None,
 ) -> None:
-    """The same draft rebuilt by code around the same sentence (the card's
-    salutation toggle), with the outcome of checking it again."""
+    """The same draft rebuilt by code around the same sentence — the card's
+    salutation or address, or `redraft` after the profile or the contact
+    changed — with the outcome of checking it again. `contact_id` moves the
+    draft to the contact it now addresses."""
     conn.execute(
-        """update drafts set subject = ?, body = ?, mailto_fits = ?, problems = ?
+        """update drafts set subject = ?, body = ?, mailto_fits = ?,
+             model_text = ?, frame_version = ?, arm = ?, problems = ?,
+             contact_id = coalesce(?, contact_id)
             where id = ?""",
-        (subject, body, int(mailto_fits), "; ".join(found), draft_id),
+        (
+            draft.subject,
+            draft.body,
+            int(draft.mailto_fits),
+            draft.model_text,
+            draft.frame_version,
+            draft.arm,
+            "; ".join(found),
+            contact_id,
+            draft_id,
+        ),
     )
 
 

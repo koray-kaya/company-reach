@@ -21,8 +21,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from company_reach.models import Draft
-from company_reach.nodes.check_draft import problems
+from company_reach.nodes.check_draft import reassemble
 from company_reach.profile import load_profile
 from company_reach.review.cards import Card, first_undecided, load_cards
 from company_reach.settings import Settings
@@ -34,7 +33,7 @@ from company_reach.tools.db import (
     set_salutation,
     suppress,
 )
-from company_reach.tools.invitation import assemble, named, subject
+from company_reach.tools.invitation import named
 from company_reach.tools.mailto import build
 
 HERE = Path(__file__).parent
@@ -60,6 +59,7 @@ def create_app(settings: Settings) -> FastAPI:
                 run_id,
                 survey_url=profile.survey_url,
                 sending_approved=settings.sending_approved,
+                profile=profile,
             )
         if not cards:
             raise HTTPException(404, f"run {run_id!r} has no results to review")
@@ -238,38 +238,14 @@ def create_app(settings: Settings) -> FastAPI:
                 409, f"profile.toml lacks {', '.join(gaps)}; cannot rebuild the mail"
             )
         view = card.draft
-        if view is None or view.link is None or card.contact is None:
+        if view is None or not view.model_text or card.contact is None:
             raise HTTPException(409, "no current draft to rebuild")
         contact = card.contact.model_copy(
             update={"salutation": choice, "salutation_origin": "reviewer"}
         )
-        title = subject(contact, profile.sender, profile.invitation)
-        body = assemble(
-            contact,
-            view.model_text or "",
-            link=view.link,
-            sender=profile.sender,
-            inv=profile.invitation,
-            short=view.arm == "kurz",
-        )
-        rebuilt = Draft(
-            subject=title,
-            body=body,
-            model_text=view.model_text or "",
-            link=view.link,
-            mailto_fits=build(contact.email or "", title, body).fits,
-            frame_version=view.frame_version or "",
-            arm=view.arm or "voll",
-        )
+        rebuilt, found = reassemble(view.model_text, contact, profile, card.uid)
         with connect(settings.db_path) as conn:
             set_salutation(conn, run_id, card.uid, choice)
-            rewrite_draft(
-                conn,
-                view.id,
-                subject=rebuilt.subject,
-                body=rebuilt.body,
-                mailto_fits=rebuilt.mailto_fits,
-                found=problems(rebuilt, contact, profile),
-            )
+            rewrite_draft(conn, view.id, rebuilt, found=found)
 
     return app

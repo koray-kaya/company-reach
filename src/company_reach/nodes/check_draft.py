@@ -40,7 +40,14 @@ from company_reach.nodes import draft as draft_node
 from company_reach.profile import Profile, load_profile
 from company_reach.settings import Settings
 from company_reach.tools.db import connect, delete_draft, record_draft_check
-from company_reach.tools.invitation import assemble, subject
+from company_reach.tools.invitation import (
+    FRAME_VERSION,
+    arm_for,
+    assemble,
+    subject,
+    survey_link,
+)
+from company_reach.tools.mailto import build
 
 PREFIX = "Ich schreibe Ihnen, weil "
 MAX_WORDS = 25  # the prompt asks for 20
@@ -198,6 +205,36 @@ def problems(draft: Draft, contact: Contact, profile: Profile) -> list[str]:
     if not draft.mailto_fits:
         found.append("the mail is too long for a mailto: link")
     return found
+
+
+def reassemble(
+    sentence: str, contact: Contact, profile: Profile, uid: str
+) -> tuple[Draft, list[str]]:
+    """The mail rebuilt by code around a sentence the model already wrote,
+    from today's profile and contact — no model call — and checked again.
+    Used when only the frame is stale: a new survey_url or closing date, a
+    newer contact, the reviewer's salutation or address."""
+    link = survey_link(profile.survey_url, uid)
+    arm = arm_for(uid, experiment=profile.invitation.experiment)
+    body = assemble(
+        contact,
+        sentence,
+        link=link,
+        sender=profile.sender,
+        inv=profile.invitation,
+        short=arm == "kurz",
+    )
+    title = subject(contact, profile.sender, profile.invitation)
+    rebuilt = Draft(
+        subject=title,
+        body=body,
+        model_text=sentence,
+        link=link,
+        mailto_fits=build(contact.email or "", title, body).fits,
+        frame_version=FRAME_VERSION,
+        arm=arm,
+    )
+    return rebuilt, problems(rebuilt, contact, profile)
 
 
 async def check_draft(

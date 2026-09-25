@@ -80,9 +80,7 @@ def test_page_text_is_escaped(client, review):
 
 def test_the_locked_gate_is_explained(settings):
     seed(settings.db_path)
-    settings.profile_path.write_text(
-        f'goal = "Firms that make things."\nsurvey_url = "{SURVEY}"\n'
-    )
+    settings.profile_path.write_text(profile_text(SURVEY))
     locked = TestClient(create_app(settings))  # sending_approved defaults to False
     assert "SENDING_APPROVED" in locked.get(f"/review/{RUN}/0").text
 
@@ -148,6 +146,20 @@ def test_send_records_first_then_hands_over_the_mailto(client, review):
     assert row["draft_id"] is not None
 
 
+def test_a_profile_change_blocks_send_on_the_server(client, review):
+    # the closing date moved after drafting: the mail would promise the old one
+    text = profile_text(SURVEY).replace("closes = 2026-10-30", "closes = 2026-11-13")
+    review.profile_path.write_text(text)
+    assert "redraft" in client.get(f"/review/{RUN}/0").text
+    r = client.post(
+        f"/decide/{RUN}/{SEND}?n=0",
+        data={"action": "send", "to": "info@muster-metallbau.ch"},
+        headers=SAME,
+    )
+    assert r.status_code == 409
+    assert ledger_rows(review) == 0
+
+
 def test_send_copies_frame_arm_and_contact_kind(client, review):
     client.post(
         f"/decide/{RUN}/{SEND}?n=0",
@@ -174,9 +186,7 @@ def test_send_goes_only_to_an_address_the_card_offered(client, review):
 def test_send_is_refused_on_the_server_when_the_gate_is_closed(settings):
     # a disabled button is a hint, not a control: the server checks again
     seed(settings.db_path)
-    settings.profile_path.write_text(
-        f'goal = "Firms that make things."\nsurvey_url = "{SURVEY}"\n'
-    )
+    settings.profile_path.write_text(profile_text(SURVEY))
     locked = TestClient(create_app(settings), follow_redirects=False)
     r = locked.post(
         f"/decide/{RUN}/{SEND}?n=0",

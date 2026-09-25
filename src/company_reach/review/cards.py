@@ -13,6 +13,9 @@ Send is refused, with the reason the card shows, when any of these holds
 * the draft was written with an older frame, was never checked, or failed
   its checks: Send rests on the latest check's outcome, never on a draft
   row existing;
+* the draft no longer matches today's profile or contact — a new closing
+  date, a supervisor taken out, a newer contact found by a retry: the frame
+  is checked again here, in code, on every load;
 * ethics approval is not recorded (`SENDING_APPROVED` in `.env`);
 * the draft's survey link is a placeholder, or points somewhere other than
   the profile's current `survey_url`.
@@ -24,7 +27,9 @@ import sqlite3
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
-from company_reach.models import CompanyProfile, Contact, dotted_uid
+from company_reach.models import CompanyProfile, Contact, Draft, dotted_uid
+from company_reach.nodes.check_draft import problems
+from company_reach.profile import Profile
 from company_reach.tools.db import (
     company_by_uid,
     contact_for,
@@ -71,11 +76,23 @@ class DraftView:
     frame_version: str | None  # None: written before frame@1
     arm: str | None
     problems: str | None  # None: never checked; "": passed
+    contact_id: int | None = None  # the contact row it was written for
 
     @property
     def link(self) -> str | None:
         found = _URL.findall(self.body)
         return found[0] if found else None
+
+    def as_draft(self) -> Draft:
+        return Draft(
+            subject=self.subject,
+            body=self.body,
+            model_text=self.model_text or "",
+            link=self.link or "",
+            mailto_fits=self.mailto_fits,
+            frame_version=self.frame_version or "",
+            arm=self.arm or "voll",
+        )
 
 
 @dataclass(frozen=True)
@@ -130,9 +147,25 @@ def _search_line(row: sqlite3.Row) -> str:
     return f"{row['query']} — {row['provider']} · {outcome}"
 
 
-def _contact(conn: sqlite3.Connection, run_id: str, uid: str) -> Contact | None:
-    found = contact_for(conn, run_id, uid)
-    return found[1] if found else None
+def _drift(
+    draft: DraftView | None,
+    contact: Contact | None,
+    contact_id: int | None,
+    profile: Profile | None,
+) -> str | None:
+    """Why a checked frame@1 draft no longer matches what it was built
+    from, or None. Pure code: the frame is rebuilt and compared, as
+    `check_draft` does, against today's profile and contact."""
+    if draft is None or draft.frame_version != FRAME_VERSION or draft.problems != "":
+        return None  # _send_block says what is wrong with it
+    if draft.contact_id is not None and draft.contact_id != contact_id:
+        return "a newer contact was found since the draft was written"
+    if profile is None or contact is None:
+        return None
+    found = problems(draft.as_draft(), contact, profile)
+    if found:
+        return f"the draft no longer matches the profile ({'; '.join(found)})"
+    return None
 
 
 def _draft(conn: sqlite3.Connection, run_id: str, uid: str) -> DraftView | None:
@@ -153,6 +186,7 @@ def _draft(conn: sqlite3.Connection, run_id: str, uid: str) -> DraftView | None:
         frame_version=row["frame_version"],
         arm=row["arm"],
         problems=row["problems"],
+        contact_id=row["contact_id"],
     )
 
 
@@ -165,6 +199,7 @@ def _send_block(
     suppressed: bool,
     survey_url: str,
     sending_approved: bool,
+    drift: str | None = None,
 ) -> str | None:
     if decision is not None:
         return f"Already decided: {decision}."
@@ -182,6 +217,8 @@ def _send_block(
         return f"The draft was never checked; run `company-reach redraft {run_id}`."
     if draft.problems:
         return f"The draft failed its checks ({draft.problems}); redraft it."
+    if drift:
+        return f"{drift[:1].upper()}{drift[1:]}; run `company-reach redraft {run_id}`."
     if not sending_approved:
         return (
             "Sending is locked until ethics approval is recorded "
@@ -203,7 +240,12 @@ def _send_block(
 
 
 def load_cards(
-    conn: sqlite3.Connection, run_id: str, *, survey_url: str, sending_approved: bool
+    conn: sqlite3.Connection,
+    run_id: str,
+    *,
+    survey_url: str,
+    sending_approved: bool,
+    profile: Profile | None = None,
 ) -> list[Card]:
     """Every company with a result in the run: send, then hold, then skip,
     then the ones that errored; inside a group, the order they were drawn."""
@@ -229,12 +271,13 @@ def load_cards(
         profile_row = conn.execute(
             "select profile from profiles where run_id = ? and uid = ?", (run_id, uid)
         ).fetchone()
-        profile = (
+        company = (
             CompanyProfile.model_validate_json(profile_row["profile"])
             if profile_row
             else None
         )
-        contact = _contact(conn, run_id, uid)
+        found = contact_for(conn, run_id, uid)
+        contact_id, contact = found if found else (None, None)
         draft = _draft(conn, run_id, uid)
         latest = decision_for(conn, uid)
         decision = latest["status"] if latest else None
@@ -257,8 +300,8 @@ def load_cards(
                 name=record.name if record else uid,
                 legal_form=_LEGAL_FORMS.get(record.legal_form, "") if record else "",
                 seat=(record.city or record.municipality) if record else "",
-                what=profile.description
-                if profile
+                what=company.description
+                if company
                 else (record.purpose_head if record else ""),
                 site_url=safe_url(site["url"]) if site else None,
                 evidence=site["evidence"] if site else None,
@@ -276,6 +319,7 @@ def load_cards(
                 decision=decision,
                 send_block=_send_block(
                     run_id=run_id,
+                    drift=_drift(draft, contact, contact_id, profile),
                     draft=draft,
                     reason=reason,
                     decision=decision,

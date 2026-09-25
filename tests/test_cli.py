@@ -542,13 +542,29 @@ _PROV = llm.Provenance(
 
 
 def _card(settings, uid):
+    """The card as the page would show it, against today's profile."""
     from review_seed import RUN
 
+    from company_reach.profile import load_profile
     from company_reach.review.cards import load_cards
 
+    profile = load_profile(settings.profile_path)
     with connect(settings.db_path) as conn:
-        cards = load_cards(conn, RUN, survey_url=NEW_SURVEY, sending_approved=True)
+        cards = load_cards(
+            conn,
+            RUN,
+            survey_url=profile.survey_url,
+            sending_approved=True,
+            profile=profile,
+        )
     return next(c for c in cards if c.uid == uid)
+
+
+def _bad_stored_sentence(settings, uid, text="Ihre Firma ist besonders wertvoll."):
+    """A stored draft whose own sentence breaks the rules: only the model
+    can write a new one."""
+    with connect(settings.db_path) as conn:
+        conn.execute("update drafts set model_text = ? where uid = ?", (text, uid))
 
 
 def _redraft_setup(settings, monkeypatch, *, sentence=None):
@@ -589,13 +605,80 @@ def test_redraft_makes_stale_cards_sendable(settings, monkeypatch):
 
     r = runner.invoke(cli.app, ["redraft", RUN])
     assert r.exit_code == 0, r.output
-    assert asked == ["draft"]  # one company, one sentence, nothing else
+    # only the frame changed: rebuilt around the same sentence, no model call
+    assert asked == []
     assert "1 redrafted · 1 sendable" in r.output
 
     card = _card(settings, SEND)
     assert card.send_block is None
     assert card.draft.link == survey_link(NEW_SURVEY, SEND)
     assert f"{SURVEY}/" not in card.draft.body
+
+
+@respx.mock
+def test_redraft_rebuilds_a_profile_change_without_a_model_call(settings, monkeypatch):
+    from fictional_profile import profile_text
+    from review_seed import RUN, SEND, SURVEY
+
+    asked = _redraft_setup(settings, monkeypatch)
+    moved = profile_text(SURVEY).replace("closes = 2026-10-30", "closes = 2026-11-13")
+    settings.profile_path.write_text(
+        moved.replace('supervisor = "Prof. Dr. Hans Vorbild"\n', "")
+    )
+    assert "profile" in _card(settings, SEND).send_block
+
+    r = runner.invoke(cli.app, ["redraft", RUN])
+    assert r.exit_code == 0, r.output
+    assert asked == []
+    card = _card(settings, SEND)
+    assert card.send_block is None
+    assert "offen bis Freitag, 13. November" in card.draft.body
+    assert "Betreut von" not in card.draft.body
+
+
+@respx.mock
+def test_redraft_follows_a_newer_contact(settings, monkeypatch):
+    from fictional_profile import profile_text
+    from review_seed import RUN, SEND, SURVEY
+
+    from company_reach.models import Contact
+    from company_reach.tools.db import record_contact
+
+    asked = _redraft_setup(settings, monkeypatch)
+    settings.profile_path.write_text(profile_text(SURVEY))
+    with connect(settings.db_path) as conn:
+        record_contact(
+            conn,
+            RUN,
+            SEND,
+            Contact(
+                name="Beat Beispiel",
+                role="Geschäftsführer",
+                email="info@muster-metallbau.ch",
+                email_kind="generic",
+                source="site",
+            ),
+        )
+    assert "contact" in _card(settings, SEND).send_block
+
+    r = runner.invoke(cli.app, ["redraft", RUN])
+    assert r.exit_code == 0, r.output
+    assert asked == []
+    card = _card(settings, SEND)
+    assert card.send_block is None
+    assert "Guten Tag Beat Beispiel" in card.draft.body
+
+
+@respx.mock
+def test_redraft_asks_the_model_when_the_sentence_itself_fails(settings, monkeypatch):
+    from review_seed import RUN, SEND
+
+    asked = _redraft_setup(settings, monkeypatch)
+    _bad_stored_sentence(settings, SEND)
+    r = runner.invoke(cli.app, ["redraft", RUN])
+    assert r.exit_code == 0, r.output
+    assert asked == ["draft"]
+    assert _card(settings, SEND).send_block is None
 
 
 @respx.mock
@@ -634,6 +717,7 @@ def test_redraft_that_fails_twice_holds_the_company(settings, monkeypatch):
     asked = _redraft_setup(
         settings, monkeypatch, sentence="Ihre Firma ist besonders wertvoll."
     )
+    _bad_stored_sentence(settings, SEND)
     r = runner.invoke(cli.app, ["redraft", RUN])
     assert r.exit_code == 0, r.output
     assert asked == ["draft", "draft"]

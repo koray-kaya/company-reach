@@ -1,11 +1,17 @@
 """`redraft`: draft again the review cards a run can no longer send.
 
-A draft stops being sendable when the profile's `survey_url` changes (it
-links to the old survey), when the frame changes (`frame_version`), or when
-it was never checked or failed. Such a card is fixed from what SQLite
-already holds — the company, its profile and its contact — through `draft`
-and `check_draft` only. Nothing is searched or fetched, and no page is read
-again: the company was already found, and only the mail changed.
+A draft stops being sendable when anything it was built from changed: the
+profile's `survey_url` (it links to the old survey), any other profile text
+the frame writes (a closing date, a supervisor), the contact (a retry found
+someone newer), or the frame itself; or when it was never checked, or
+failed. Such a card is fixed from what SQLite already holds — the company,
+its profile and its contact. Nothing is searched or fetched, and no page is
+read again: the company was already found, and only the mail changed.
+
+When the stored sentence still passes its rules, only the frame is stale,
+and the mail is rebuilt around that sentence by code — no model call. Only
+a sentence that fails its rules (or a draft from before frame@1, whose text
+was a paragraph) goes back to the model, through `draft` and `check_draft`.
 
 Only undecided send cards are touched. A decided company keeps the draft it
 was decided on, and a company on the never-again list is left alone.
@@ -13,13 +19,19 @@ was decided on, and a company on the never-again list is left alone.
 
 import asyncio
 import re
+import sqlite3
 from dataclasses import dataclass
 
 from company_reach.errors import CompanyReachError, ProfileError
-from company_reach.models import CompanyResult
-from company_reach.nodes.check_draft import check_draft
+from company_reach.models import CompanyResult, Draft
+from company_reach.nodes.check_draft import (
+    check_draft,
+    problems,
+    reassemble,
+    sentence_problems,
+)
 from company_reach.nodes.draft import draft
-from company_reach.profile import load_profile
+from company_reach.profile import Profile, load_profile
 from company_reach.settings import Settings
 from company_reach.tools.db import (
     company_by_uid,
@@ -29,6 +41,7 @@ from company_reach.tools.db import (
     is_suppressed,
     profile_by_uid,
     record_result,
+    rewrite_draft,
 )
 from company_reach.tools.invitation import FRAME_VERSION, survey_link
 
@@ -38,7 +51,7 @@ _URL = re.compile(r"https?://\S+")
 @dataclass(frozen=True)
 class Redrafted:
     uid: str
-    outcome: str  # "sendable", "hold: <why>" or "<kind> error: <what>"
+    outcome: str  # "sendable", "not sendable: ...", "hold: ..." or an error
 
 
 def _undecided_sends(conn, run_id: str) -> list[str]:
@@ -54,25 +67,46 @@ def _undecided_sends(conn, run_id: str) -> list[str]:
     ]
 
 
-def _is_stale(conn, run_id: str, uid: str, survey_url: str) -> bool:
-    """No draft, a draft of an older frame, one never checked or failed, or
-    one whose link is not the link the profile would give today."""
-    row = conn.execute(
-        "select body, frame_version, problems from drafts"
-        " where run_id = ? and uid = ? order by id desc limit 1",
+def _latest_draft(conn: sqlite3.Connection, run_id: str, uid: str):
+    return conn.execute(
+        "select * from drafts where run_id = ? and uid = ? order by id desc limit 1",
         (run_id, uid),
     ).fetchone()
+
+
+def _is_stale(conn, run_id: str, uid: str, profile: Profile) -> bool:
+    """No draft, a draft of an older frame, one never checked or failed, one
+    written for an older contact row, or one whose frame is not what today's
+    profile and contact would build — its link included."""
+    row = _latest_draft(conn, run_id, uid)
     if row is None or row["frame_version"] != FRAME_VERSION or row["problems"] != "":
         return True
-    return _URL.findall(row["body"]) != [survey_link(survey_url, uid)]
+    found = contact_for(conn, run_id, uid)
+    if found is None or (
+        row["contact_id"] is not None and row["contact_id"] != found[0]
+    ):
+        return True
+    if _URL.findall(row["body"]) != [survey_link(profile.survey_url, uid)]:
+        return True
+    stored = Draft(
+        subject=row["subject"],
+        body=row["body"],
+        model_text=row["model_text"] or "",
+        link=survey_link(profile.survey_url, uid),
+        mailto_fits=bool(row["mailto_fits"]),
+        frame_version=row["frame_version"],
+        arm=row["arm"] or "voll",
+    )
+    return bool(problems(stored, found[1], profile))
 
 
 async def redraft_run(
     run_id: str, *, settings: Settings, uid: str | None = None
 ) -> list[Redrafted]:
     """Redraft the stale undecided send cards of `run_id`, or with `uid`
-    that one card whether stale or not. Raises `ProfileError` before any
-    model call when the profile cannot write an invitation."""
+    that one card whether stale or not, with a new sentence from the model.
+    Raises `ProfileError` before any model call when the profile cannot
+    write an invitation."""
     profile = load_profile(settings.profile_path)
     if gaps := profile.drafting_gaps():
         raise ProfileError(
@@ -89,9 +123,7 @@ async def redraft_run(
                 )
             uids = [uid]
         else:
-            uids = [
-                u for u in open_cards if _is_stale(conn, run_id, u, profile.survey_url)
-            ]
+            uids = [u for u in open_cards if _is_stale(conn, run_id, u, profile)]
         states = []
         for u in uids:
             found = contact_for(conn, run_id, u)
@@ -100,6 +132,7 @@ async def redraft_run(
             if found is None or company is None or company_profile is None:
                 continue  # a send card always has all three; nothing to build on
             contact_id, contact = found
+            row = _latest_draft(conn, run_id, u)
             states.append(
                 {
                     "run_id": run_id,
@@ -109,14 +142,31 @@ async def redraft_run(
                     "contact": contact,
                     "contact_id": contact_id,
                     "about_me": profile.about_me,
+                    "stored": row,
                 }
             )
 
-    return list(await asyncio.gather(*(_one(s, settings) for s in states)))
+    return list(
+        await asyncio.gather(
+            *(_one(s, profile, settings, fresh=uid is not None) for s in states)
+        )
+    )
 
 
-async def _one(state: dict, settings: Settings) -> Redrafted:
+async def _one(state: dict, profile: Profile, settings: Settings, *, fresh: bool):
     uid, run_id = state["uid"], state["run_id"]
+    stored = state.pop("stored")
+    sentence = stored["model_text"] if stored else None
+    if not fresh and sentence and not sentence_problems(sentence):
+        # only the frame is stale: rebuild around the same sentence
+        rebuilt, found = reassemble(sentence, state["contact"], profile, uid)
+        with connect(settings.db_path) as conn:
+            rewrite_draft(
+                conn, stored["id"], rebuilt, found=found, contact_id=state["contact_id"]
+            )
+        if found:
+            return Redrafted(uid, f"not sendable: {'; '.join(found)}")
+        return Redrafted(uid, "sendable")
     try:
         state |= await draft(state, settings=settings)
         state |= await check_draft(state, settings=settings)
