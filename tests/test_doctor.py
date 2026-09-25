@@ -1,6 +1,7 @@
 import json
 
 import httpx
+import pytest
 import respx
 from typer.testing import CliRunner
 
@@ -9,6 +10,48 @@ from company_reach.tools.doctor import run_checks
 
 URL = "https://api.openai.com/v1/chat/completions"
 runner = CliRunner()
+SEARX = "http://searxng:8080"
+REAL_SURVEY = "https://umfrage.beispiel-hochschule.ch/kmu"
+
+
+@pytest.fixture
+def settings(settings):
+    """No pause between search queries: doctor's search probe runs in every
+    test here, and the politeness gap would only slow the suite."""
+    return settings.model_copy(update={"search_gap_s": 0.0})
+
+
+def _search_ok():
+    respx.get(f"{SEARX}/search").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "results": [
+                    {
+                        "url": "https://www.example-register.ch/",
+                        "title": "t",
+                        "content": "c",
+                        "engine": "duckduckgo",
+                    }
+                ],
+                "unresponsive_engines": [],
+            },
+        )
+    )
+
+
+def _config(enabled: list[str]):
+    respx.get(f"{SEARX}/config").mock(
+        return_value=httpx.Response(
+            200, json={"engines": [{"name": n, "enabled": True} for n in enabled]}
+        )
+    )
+
+
+def _real_survey(settings):
+    settings.profile_path.write_text(
+        f'goal = "Firms that make things."\nsurvey_url = "{REAL_SURVEY}"\n'
+    )
 
 
 def answer(content: str, *, finish_reason: str = "stop") -> httpx.Response:
@@ -38,6 +81,9 @@ def probe_truncated() -> httpx.Response:
 @respx.mock
 async def test_all_checks_pass(settings):
     respx.post(URL).mock(side_effect=[probe_ok(), probe_truncated()])
+    _search_ok()
+    _config(["duckduckgo", "mojeek", "brave"])
+    _real_survey(settings)
     checks = await run_checks(settings)
     assert [c.name for c in checks] == [
         "settings",
@@ -45,6 +91,8 @@ async def test_all_checks_pass(settings):
         "database",
         "profile",
         "retention",
+        "search",
+        "engines",
         "endpoint",
         "token budget",
     ]
@@ -55,7 +103,7 @@ async def test_all_checks_pass(settings):
 async def test_a_failing_check_does_not_stop_the_others(settings):
     respx.post(URL).mock(return_value=httpx.Response(401, json={"error": "nope"}))
     checks = await run_checks(settings)
-    assert len(checks) == 7  # every check still ran
+    assert len(checks) == 9  # every check still ran
     by_name = {c.name: c for c in checks}
     assert by_name["settings"].ok
     assert by_name["database"].ok
@@ -85,6 +133,9 @@ async def test_wrong_marker_is_a_failure(settings):
 def test_cli_exits_zero_when_healthy(settings, monkeypatch):
     monkeypatch.setattr(cli, "get_settings", lambda: settings)
     respx.post(URL).mock(side_effect=[probe_ok(), probe_truncated()])
+    _search_ok()
+    _config(["duckduckgo", "mojeek", "brave"])
+    _real_survey(settings)
     result = runner.invoke(cli.app, ["doctor"])
     assert result.exit_code == 0, result.output
     assert "ok" in result.output
@@ -115,7 +166,7 @@ async def test_a_missing_profile_fails_without_stopping_the_others(settings):
     respx.post(URL).mock(side_effect=[probe_ok(), probe_truncated()])
     settings.profile_path.unlink()
     checks = await run_checks(settings)
-    assert len(checks) == 7
+    assert len(checks) == 9
     assert not next(c for c in checks if c.name == "profile").ok
 
 
@@ -126,3 +177,60 @@ async def test_retention_reports_what_a_purge_would_remove(settings):
     retention = next(c for c in await run_checks(settings) if c.name == "retention")
     assert retention.ok
     assert "365 days" in retention.detail
+
+
+@respx.mock
+async def test_a_missing_baseline_engine_fails(settings):
+    """Round-1 live run: mojeek and startpage were inactive in the pinned
+    SearXNG, so the guard for "every baseline engine is down" could never
+    fire."""
+    respx.post(URL).mock(side_effect=[probe_ok(), probe_truncated()])
+    _search_ok()
+    _config(["duckduckgo", "brave"])
+    checks = {c.name: c for c in await run_checks(settings)}
+    assert checks["engines"].ok is False
+    assert "mojeek" in checks["engines"].detail
+
+
+@respx.mock
+async def test_search_that_answers_nothing_fails(settings):
+    respx.post(URL).mock(side_effect=[probe_ok(), probe_truncated()])
+    respx.get(f"{SEARX}/search").mock(
+        return_value=httpx.Response(
+            200, json={"results": [], "unresponsive_engines": []}
+        )
+    )
+    _config(["duckduckgo", "mojeek", "brave"])
+    checks = {c.name: c for c in await run_checks(settings)}
+    assert checks["search"].ok is False
+
+
+@respx.mock
+async def test_the_placeholder_survey_url_fails(settings):
+    respx.post(URL).mock(side_effect=[probe_ok(), probe_truncated()])
+    _search_ok()
+    _config(["duckduckgo", "mojeek", "brave"])
+    checks = {c.name: c for c in await run_checks(settings)}
+    assert checks["profile"].ok is False
+    assert "placeholder" in checks["profile"].detail
+
+
+def test_every_prompt_a_run_uses_is_loaded():
+    from company_reach.tools import doctor
+
+    assert set(doctor._PROMPTS) >= {
+        "criteria",
+        "score",
+        "pick_site",
+        "pick_pages",
+        "extract",
+        "draft",
+    }
+
+
+@respx.mock
+async def test_the_settings_line_shows_the_gates(settings):
+    respx.post(URL).mock(side_effect=[probe_ok(), probe_truncated()])
+    checks = {c.name: c for c in await run_checks(settings)}
+    assert "sending_approved=False" in checks["settings"].detail
+    assert "paid_fallback=none" in checks["settings"].detail
