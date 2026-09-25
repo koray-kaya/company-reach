@@ -19,6 +19,11 @@
 #
 # Do not add `network:` lines to engines: engines sharing a named network
 # object share one suspension bucket, so one CAPTCHA takes them all out.
+#
+# Every engine says `inactive: false` itself. Upstream marks mojeek and
+# startpage inactive at the pinned image, and `use_default_settings` keeps
+# that flag for any engine that does not override it — round 1 found mojeek
+# missing, so the guard for "every baseline engine is down" could never fire.
 
 use_default_settings:
   engines:
@@ -48,11 +53,16 @@ outgoing:
 engines:
   - name: google
     disabled: false
+    inactive: false
   - name: duckduckgo
     disabled: false
+    inactive: false
   - name: brave
     disabled: false
+    inactive: false
   - name: startpage
     disabled: false
+    inactive: false
   - name: mojeek
     disabled: false
+    inactive: false

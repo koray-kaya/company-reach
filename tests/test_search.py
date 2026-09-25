@@ -8,10 +8,12 @@ that will never be looked at again.
 """
 
 import asyncio
+from pathlib import Path
 
 import httpx
 import pytest
 import respx
+import yaml
 from pydantic import SecretStr
 
 from company_reach.errors import SearchError
@@ -298,7 +300,7 @@ async def test_both_failing_names_both(s: Settings):
 
 
 @respx.mock
-async def test_at_most_two_queries_are_in_flight(s: Settings):
+async def test_queries_in_flight_stay_under_the_cap(s: Settings):
     """Ten children starting find_site at once would fire thirty to forty
     queries from one IP in the first seconds — the pattern that gets an
     engine suspended."""
@@ -331,6 +333,28 @@ async def test_a_gap_is_left_between_queries(settings: Settings, monkeypatch):
     )
     await search("one", settings=settings)
     assert slept and slept[-1] >= 1.0
+
+
+def test_search_is_paced_for_one_ip(settings: Settings):
+    """The round-1 live run had two queries in flight and a one-second gap,
+    and DuckDuckGo and Brave were suspended within one batch."""
+    assert settings.search_concurrency == 1
+    assert settings.search_gap_s == 2.0
+
+
+def test_settings_yml_activates_the_baseline_engines(settings: Settings):
+    """Upstream marks mojeek and startpage `inactive` at the pinned image, and
+    `use_default_settings` inherits that for any engine that does not say
+    otherwise — so doctor reported mojeek missing, and the guard for "every
+    baseline engine is down" could never fire. An absent key is not enough:
+    each baseline engine has to say `inactive: false` itself."""
+    path = Path(__file__).parent.parent / "searxng" / "settings.yml"
+    engines = {e["name"]: e for e in yaml.safe_load(path.read_text())["engines"]}
+    baseline = [n.strip() for n in settings.baseline_engines.split(",") if n.strip()]
+    for name in baseline:
+        assert name in engines, name
+        assert engines[name].get("inactive") is False, name
+        assert engines[name].get("disabled") is not True, name
 
 
 # --- probe_search ------------------------------------------------------------

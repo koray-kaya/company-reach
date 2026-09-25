@@ -54,9 +54,12 @@ class Settings(BaseSettings):
     brave_search_api_key: SecretStr | None = None
     # Ten children starting find_site at once would fire 30-40 queries from
     # one IP in the first seconds, which is the pattern that gets an engine
-    # suspended. The fetcher's per-host delay does not cover these.
-    search_concurrency: int = 2
-    search_gap_s: float = 1.0
+    # suspended. The fetcher's per-host delay does not cover these. Two in
+    # flight with a one-second gap was still too much: the round-1 live run
+    # had DuckDuckGo and Brave suspended within one batch. SearXNG only;
+    # the Brave API has its own gate.
+    search_concurrency: int = 1
+    search_gap_s: float = 2.0
     # When every query for one company came back empty, wait this long and
     # ask again. Long enough for an engine's short suspension to lapse; the
     # 2026-09-21 capture got its sites back on a rerun minutes later.
