@@ -125,7 +125,9 @@ def _delete_rows(
 ) -> int:
     marks = ",".join("?" * len(uids))
     deleted = 0
-    for table in ("contacts", "drafts", "profiles", "sites", "searches"):
+    # searches: the log can name people; responses: the survey's timestamps
+    # for the company — both go with everything else
+    for table in ("contacts", "drafts", "profiles", "sites", "searches", "responses"):
         deleted += conn.execute(
             f"delete from {table} where uid in ({marks})", uids
         ).rowcount

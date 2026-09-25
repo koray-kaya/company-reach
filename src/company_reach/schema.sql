@@ -51,6 +51,10 @@ CREATE TABLE IF NOT EXISTS ledger (
   draft_id INTEGER, run_id TEXT, note TEXT, decided_at TEXT NOT NULL,
   frame_version TEXT, arm TEXT, contact_kind TEXT);
 CREATE INDEX IF NOT EXISTS ledger_uid ON ledger (uid);
+-- The survey's export, joined to the ledger by the UID in the link. Replaced
+-- whole on every import; a UID without a 'sent' row is kept and counted.
+CREATE TABLE IF NOT EXISTS responses (
+  uid TEXT PRIMARY KEY, started_at TEXT, completed_at TEXT, imported_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS suppression (
   key TEXT PRIMARY KEY, reason TEXT, added_at TEXT NOT NULL);
 -- Where find_site landed and why, for the review page, which reads only

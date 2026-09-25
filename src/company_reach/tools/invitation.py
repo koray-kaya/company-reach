@@ -52,7 +52,7 @@ class InvitationError(CompanyReachError):
 # --- the survey link ---------------------------------------------------------
 
 
-def _compact(uid: str) -> str | None:
+def compact_uid(uid: str) -> str | None:
     """`CHE-000.000.046`, `CHE000000046`, `CHE 000 000 046` → `CHE000000046`."""
     text = uid.strip().upper()
     if not text.startswith("CHE"):
@@ -62,7 +62,7 @@ def _compact(uid: str) -> str | None:
 
 
 def uid_is_valid(uid: str) -> bool:
-    compact = _compact(uid)
+    compact = compact_uid(uid)
     if compact is None:
         return False
     digits = [int(c) for c in compact[3:]]
@@ -80,7 +80,7 @@ def survey_link(survey_url: str, uid: str, *, lang: str = "de") -> str:
         raise InvitationError(f"lang must be one of {_LANGS}, not {lang!r}")
     if not uid_is_valid(uid):
         raise InvitationError(f"{uid!r} is not a UID with a valid check digit")
-    return f"{survey_url.rstrip('/')}/?c={_compact(uid)}&l={lang}"
+    return f"{survey_url.rstrip('/')}/?c={compact_uid(uid)}&l={lang}"
 
 
 def arm_for(uid: str, *, experiment: bool) -> Literal["voll", "kurz"]:
@@ -91,7 +91,7 @@ def arm_for(uid: str, *, experiment: bool) -> Literal["voll", "kurz"]:
     the experiment off, every mail is "voll"."""
     if not experiment:
         return "voll"
-    key = _compact(uid) or uid
+    key = compact_uid(uid) or uid
     return "kurz" if int(hashlib.sha256(key.encode()).hexdigest(), 16) % 2 else "voll"
 
 
