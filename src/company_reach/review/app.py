@@ -35,6 +35,7 @@ from company_reach.profile import load_profile
 from company_reach.review.cards import Card, first_undecided, load_cards
 from company_reach.review.jobs import JobBusy, Jobs
 from company_reach.settings import Settings
+from company_reach.tools import mailto
 from company_reach.tools.db import (
     connect,
     decision_for,
@@ -172,6 +173,7 @@ def create_app(settings: Settings, *, jobs: Jobs | None = None) -> FastAPI:
                 "sent_this_month": sent,
                 "skip_reasons": SKIP_REASONS,
                 "done": done,
+                "outlook": settings.mail_client == "outlook",
             },
         )
 
@@ -434,7 +436,7 @@ def create_app(settings: Settings, *, jobs: Jobs | None = None) -> FastAPI:
         to: str,
         n: int,
         shown: tuple[str, str],
-    ) -> HTMLResponse:
+    ) -> HTMLResponse | RedirectResponse:
         """Record first, then open the mail. "Contacted once, ever" rests on
         the ledger, so it must not depend on a link being followed.
 
@@ -490,11 +492,20 @@ def create_app(settings: Settings, *, jobs: Jobs | None = None) -> FastAPI:
                 body_sha256=draft.body_sha256,
                 prompt_version=draft.prompt_version,
             )
-        link = build(to, draft.subject, draft.body)
-        if not link.fits:
-            # the body would not survive the trip; open address and subject
-            # and let the reviewer paste the text shown on the page
-            link = build(to, draft.subject, "")
+        outlook = settings.mail_client == "outlook"
+        if outlook:
+            # Send was pressed into a new tab (formtarget): that tab goes on
+            # to Outlook's compose page, and the card's tab stays
+            base = settings.outlook_compose_url
+            full = mailto.outlook(base, to, draft.subject, draft.body)
+            if full.fits:
+                return RedirectResponse(full.href, status_code=303)
+            link = mailto.outlook(base, to, draft.subject, "")
+        else:
+            full = build(to, draft.subject, draft.body)
+            # a body that would not survive the trip: address and subject
+            # open, and the reviewer pastes the text shown on the page
+            link = full if full.fits else build(to, draft.subject, "")
         return templates.TemplateResponse(
             request,
             "recorded.html",
@@ -502,7 +513,8 @@ def create_app(settings: Settings, *, jobs: Jobs | None = None) -> FastAPI:
                 "href": link.href,
                 "card": card,
                 "to": to,
-                "body_to_copy": None if link.fits else draft.body,
+                "body_to_copy": None if full.fits else draft.body,
+                "outlook": outlook,
                 "next_url": next_url(run_id, n),
                 # the take-back form: this send, until anything else is decided
                 "run_id": run_id,

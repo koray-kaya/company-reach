@@ -21,6 +21,12 @@ class Settings(BaseSettings):
     # The ethics gate (M7 open point 1): Send stays locked until a human who
     # knows approval was granted sets this. Only a person can know it.
     sending_approved: bool = False
+    # How Send hands the draft over: "mailto" opens the computer's mail
+    # program; "outlook" opens Outlook on the web in a new browser tab.
+    mail_client: Literal["mailto", "outlook"] = "mailto"
+    # Microsoft 365 (a school or work account); a personal outlook.com
+    # account uses https://outlook.live.com/mail/0/deeplink/compose
+    outlook_compose_url: str = "https://outlook.office.com/mail/deeplink/compose"
     lindas_url: str = "https://lindas.admin.ch/query"
     shab_url: str = "https://www.shab.ch/api/v1"
 

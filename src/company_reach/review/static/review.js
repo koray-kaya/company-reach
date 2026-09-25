@@ -24,8 +24,18 @@
   }
   confirmFirst(document.getElementById("never"),
     "Never contact this company again? This cannot be undone.");
+  confirmFirst(document.getElementById("not-sent"),
+    "Take the send back? Only if no mail left Outlook or your mail client: the card opens again.");
   confirmFirst(document.getElementById("bounced"),
     "Did the mail come back? Its address goes on the never-again list, and the card opens again for another address.");
+
+  // Send into a new tab (Outlook on the web): that tab records and opens
+  // Outlook; this one shows the recorded send once it is written.
+  if (send && send.getAttribute("formtarget") === "_blank") {
+    send.addEventListener("click", function () {
+      setTimeout(function () { location.replace(location.pathname); }, 1500);
+    });
+  }
 
   document.addEventListener("keydown", function (e) {
     if (e.metaKey || e.ctrlKey || e.altKey) return;

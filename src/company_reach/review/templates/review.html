@@ -104,7 +104,7 @@
         </dl></header>
         <div class="body">{% for paragraph in card.draft.body.split("\n\n") %}<p>{{ paragraph }}</p>{% endfor %}</div>
         <footer>
-          <span>Opens in your mail client · {{ card.link_length }} of 2,000 link characters</span>
+          <span>{% if outlook %}Opens in Outlook in a new tab{% else %}Opens in your mail client · {{ card.link_length }} of 2,000 link characters{% endif %}</span>
           <span>draft@{{ card.draft.prompt_version }} · {{ card.draft.frame_version or 'no frame' }} · {{ card.draft.arm or '–' }} · {{ card.draft.model }}</span>
         </footer>
       </article>
@@ -123,6 +123,7 @@
     {% if card.decision %}
     <span class="banner">Recorded: {{ card.decision }}.
       {% if card.decision == 'skipped' %}<button class="btn quiet" name="action" value="undo">Undo</button>{% endif %}
+      {% if card.decision == 'sent' and card.sent_id %}<input type="hidden" name="sent_id" value="{{ card.sent_id }}"><button class="btn quiet" id="not-sent" name="action" value="not_sent" title="No mail left Outlook or your mail client: the send is taken back and the card opens again.">It was not sent</button>{% endif %}
       {% if card.decision == 'sent' %}<button class="btn quiet" id="bounced" name="action" value="bounced" title="The mail came back: its address goes on the never-again list, and the card opens again for another address.">Bounced</button>{% endif %}
     </span>
     {% else %}
@@ -134,7 +135,7 @@
     <span class="spacer"></span>
     {% if card.send_block and card.draft %}<span class="blocked">{{ card.send_block }}</span>{% endif %}
     {% endif %}
-    <button class="btn primary" id="send" name="action" value="send"{% if card.send_block %} disabled{% endif %}>Send<span class="kbd">S</span></button>
+    <button class="btn primary" id="send" name="action" value="send"{% if outlook %} formtarget="_blank"{% endif %}{% if card.send_block %} disabled{% endif %}>{% if outlook %}Send in Outlook{% else %}Send{% endif %}<span class="kbd">S</span></button>
   </footer>
 </form>
 <script src="/static/review.js"></script>
