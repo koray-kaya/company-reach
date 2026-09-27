@@ -715,7 +715,8 @@ def forget(
         if report.by_code:
             typer.echo(
                 f"No personal link has the code {report.key}, so nothing was"
-                " deleted. Check the code on the Contacts page.",
+                " deleted. Copy the link on the Contacts page and paste it"
+                " here instead.",
                 err=True,
             )
             raise typer.Exit(2)

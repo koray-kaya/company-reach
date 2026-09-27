@@ -513,7 +513,43 @@ def test_an_unknown_code_deletes_and_suppresses_nothing(settings, data, monkeypa
     r = forget_cli(settings, monkeypatch, "P-7K3Q9X")
     assert r.exit_code == 2, r.output
     assert "No personal link has the code P-7K3Q9X" in r.output
+    # the page shows the link, not the code, as text to copy (review minor)
+    assert "Copy the link on the Contacts page and paste it here instead." in r.output
     assert suppression_keys(settings) == set()
+
+
+def test_forget_by_address_clears_an_e_mail_channel_personal_link(settings, data):
+    """The E-mail channel puts the address itself in the Profile field
+    (`profile_key` of `anna@x.ch` is `anna@x.ch`), so forgetting that
+    address must clear this link's person too, not just a real profile
+    URL."""
+    with connect(settings.db_path) as conn:
+        made = record_invite(
+            conn,
+            NewInvite(
+                person="Reto Beispiel",
+                company="Beispiel AG",
+                channel="email",
+                profile="reto@beispiel.example",
+            ),
+            uid=None,
+        )
+    report = forget(settings, "Reto@Beispiel.example")
+    with connect(settings.db_path) as conn:
+        kept = invite_for(conn, made.code)
+    assert kept.person is None
+    assert kept.company == "Beispiel AG"
+    assert "reto@beispiel.example" in report.suppressed
+
+
+def test_forgetting_a_personal_link_reports_no_companies(settings, data, monkeypatch):
+    """A personal link's code forgets the one person; the company itself is
+    neither forgotten nor suppressed, so the CLI must not print "1
+    companies" for it."""
+    code = linked(settings, uid=SEND)
+    r = forget_cli(settings, monkeypatch, f"https://survey.test/?c={code}&l=de")
+    assert r.exit_code == 0, r.output
+    assert "0 companies" in r.output
 
 
 def test_forgetting_a_company_forgets_its_personal_links(settings, data):

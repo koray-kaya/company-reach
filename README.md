@@ -160,9 +160,9 @@ too, and shows who started or completed the survey; set
 The tool handles real people's names and addresses. [PRIVACY.md](PRIVACY.md)
 says what it collects, where it keeps it and where it sends it — above all,
 the model endpoint you choose receives the page text it reads. Two commands
-delete: `company-reach forget <uid|email|survey link>` on request, and
-`company-reach purge --older-than 365` for data nobody has touched for a
-year.
+delete: `company-reach forget <uid|email|survey link|personal link's code>`
+on request, and `company-reach purge --older-than 365` for data nobody has
+touched for a year.
 
 ## Tests
 

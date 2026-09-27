@@ -214,6 +214,32 @@ def _names(conn: sqlite3.Connection, uids: list[str]) -> set[str]:
     return {n for n in names if n.strip()}
 
 
+def _invite_codes_by_profile(conn: sqlite3.Connection, key: str) -> list[str]:
+    """Personal links whose Profile field is this address: the E-mail
+    channel puts the address there, not a real profile, so an address
+    request must clear them too, whether or not a company matched."""
+    return [
+        r["code"]
+        for r in conn.execute(
+            "select code from invites where address_key(profile) = ?", (key,)
+        )
+    ]
+
+
+def _names_for_codes(conn: sqlite3.Connection, codes: list[str]) -> set[str]:
+    """The people named by these personal links, before they are cleared."""
+    if not codes:
+        return set()
+    marks = ",".join("?" * len(codes))
+    return {
+        r["person"]
+        for r in conn.execute(
+            f"select person from invites where code in ({marks})", codes
+        )
+        if r["person"]
+    }
+
+
 _ON_SITE = ("seen", "generic", "constructed")
 
 
@@ -386,8 +412,15 @@ def forget(settings: Settings, key: str) -> Report:
         # the key itself goes on the list when it is an address, or a UID
         # no table holds; a company found is suppressed by its uid below
         keys = [] if by_uid and uids else [report.key]
+        # the E-mail channel puts the address itself in a link's Profile
+        # field (`profile_key` of `anna@x.ch` is `anna@x.ch`), so an address
+        # request must reach it even when no company matches at all
+        linked_codes = (
+            _invite_codes_by_profile(conn, address_key(key)) if not by_uid else []
+        )
         if not by_uid:
             names.update({key.lower(), address_key(key)})
+            names.update(_names_for_codes(conn, linked_codes))
         domains = _domains(conn, uids) if uids else set()
         if uids:
             mailed = _mailed_addresses(conn, uids)
@@ -414,6 +447,7 @@ def forget(settings: Settings, key: str) -> Report:
             report.rows_deleted = _delete_rows(
                 conn, uids, domains, reason="forgotten", clear_ledger_addresses=True
             ) + clear_people(conn, codes)
+        report.rows_deleted += clear_people(conn, linked_codes)
         for uid in uids:
             suppress(conn, uid, reason="forgotten on request")
         report.suppressed = list(uids)
@@ -449,7 +483,10 @@ def _forget_link(settings: Settings, code: str) -> Report:
             suppress(conn, row["profile"], reason="forgotten on request")
             report.suppressed.append(row["profile"])
         report.rows_deleted = clear_people(conn, [code])
-        report.companies = [row["uid"]] if row["uid"] else []
+        # the company itself is neither forgotten nor suppressed by a
+        # personal link's code: it stays in the pool, so it does not belong
+        # in the "N companies" the CLI prints
+        report.companies = []
     _compact(settings.db_path)
     report.still_named, report.not_searched = _still_named(
         settings.data_dir, names, db_path=settings.db_path

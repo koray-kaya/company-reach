@@ -290,8 +290,12 @@ RETENTION_DAYS = 365
 
 
 def _retention_check(settings: Settings) -> Check:
-    """Informational, never a failure: how many companies a purge would
-    clear (#27). Old data is a reason to run `purge`, not to refuse a run."""
+    """Informational, never a failure: how many companies, and how many
+    personal links (#68), a purge would clear. Old data is a reason to run
+    `purge`, not to refuse a run. A personal link is counted on its own
+    `created_at`, the same test `purge` itself applies, since its company
+    can be untouched for a year while the link was made yesterday, or hold
+    no company at all."""
     from datetime import date, timedelta
 
     from company_reach.forget import stale_uids
@@ -299,12 +303,21 @@ def _retention_check(settings: Settings) -> Check:
     cutoff = (date.today() - timedelta(days=RETENTION_DAYS)).isoformat()
     with connect(settings.db_path) as conn:
         n = len(stale_uids(conn, cutoff=cutoff))
-    if n == 0:
+        old_links = conn.execute(
+            """select count(*) from invites
+                where created_at < ?
+                  and (person is not null or profile is not null
+                       or note is not null)""",
+            (cutoff,),
+        ).fetchone()[0]
+    if n == 0 and old_links == 0:
         return Check("retention", True, f"nothing older than {RETENTION_DAYS} days")
+    counted = ((n, f"{n} companies"), (old_links, f"{old_links} personal links"))
+    held = [part for count, part in counted if count]
     return Check(
         "retention",
         True,
-        f"{n} companies older than {RETENTION_DAYS} days hold personal data; "
+        f"{' and '.join(held)} older than {RETENTION_DAYS} days hold personal data; "
         f"run: company-reach purge --older-than {RETENTION_DAYS}",
     )
 
