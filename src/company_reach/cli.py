@@ -937,8 +937,9 @@ def responses_import(
     export: Annotated[
         Path,
         typer.Argument(
-            help="The survey's CSV export: columns uid, started_at, completed_at "
-            "(ISO dates or times; completed_at may be empty)."
+            help="The survey's CSV export: a uid (or company_uid) column, "
+            "started_at, completed_at (ISO dates or times; completed_at may be "
+            "empty)."
         ),
     ],
 ) -> None:
@@ -953,8 +954,8 @@ def responses_import(
         typer.echo(str(error), err=True)
         raise typer.Exit(1) from error
     typer.echo(
-        f"{report.rows} responses · {report.matched} matched to a sent invitation"
-        f" · {report.rows - report.matched} without one"
+        f"{report.rows} responses · {report.matched} matched to a sent mail or a"
+        f" personal link · {report.rows - report.matched} without one"
     )
 
 

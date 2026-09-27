@@ -10,12 +10,22 @@ knows. All UIDs and dates below are fictional.
 
 from pathlib import Path
 
+import httpx
 import pytest
+import respx
 from typer.testing import CliRunner
 
 from company_reach import cli
 from company_reach.errors import CompanyReachError
-from company_reach.responses import import_responses, report_rows, wilson
+from company_reach.invites import NewInvite, record_invite
+from company_reach.responses import (
+    SurveyUnreachable,
+    fetch_tags,
+    import_responses,
+    refresh_from_survey,
+    report_rows,
+    wilson,
+)
 from company_reach.tools.db import connect, init_db, record_decision, suppress
 
 runner = CliRunner()
@@ -202,7 +212,10 @@ def test_the_commands_import_and_report(settings, monkeypatch, tmp_path):
 
     r = runner.invoke(cli.app, ["responses", "import", str(path)])
     assert r.exit_code == 0, r.output
-    assert "2 responses · 1 matched to a sent invitation · 1 without one" in r.output
+    assert (
+        "2 responses · 1 matched to a sent mail or a personal link · 1 without one"
+        in r.output
+    )
 
     r = runner.invoke(cli.app, ["report"])
     assert r.exit_code == 0, r.output
@@ -238,3 +251,89 @@ def test_a_bounce_counts_until_another_address_is_written_to(db, tmp_path):
     seen = group(rows, "voll", "seen/site/named")
     assert (seen.sent, seen.bounced, seen.delivered) == (1, 0, 1)
     assert sum(r.sent for r in rows) == 2  # C's mail never left
+
+
+# --- fetched from the survey ----------------------------------------------------
+
+TAGS = "https://survey.test/api/admin/tags"
+
+
+def test_the_surveys_own_export_header_is_read(db, tmp_path):
+    path = tmp_path / "survey.csv"
+    path.write_text(
+        "reference,company_uid,lang,started_at,completed_at\n"
+        "R1,CHE-000.000.046,de,2026-10-03T10:00:00Z,2026-10-03T10:14:00Z\n"
+    )
+    with connect(db) as conn:
+        sent(conn, A)
+        report = import_responses(conn, path)
+    assert (report.rows, report.matched) == (1, 1)
+
+
+def test_a_personal_code_matches_its_link_whatever_its_case(db, tmp_path):
+    with connect(db) as conn:
+        made = record_invite(
+            conn, NewInvite(person="Anna Muster", company="Muster AG"), uid=None
+        )
+        report = import_responses(
+            conn, export(tmp_path, f"{made.code.lower()},2026-10-03T10:00:00Z,")
+        )
+        rows, unmatched = report_rows(conn)
+        stored = conn.execute("select uid from responses").fetchone()[0]
+    assert stored == made.code
+    assert (report.rows, report.matched, unmatched) == (1, 1, 0)
+
+
+def test_an_untagged_response_is_left_out(db, tmp_path):
+    with connect(db) as conn:
+        report = import_responses(conn, export(tmp_path, ",2026-10-03T10:00:00Z,"))
+    assert report.rows == 0
+
+
+@respx.mock
+def test_the_survey_hands_over_its_tags():
+    route = respx.get(TAGS).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "tags": [
+                    {
+                        "tag": "P-7K3Q9X",
+                        "started_at": "2026-10-03T10:00:00.123+00:00",
+                        "completed_at": None,
+                    }
+                ]
+            },
+        )
+    )
+    rows = fetch_tags("https://survey.test/form", "a-long-password")
+    assert rows == [("P-7K3Q9X", "2026-10-03T10:00:00.123000+00:00", None)]
+    # the admin endpoint sits at the survey's root, whatever path the link has
+    assert route.calls.last.request.headers["authorization"].startswith("Basic ")
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    ("answer", "words"),
+    [
+        (httpx.Response(401), "refused the password"),
+        (httpx.Response(500), "answered 500"),
+        (httpx.Response(200, json={"rows": []}), "not a list of tags"),
+        (httpx.ConnectError("down"), "Could not reach the survey"),
+    ],
+)
+def test_a_survey_that_cannot_answer_says_why(answer, words):
+    respx.get(TAGS).mock(side_effect=[answer])
+    with pytest.raises(SurveyUnreachable, match=words):
+        fetch_tags("https://survey.test", "a-long-password")
+
+
+@respx.mock
+def test_a_failed_fetch_keeps_the_last_answers(db, tmp_path):
+    respx.get(TAGS).mock(side_effect=httpx.ConnectError("down"))
+    with connect(db) as conn:
+        import_responses(conn, export(tmp_path, f"{A},2026-10-03T10:00:00Z,"))
+        with pytest.raises(SurveyUnreachable):
+            refresh_from_survey(conn, "https://survey.test", "a-long-password")
+        kept = conn.execute("select count(*) from responses").fetchone()[0]
+    assert kept == 1

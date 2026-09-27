@@ -24,6 +24,7 @@ def settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Settings:
     # COMPANY_REACH_TRACING traces. A test that wants one sets its own.
     for name in (
         "BRAVE_SEARCH_API_KEY",
+        "FORM_ADMIN_PASSWORD",
         "SENDING_APPROVED",
         "SEARXNG_URL",
         "COMPANY_REACH_TRACING",
