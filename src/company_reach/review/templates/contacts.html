@@ -17,6 +17,11 @@
   <section id="new" class="made">
     <p class="label">New link</p>
     <p><strong>{{ made.person }}</strong> · {{ made.company }} · {{ channels[made.channel] }}</p>
+    {% if matched_uid %}
+    <p class="hint">Matched to {{ matched_uid }}</p>
+    {% else %}
+    <p class="hint">Not found in the company pool: the never-again list and the tool's mails were checked by name only</p>
+    {% endif %}
     {% for lang, link in links.items() %}
     <div class="linkrow"><span class="lang">{{ lang }}</span><code>{{ link }}</code><button type="button" class="small" data-copy="{{ link }}">Copy</button></div>
     {% endfor %}
@@ -35,7 +40,7 @@
     {% endif %}
     <form method="post" action="/contacts" class="fields">
       <label>Person<input name="person" value="{{ form.person }}" required maxlength="120" autocomplete="off"></label>
-      <label>Company<input name="company" value="{{ form.company }}" required maxlength="200" list="companies" autocomplete="off"></label>
+      <label>Company<input name="company" value="{{ form.company }}" required maxlength="200" list="companies" autocomplete="off"><span class="hint">Pick a name from the list to check the never-again list and earlier mails.</span></label>
       <label>Company number <span class="opt">optional</span><input name="uid" value="{{ form.uid }}" placeholder="CHE-123.456.789" autocomplete="off"></label>
       <label>Channel<select name="channel">{% for key, label in channels.items() %}<option value="{{ key }}"{% if key == form.channel %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
       <label>Profile link <span class="opt">optional</span><input name="profile" value="{{ form.profile }}" placeholder="linkedin.com/in/…" maxlength="300" autocomplete="off"></label>
@@ -70,7 +75,7 @@
       <tr>
         <td>{{ r.when[:10] }}</td>
         <td>{% if r.profile %}<a href="https://{{ r.profile }}" target="_blank" rel="noopener">{{ r.person or "(forgotten)" }}</a>{% else %}{{ r.person or "–" }}{% endif %}</td>
-        <td>{{ r.company }}</td>
+        <td>{{ r.company }}{% if not r.uid %} <span class="opt">not in pool</span>{% endif %}</td>
         <td>{{ r.channel }}</td>
         <td><span class="answer {{ r.answer | replace(' ', '-') }}">{{ r.answer }}</span></td>
         <td class="row-actions">

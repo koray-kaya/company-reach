@@ -9,9 +9,10 @@ from fastapi.testclient import TestClient
 from fictional_profile import profile_text
 from pydantic import SecretStr
 
+from company_reach.models import CompanyRecord
 from company_reach.review.app import create_app
 from company_reach.settings import Settings
-from company_reach.tools.db import connect, record_decision, suppress
+from company_reach.tools.db import connect, record_decision, suppress, upsert_companies
 
 SAME = {"Sec-Fetch-Site": "same-origin"}
 SURVEY = "https://survey.test"
@@ -45,6 +46,24 @@ def client(site: Settings) -> TestClient:
 def codes(settings: Settings) -> list[str]:
     with connect(settings.db_path) as conn:
         return [r["code"] for r in conn.execute("select code from invites")]
+
+
+def add_company(settings: Settings, uid=UID, name="Muster Stahlbau AG") -> None:
+    with connect(settings.db_path) as conn:
+        upsert_companies(
+            conn,
+            [
+                CompanyRecord(
+                    uid=uid,
+                    name=name,
+                    legal_form="0106",
+                    municipality="3203",
+                    purpose="Herstellung von Treppen.",
+                    purpose_head="Herstellung von Treppen.",
+                )
+            ],
+            "r1",
+        )
 
 
 def test_the_page_opens_empty_and_says_answers_need_the_password(client):
@@ -186,6 +205,47 @@ def test_an_answered_link_stays(client, site):
         )
     assert client.post(f"/contacts/{code}/remove", headers=SAME).status_code == 409
     assert codes(site) == [code]
+
+
+def test_the_new_link_box_shows_the_matched_register_number(client, site):
+    """Review Important 3b: whether the never-again list and the tool's
+    mails were actually checked must be visible, not silent."""
+    add_company(site)
+    client.post("/contacts", data=ANNA, headers=SAME)
+    (code,) = codes(site)
+    page = client.get(f"/contacts?new={code}").text
+    assert "Matched to CHE-000.000.046" in page
+
+
+def test_the_new_link_box_says_when_the_company_did_not_match(client, site):
+    client.post("/contacts", data=ANNA, headers=SAME)
+    (code,) = codes(site)
+    page = client.get(f"/contacts?new={code}").text
+    assert (
+        "Not found in the company pool: the never-again list and the tool's"
+        " mails were checked by name only" in page
+    )
+
+
+def test_the_company_field_hints_at_why_to_pick_from_the_list(client):
+    page = client.get("/contacts").text
+    assert (
+        "Pick a name from the list to check the never-again list and earlier"
+        " mails." in page
+    )
+
+
+def test_the_log_marks_a_personal_link_that_did_not_match_the_register(client, site):
+    client.post("/contacts", data=ANNA, headers=SAME)
+    page = client.get("/contacts").text
+    assert "not in pool" in page
+
+
+def test_the_log_does_not_mark_a_matched_personal_link(client, site):
+    add_company(site)
+    client.post("/contacts", data=ANNA, headers=SAME)
+    page = client.get("/contacts").text
+    assert "not in pool" not in page
 
 
 def test_the_front_page_leads_to_contacts(client):

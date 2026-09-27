@@ -130,6 +130,7 @@ class LogRow:
     company: str
     channel: str  # a CHANNELS label, or TOOL_MAIL
     tag: str  # what the survey stores with the answers: a code or a UID
+    uid: str | None  # the register number, when the company matched one
     link: str | None  # the German link, to copy again
     profile: str | None
     started: str | None
@@ -143,10 +144,28 @@ class LogRow:
         return "started" if self.started else "not yet"
 
 
+# the legal forms LinkedIn names most often drop; "AG in Liquidation" and
+# the like are out of scope
+_LEGAL_FORMS = ("GmbH", "Sàrl", "Sarl", "Sagl", "AG", "SA", "KG")
+_LEGAL_FORM = re.compile(
+    r"[\s,.\-]*\b(?:" + "|".join(_LEGAL_FORMS) + r")\.?\s*$", re.IGNORECASE
+)
+
+
+def _canonical_name(name: str) -> str:
+    """A company name stripped to what a person is likely to type: a
+    trailing legal form and the punctuation around it gone, case and
+    spacing aside. Python's casefold, not SQL's lower(), which leaves Ü
+    alone."""
+    bare = _LEGAL_FORM.sub("", " ".join(name.split()))
+    return " ".join(bare.split()).casefold()
+
+
 def _same_name(a: str, b: str) -> bool:
-    """Company names compared as a person types them: case and spacing
-    aside. Python's casefold, not SQL's lower(), which leaves Ü alone."""
-    return " ".join(a.split()).casefold() == " ".join(b.split()).casefold()
+    """Company names compared as a person types them: "Muster Stahlbau" and
+    "Muster Stahlbau AG" name the same company, since LinkedIn names often
+    drop the legal form."""
+    return _canonical_name(a) == _canonical_name(b)
 
 
 def _resolve_uid(conn: sqlite3.Connection, company: str, uid: str) -> str | None:
@@ -311,6 +330,7 @@ def contact_log(conn: sqlite3.Connection, survey_url: str | None) -> list[LogRow
             company=r["company"],
             channel=CHANNELS.get(r["channel"], r["channel"]),
             tag=r["code"],
+            uid=r["uid"],
             link=link(r["code"]),
             profile=r["profile"],
             started=r["started_at"],
@@ -329,6 +349,7 @@ def contact_log(conn: sqlite3.Connection, survey_url: str | None) -> list[LogRow
             company=r["company"] or r["uid"],
             channel=TOOL_MAIL,
             tag=r["uid"],
+            uid=r["uid"],
             link=link(r["uid"]),
             profile=None,
             started=r["started_at"],

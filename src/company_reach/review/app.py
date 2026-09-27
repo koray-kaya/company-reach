@@ -45,7 +45,7 @@ from company_reach.invites import (
     record_invite,
     remove_invite,
 )
-from company_reach.models import Contact
+from company_reach.models import Contact, dotted_uid
 from company_reach.nodes.check_draft import reassemble
 from company_reach.profile import load_profile
 from company_reach.responses import SurveyUnreachable, refresh_from_survey
@@ -285,6 +285,7 @@ def create_app(settings: Settings, *, jobs: Jobs | None = None) -> FastAPI:
                 "fetch_problem": fetch_problem,
                 "last_fetch": last_fetch,
                 "made": made,
+                "matched_uid": dotted_uid(made.uid) if made and made.uid else None,
                 "links": links,
                 "form": form or NewInvite(person="", company=""),
                 "error": error,

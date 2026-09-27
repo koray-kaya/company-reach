@@ -142,6 +142,26 @@ def test_the_company_number_is_found_by_its_exact_name(db):
     assert uid == UID
 
 
+def test_the_company_number_is_found_without_its_legal_form(db):
+    """Review Important 3a: LinkedIn names often drop the legal form, so
+    "Muster Stahlbau" must still resolve to the pooled "Muster Stahlbau
+    AG"."""
+    with connect(db) as conn:
+        add_company(conn)
+        uid, _ = check(conn, anna(company="Muster Stahlbau"))
+    assert uid == UID
+
+
+def test_a_suppressed_company_without_its_legal_form_gets_no_link(db):
+    """The never-again check must not be skippable just by typing the name
+    without "AG"."""
+    with connect(db) as conn:
+        add_company(conn)
+        suppress(conn, UID, reason="never")
+        with pytest.raises(InviteError, match="never-again"):
+            check(conn, anna(company="Muster Stahlbau"))
+
+
 def test_two_companies_of_one_name_give_no_number(db):
     with connect(db) as conn:
         add_company(conn)
@@ -186,6 +206,16 @@ def test_a_second_person_at_the_company_is_asked_about(db):
     with connect(db) as conn:
         record_invite(conn, anna(), uid=None)
         _, notes = check(conn, anna(person="Beat Beispiel", profile=""))
+    assert len(notes) == 1
+    assert notes[0].startswith("Anna Muster at this company got a personal link on ")
+
+
+def test_an_earlier_personal_link_is_recognised_without_the_legal_form(db):
+    with connect(db) as conn:
+        record_invite(conn, anna(company="Muster Stahlbau AG"), uid=None)
+        _, notes = check(
+            conn, anna(person="Beat Beispiel", company="Muster Stahlbau", profile="")
+        )
     assert len(notes) == 1
     assert notes[0].startswith("Anna Muster at this company got a personal link on ")
 
