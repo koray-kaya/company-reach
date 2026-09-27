@@ -320,6 +320,23 @@ def test_the_survey_hands_over_its_tags():
         (httpx.Response(500), "answered 500"),
         (httpx.Response(200, json={"rows": []}), "not a list of tags"),
         (httpx.ConnectError("down"), "Could not reach the survey"),
+        # Important 2: a malformed answer must not crash with an
+        # AttributeError or KeyError instead of being reported as malformed
+        (
+            httpx.Response(
+                200,
+                json={"tags": [{"tag": "P-7K3Q9X", "started_at": 20261003}]},
+            ),
+            "not a list of tags",
+        ),
+        (
+            httpx.Response(200, json={"tags": [{"tag": None}]}),
+            "not a list of tags",
+        ),
+        (
+            httpx.Response(200, json={"tags": [{"tag": ""}]}),
+            "not a list of tags",
+        ),
     ],
 )
 def test_a_survey_that_cannot_answer_says_why(answer, words):
@@ -337,3 +354,42 @@ def test_a_failed_fetch_keeps_the_last_answers(db, tmp_path):
             refresh_from_survey(conn, "https://survey.test", "a-long-password")
         kept = conn.execute("select count(*) from responses").fetchone()[0]
     assert kept == 1
+
+
+@respx.mock
+def test_a_malformed_time_leaves_the_table_untouched(db, tmp_path):
+    """Review Important 2: a `started_at` that is not a string or null (a
+    number, here) used to raise AttributeError inside `_when`, escaping the
+    `except` tuple and crashing the Contacts page with a 500."""
+    respx.get(TAGS).mock(
+        return_value=httpx.Response(
+            200,
+            json={"tags": [{"tag": "P-7K3Q9X", "started_at": 20261003}]},
+        )
+    )
+    with connect(db) as conn:
+        import_responses(conn, export(tmp_path, "OLD,2026-10-01,"))
+        with pytest.raises(SurveyUnreachable, match="not a list of tags"):
+            refresh_from_survey(conn, "https://survey.test", "a-long-password")
+        kept = [r["uid"] for r in conn.execute("select uid from responses")]
+    assert kept == ["OLD"]
+
+
+@respx.mock
+def test_a_malformed_url_is_reported_as_unreachable_not_raised_raw():
+    """`httpx.InvalidURL` is not a subclass of `httpx.HTTPError`, so a
+    malformed survey_url used to escape `fetch_tags` unhandled."""
+    with pytest.raises(SurveyUnreachable, match="Could not reach the survey"):
+        fetch_tags("https://survey.test:abc/form", "a-long-password")
+
+
+@respx.mock
+def test_an_empty_tag_list_is_the_one_case_where_nobody_answered(db, tmp_path):
+    """The only case where an empty table is the true answer, not a fetch
+    that could not look."""
+    respx.get(TAGS).mock(return_value=httpx.Response(200, json={"tags": []}))
+    with connect(db) as conn:
+        import_responses(conn, export(tmp_path, "OLD,2026-10-01,"))
+        refresh_from_survey(conn, "https://survey.test", "a-long-password")
+        left = conn.execute("select count(*) from responses").fetchone()[0]
+    assert left == 0

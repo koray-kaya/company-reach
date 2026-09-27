@@ -54,7 +54,7 @@ _MATCHED = f"(uid in {_MAILED_UIDS} or uid in (select code from invites))"
 @dataclass(frozen=True)
 class ImportReport:
     rows: int  # distinct UIDs in the export
-    matched: int  # of them, with a 'sent' row in the ledger
+    matched: int  # of them, with a 'sent' row in the ledger or a personal link
 
 
 class SurveyUnreachable(CompanyReachError):
@@ -163,7 +163,7 @@ def fetch_tags(
     url = urlsplit(survey_url)._replace(path=TAGS_PATH, query="", fragment="").geturl()
     try:
         response = httpx.get(url, auth=("company-reach", password), timeout=5.0)
-    except httpx.HTTPError as error:
+    except (httpx.HTTPError, httpx.InvalidURL) as error:
         raise SurveyUnreachable(
             f"Could not reach the survey ({type(error).__name__})."
         ) from error
@@ -177,18 +177,29 @@ def fetch_tags(
             f"The survey answered {response.status_code} at {TAGS_PATH}."
         )
     try:
-        return [
-            (
-                str(item["tag"]),
-                _when(item.get("started_at") or "", f"tag {n}"),
-                _when(item.get("completed_at") or "", f"tag {n}"),
-            )
-            for n, item in enumerate(response.json()["tags"], start=1)
-        ]
+        items = response.json()["tags"]
+        return [_tag_row(item, n) for n, item in enumerate(items, start=1)]
     except (ValueError, KeyError, TypeError, CompanyReachError) as error:
         raise SurveyUnreachable(
             f"The survey's answer was not a list of tags ({error})."
         ) from error
+
+
+def _tag_row(item: dict, n: int) -> tuple[str, str | None, str | None]:
+    """One tag from the survey's answer, checked before it is trusted: a
+    `started_at`/`completed_at` that is not a string or null raises
+    AttributeError inside `_when` otherwise, and a null or non-string tag
+    would silently become the text "None" or crash a lookup downstream."""
+    tag = item["tag"]
+    if not isinstance(tag, str) or not tag.strip():
+        raise ValueError(f"tag {n} is not a non-empty string: {tag!r}")
+    times = {}
+    for key in _TIME_COLUMNS:
+        value = item.get(key)
+        if value is not None and not isinstance(value, str):
+            raise ValueError(f"tag {n} {key} is not a string or null: {value!r}")
+        times[key] = _when(value or "", f"tag {n}")
+    return tag, times["started_at"], times["completed_at"]
 
 
 def refresh_from_survey(
