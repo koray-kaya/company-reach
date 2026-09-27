@@ -13,7 +13,14 @@ from pathlib import Path
 import pytest
 from review_seed import SEND, SKIP, seed
 
-from company_reach.forget import forget
+from company_reach.forget import forget, purge
+from company_reach.invites import (
+    InviteError,
+    NewInvite,
+    check,
+    invite_for,
+    record_invite,
+)
 from company_reach.tools.db import connect, is_suppressed, record_decision
 
 NAME = "Anna Muster"
@@ -451,3 +458,79 @@ def test_an_unknown_address_forgotten_twice_still_exits_2(settings, data, monkey
     assert "already on the never-again list since" in second.output
     assert "no company found" in second.output
     assert "company-reach forget CHE" in second.output
+
+
+# --- forget and purge reach personal links (#68) ------------------------------
+
+PROFILE = "linkedin.com/in/anna-beispiel"
+
+
+def linked(settings, *, uid=None, created_at=None) -> str:
+    with connect(settings.db_path) as conn:
+        made = record_invite(
+            conn,
+            NewInvite(
+                person="Anna Beispiel",
+                company="Beispiel AG",
+                profile=PROFILE,
+                note="fair",
+            ),
+            uid=uid,
+        )
+        if created_at:
+            conn.execute(
+                "update invites set created_at = ? where code = ?",
+                (created_at, made.code),
+            )
+    return made.code
+
+
+def test_a_personal_code_forgets_the_person_and_keeps_the_contact(settings, data):
+    code = linked(settings)
+    report = forget(settings, f"https://survey.test/?c={code}&l=de")
+    assert (report.by_code, report.unknown) == (True, False)
+    with connect(settings.db_path) as conn:
+        kept = invite_for(conn, code)
+    assert (kept.person, kept.profile, kept.note) == (None, None, None)
+    assert kept.company == "Beispiel AG"
+    assert PROFILE in suppression_keys(settings)
+    assert "Anna Beispiel" not in everything_under(settings.data_dir)
+
+
+def test_a_forgotten_profile_cannot_get_a_new_link(settings, data):
+    forget(settings, linked(settings))
+    with (
+        connect(settings.db_path) as conn,
+        pytest.raises(InviteError, match="forgotten"),
+    ):
+        check(
+            conn,
+            NewInvite(person="Anna Beispiel", company="Beispiel AG", profile=PROFILE),
+        )
+
+
+def test_an_unknown_code_deletes_and_suppresses_nothing(settings, data, monkeypatch):
+    r = forget_cli(settings, monkeypatch, "P-7K3Q9X")
+    assert r.exit_code == 2, r.output
+    assert "No personal link has the code P-7K3Q9X" in r.output
+    assert suppression_keys(settings) == set()
+
+
+def test_forgetting_a_company_forgets_its_personal_links(settings, data):
+    code = linked(settings, uid=SEND)
+    forget(settings, SEND)
+    with connect(settings.db_path) as conn:
+        assert invite_for(conn, code).person is None
+    assert PROFILE in suppression_keys(settings)
+
+
+def test_purge_clears_old_links_and_keeps_new_ones(settings, data):
+    old = linked(settings, created_at="2025-01-01T09:00:00+00:00")
+    with connect(settings.db_path) as conn:
+        new = record_invite(
+            conn, NewInvite(person="Beat Beispiel", company="Beispiel AG"), uid=None
+        ).code
+    purge(settings, older_than_days=365, today="2026-09-27")
+    with connect(settings.db_path) as conn:
+        assert invite_for(conn, old).person is None
+        assert invite_for(conn, new).person == "Beat Beispiel"

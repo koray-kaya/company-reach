@@ -675,8 +675,8 @@ def forget(
     key: Annotated[
         str,
         typer.Argument(
-            help="A company's UID, a person's address, or the invitation's"
-            " survey link (its c= UID)."
+            help="A company's UID, a person's address, a personal link's"
+            " code (P-…), or the survey link (its c=)."
         ),
     ],
 ) -> None:
@@ -712,6 +712,13 @@ def forget(
                 f"{report.key} was already on the never-again list {report.already}.",
                 err=True,
             )
+        if report.by_code:
+            typer.echo(
+                f"No personal link has the code {report.key}, so nothing was"
+                " deleted. Check the code on the Contacts page.",
+                err=True,
+            )
+            raise typer.Exit(2)
         if report.by_uid:
             typer.echo(
                 f"No record of {report.key} in the database, so nothing was"
