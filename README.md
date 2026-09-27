@@ -145,14 +145,23 @@ uv run company-reach report                        # counts per arm and kind
 
 `report` prints sent, bounced, never, started and completed invitations per
 frame, length arm (`[invitation] experiment`) and kind of contact, each rate
-with its 95% interval. It prints counts only, no names.
+with its 95% interval. It prints counts only, no names. The survey deletes a
+response that is not finished within seven days, so a start the page showed
+can later read as "not yet".
+
+**Contacts.** `/contacts` makes a personal link for someone reached by hand
+(LinkedIn, phone): type the person, the company and the channel, copy the
+German or English link. The page lists everyone contacted, the tool's mails
+too, and shows who started or completed the survey; set
+`FORM_ADMIN_PASSWORD` in `.env` for that.
 
 ## Personal data
 
 The tool handles real people's names and addresses. [PRIVACY.md](PRIVACY.md)
 says what it collects, where it keeps it and where it sends it — above all,
-the model endpoint you choose receives the page text it reads. Two commands
-delete: `company-reach forget <uid|email|survey link>` on request, and
+the model endpoint you choose receives the page text it reads. A name lives
+in `contacts`, `profiles` and `invites`. Two commands delete:
+`company-reach forget <uid|email|survey link>` on request, and
 `company-reach purge --older-than 365` for data nobody has touched for a
 year.
 
