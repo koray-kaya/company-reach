@@ -278,11 +278,6 @@ def _delete_rows(
     conn.execute(f"update ledger set subject = null where uid in ({marks})", uids)
     if clear_ledger_addresses:
         conn.execute(f"update ledger set address = null where uid in ({marks})", uids)
-    codes = [
-        r["code"]
-        for r in conn.execute(f"select code from invites where uid in ({marks})", uids)
-    ]
-    deleted += clear_people(conn, codes)
     for row in conn.execute("select url from pages").fetchall():
         if registered_domain(row["url"]) in domains:
             deleted += conn.execute(
@@ -407,9 +402,18 @@ def forget(settings: Settings, key: str) -> Report:
                     uids,
                 )
             ]
+            # forgetting a company must still clear its personal links,
+            # whatever their own age (Important 1: `purge` clears links by
+            # their own `created_at` instead, in `old_links`)
+            codes = [
+                r["code"]
+                for r in conn.execute(
+                    f"select code from invites where uid in ({marks})", uids
+                )
+            ]
             report.rows_deleted = _delete_rows(
                 conn, uids, domains, reason="forgotten", clear_ledger_addresses=True
-            )
+            ) + clear_people(conn, codes)
         for uid in uids:
             suppress(conn, uid, reason="forgotten on request")
         report.suppressed = list(uids)

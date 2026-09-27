@@ -534,3 +534,20 @@ def test_purge_clears_old_links_and_keeps_new_ones(settings, data):
     with connect(settings.db_path) as conn:
         assert invite_for(conn, old).person is None
         assert invite_for(conn, new).person == "Beat Beispiel"
+
+
+def test_purge_keeps_the_person_on_a_link_made_today(settings, data):
+    """Important 1: `stale_uids` counts SKIP as untouched for over a year —
+    it has only a failed search from the seed's 2026-09-24 run — but a link
+    made today at that company is a fresh contact. Only the link's own age
+    (`created_at`, already checked separately by `purge`) may decide, not
+    the company's."""
+    code = linked(settings, uid=SKIP)  # created_at defaults to now()
+    purge(settings, older_than_days=1, today="2026-09-26")
+    with connect(settings.db_path) as conn:
+        kept = invite_for(conn, code)
+    assert kept.person == "Anna Beispiel"
+    # forgetting the company on request must still clear its links (unchanged)
+    forget(settings, SKIP)
+    with connect(settings.db_path) as conn:
+        assert invite_for(conn, code).person is None
