@@ -222,7 +222,32 @@ def test_the_commands_import_and_report(settings, monkeypatch, tmp_path):
     assert "frame@1" in r.output
     assert "voll" in r.output and "kurz" in r.output
     assert "100.0% [20.7–100.0]" in r.output  # 1 of 1 started, Wilson 95%
-    assert "responses without a sent invitation: 1" in r.output
+    # Important 4: relabelled to what it actually counts
+    assert "responses with no mail and no personal link: 1" in r.output
+
+
+def test_a_personal_links_answer_gets_its_own_line_in_report(
+    settings, monkeypatch, tmp_path
+):
+    """Review Important 4: an answer through a personal link is in neither
+    the per-arm groups (built from the ledger's mails) nor "no mail and no
+    personal link" (it is matched) — without its own line it simply vanished
+    from the report."""
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    init_db(settings.db_path)
+    with connect(settings.db_path) as conn:
+        sent(conn, A)
+        made = record_invite(
+            conn, NewInvite(person="Beat Beispiel", company="Muster AG"), uid=None
+        )
+    path = export(tmp_path, f"{A},2026-10-03,2026-10-03", f"{made.code},2026-10-02,")
+    r = runner.invoke(cli.app, ["responses", "import", str(path)])
+    assert r.exit_code == 0, r.output
+
+    r = runner.invoke(cli.app, ["report"])
+    assert r.exit_code == 0, r.output
+    assert "responses with no mail and no personal link: 0" in r.output
+    assert "through a personal link: 1" in r.output
 
 
 def test_a_bounce_counts_until_another_address_is_written_to(db, tmp_path):

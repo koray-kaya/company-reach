@@ -276,6 +276,16 @@ def report_rows(
     return groups, unmatched
 
 
+def personal_link_answers(conn: sqlite3.Connection) -> int:
+    """Responses through a personal link: matched (they are in `_MATCHED`),
+    but to no company mailed by the tool, so they belong in neither a
+    frame's arm group nor `report_rows`'s count of responses with no
+    invitation at all — this is `report`'s own line for them."""
+    return conn.execute(
+        "select count(*) from responses where uid in (select code from invites)"
+    ).fetchone()[0]
+
+
 def wilson(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
     """The Wilson score interval for k successes in n: unlike p ± z·se it
     stays inside [0, 1] and is honest for small n and rates near zero."""
