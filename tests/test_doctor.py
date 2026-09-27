@@ -187,6 +187,48 @@ async def test_retention_reports_what_a_purge_would_remove(settings):
     assert "365 days" in retention.detail
 
 
+def test_retention_also_counts_old_personal_links(settings):
+    """Review minor: `stale_uids` only looks at companies, so an old
+    personal link tied to no company (or to one still touched recently)
+    used to be invisible here, and doctor said "nothing older than 365
+    days" while it still held a name."""
+    from company_reach.invites import NewInvite, record_invite
+    from company_reach.tools.db import connect, init_db
+
+    init_db(settings.db_path)
+    with connect(settings.db_path) as conn:
+        made = record_invite(
+            conn, NewInvite(person="Anna Muster", company="Muster AG"), uid=None
+        )
+        old = (date.today() - timedelta(days=400)).isoformat()
+        conn.execute(
+            "update invites set created_at = ? where code = ?", (old, made.code)
+        )
+    check = doctor._retention_check(settings)
+    assert check.ok
+    assert "1 personal link" in check.detail
+
+
+def test_retention_says_nothing_older_only_when_nothing_holds_a_name(settings):
+    from company_reach.invites import NewInvite, record_invite
+    from company_reach.tools.db import connect, init_db
+
+    init_db(settings.db_path)
+    with connect(settings.db_path) as conn:
+        made = record_invite(
+            conn, NewInvite(person="Anna Muster", company="Muster AG"), uid=None
+        )
+        old = (date.today() - timedelta(days=400)).isoformat()
+        conn.execute(
+            "update invites set created_at = ?, person = null, profile = null,"
+            " note = null where code = ?",
+            (old, made.code),
+        )
+    check = doctor._retention_check(settings)
+    assert check.ok
+    assert "nothing older than 365 days" in check.detail
+
+
 @respx.mock
 async def test_a_missing_baseline_engine_fails(settings):
     """Round-1 live run: mojeek and startpage were inactive in the pinned

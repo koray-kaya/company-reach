@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Contacts · company-reach</title>
+<link rel="stylesheet" href="/static/review.css">
+</head>
+<body class="home">
+<main>
+  <p><a href="/">← company-reach</a></p>
+  <h1>Contacts</h1>
+  {% if done %}<p class="done-note">{{ done }}.</p>{% endif %}
+  {% if problem %}<p class="gate">{{ problem }}</p>{% endif %}
+
+  {% if made %}
+  <section id="new" class="made">
+    <p class="label">New link</p>
+    <p><strong>{{ made.person }}</strong> · {{ made.company }} · {{ channels[made.channel] }}</p>
+    {% if matched_uid %}
+    <p class="hint">Matched to {{ matched_uid }}</p>
+    {% else %}
+    <p class="hint">Not found in the company pool: the never-again list and the tool's mails were checked by name only</p>
+    {% endif %}
+    {% for lang, link in links.items() %}
+    <div class="linkrow"><span class="lang">{{ lang }}</span><code>{{ link }}</code><button type="button" class="small" data-copy="{{ link }}">Copy</button></div>
+    {% endfor %}
+    <p class="hint">Recorded: nothing to note down. On LinkedIn, send the link once the person has accepted your request.</p>
+  </section>
+  {% endif %}
+
+  <section>
+    <p class="label">New personal link</p>
+    {% if error %}<p class="gate" role="alert">{{ error }}</p>{% endif %}
+    {% if notes %}
+    <div class="gate" role="alert">
+      <p><strong>Contacted before:</strong></p>
+      <ul>{% for n in notes %}<li>{{ n }}</li>{% endfor %}</ul>
+    </div>
+    {% endif %}
+    <form method="post" action="/contacts" class="fields">
+      <label>Person<input name="person" value="{{ form.person }}" required maxlength="120" autocomplete="off"></label>
+      <label>Company<input name="company" value="{{ form.company }}" required maxlength="200" list="companies" autocomplete="off"><span class="hint">Pick a name from the list to check the never-again list and earlier mails.</span></label>
+      <label>Company number <span class="opt">optional</span><input name="uid" value="{{ form.uid }}" placeholder="CHE-123.456.789" autocomplete="off"></label>
+      <label>Channel<select name="channel">{% for key, label in channels.items() %}<option value="{{ key }}"{% if key == form.channel %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+      <label>Profile link <span class="opt">optional</span><input name="profile" value="{{ form.profile }}" placeholder="linkedin.com/in/…" maxlength="300" autocomplete="off"></label>
+      <label class="wide">Note <span class="opt">optional</span><input name="note" value="{{ form.note }}" maxlength="500" autocomplete="off"></label>
+      <div class="wide">
+        {% if notes %}
+        <input type="hidden" name="confirm" value="yes">
+        <button class="primary">Make the link anyway</button> <a href="/contacts">Cancel</a>
+        {% else %}
+        <button class="primary" {% if problem %}disabled{% endif %}>Make the link</button>
+        {% endif %}
+      </div>
+    </form>
+    <datalist id="companies">{% for name in companies %}<option value="{{ name }}">{% endfor %}</datalist>
+  </section>
+
+  <section>
+    <p class="label">Everyone contacted</p>
+    <p class="round-summary"><strong>{{ log | length }} contacted</strong> · {{ started }} started · {{ completed }} completed</p>
+    {% if fetch_problem %}
+    <p class="gate">{{ fetch_problem }} The answers below are from {{ (last_fetch or "no earlier fetch")[:16] | replace("T", " ") }}.</p>
+    {% elif fetched_now %}
+    <p class="hint">Answers fetched from the survey just now.</p>
+    {% elif not can_fetch %}
+    <p class="hint">Answers are not fetched yet: set <code>FORM_ADMIN_PASSWORD</code> in <code>.env</code> (the survey's admin password) and start the page again.</p>
+    {% endif %}
+    {% if log %}
+    <div class="table-wrap">
+    <table class="log-table">
+      <tr><th>date</th><th>person</th><th>company</th><th>channel</th><th>answer</th><th></th></tr>
+      {% for r in log %}
+      <tr>
+        <td>{{ r.when[:10] }}</td>
+        <td>{% if r.profile %}<a href="https://{{ r.profile }}" target="_blank" rel="noopener">{{ r.person or "(forgotten)" }}</a>{% else %}{{ r.person or "–" }}{% endif %}</td>
+        <td>{{ r.company }}{% if not r.uid %} <span class="opt">not in pool</span>{% endif %}</td>
+        <td>{{ r.channel }}</td>
+        <td><span class="answer {{ r.answer | replace(' ', '-') }}">{{ r.answer }}</span></td>
+        <td class="row-actions">
+          {% if r.link %}<button type="button" class="small" data-copy="{{ r.link }}" title="{{ r.link }}">Copy link</button>{% endif %}
+          {% if r.removable %}<form method="post" action="/contacts/{{ r.tag }}/remove"><button class="small" data-confirm="Remove this link? Only if you have not sent it.">Remove</button></form>{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </table>
+    </div>
+    {% else %}
+    <p class="empty">Nobody contacted yet.</p>
+    {% endif %}
+  </section>
+</main>
+<script src="/static/review.js"></script>
+</body>
+</html>

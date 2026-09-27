@@ -675,8 +675,8 @@ def forget(
     key: Annotated[
         str,
         typer.Argument(
-            help="A company's UID, a person's address, or the invitation's"
-            " survey link (its c= UID)."
+            help="A company's UID, a person's address, a personal link's"
+            " code (P-…), or the survey link (its c=)."
         ),
     ],
 ) -> None:
@@ -712,6 +712,14 @@ def forget(
                 f"{report.key} was already on the never-again list {report.already}.",
                 err=True,
             )
+        if report.by_code:
+            typer.echo(
+                f"No personal link has the code {report.key}, so nothing was"
+                " deleted. Copy the link on the Contacts page and paste it"
+                " here instead.",
+                err=True,
+            )
+            raise typer.Exit(2)
         if report.by_uid:
             typer.echo(
                 f"No record of {report.key} in the database, so nothing was"
@@ -937,8 +945,9 @@ def responses_import(
     export: Annotated[
         Path,
         typer.Argument(
-            help="The survey's CSV export: columns uid, started_at, completed_at "
-            "(ISO dates or times; completed_at may be empty)."
+            help="The survey's CSV export: a uid (or company_uid) column, "
+            "started_at, completed_at (ISO dates or times; completed_at may be "
+            "empty)."
         ),
     ],
 ) -> None:
@@ -953,8 +962,8 @@ def responses_import(
         typer.echo(str(error), err=True)
         raise typer.Exit(1) from error
     typer.echo(
-        f"{report.rows} responses · {report.matched} matched to a sent invitation"
-        f" · {report.rows - report.matched} without one"
+        f"{report.rows} responses · {report.matched} matched to a sent mail or a"
+        f" personal link · {report.rows - report.matched} without one"
     )
 
 
@@ -966,11 +975,12 @@ def report(
 ) -> None:
     """Sent, bounced, never, started and completed, per frame, A/B arm and
     kind of contact, with Wilson 95% intervals. Counts only; nobody named."""
-    from company_reach.responses import rate, report_rows
+    from company_reach.responses import personal_link_answers, rate, report_rows
 
     s = get_settings()
     with connect(s.db_path) as conn:
         groups, unmatched = report_rows(conn, within_days=within)
+        personal = personal_link_answers(conn)
     if not groups:
         typer.echo("no invitation has been sent yet")
         return
@@ -986,7 +996,8 @@ def report(
             f"{g.started:>3} {rate(g.started, g.delivered):<26}"
             f"{g.completed:>3} {rate(g.completed, g.delivered)}"
         )
-    typer.echo(f"responses without a sent invitation: {unmatched}")
+    typer.echo(f"responses with no mail and no personal link: {unmatched}")
+    typer.echo(f"through a personal link: {personal}")
 
 
 def _resume(rid: str, goal: str | None, seed: int, target: int) -> str:

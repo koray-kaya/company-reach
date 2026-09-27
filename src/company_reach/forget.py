@@ -19,6 +19,11 @@ digit is checked, and anything else is refused before anything happens):
 * compacts the database, since SQLite keeps deleted rows in free pages until
   it is vacuumed, and a grep of `data/` must find nothing (`audit:256`).
 
+A personal link's code (`P-…`, typed or as the `c=` of a pasted link)
+forgets the one person it was made for: their name, profile and note go
+from `invites`, the profile joins the never-again list, and the row stays,
+so the company still counts as contacted.
+
 An address is looked up wherever the tool kept one: the contact and every
 address its card offered, the persons a profile names, and the ledger —
 after a purge the only place left. A reply usually comes from the person's
@@ -39,7 +44,8 @@ nobody has touched for a year (#27, decided with Koray) — drawn a year ago,
 or never drawn (`enrich --uid`, an evaluation) and last written a year ago.
 It suppresses nobody, and it leaves the ledger whole but for a sent row's
 subject — a `sent` row keeps its address as the record of what was sent and
-the key to a later deletion request.
+the key to a later deletion request. Personal links older than the cutoff
+lose their person, profile and note the same way.
 """
 
 import codecs
@@ -52,6 +58,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from company_reach.errors import CompanyReachError
+from company_reach.invites import clear_people, code_in
 from company_reach.models import CompanyProfile
 from company_reach.settings import Settings
 from company_reach.tools.db import connect, suppress, suppression_for
@@ -83,7 +90,7 @@ _NO_COMPANY = "forgotten on request; no company found"
 # every table that holds a row about a company, by its uid
 _UID_TABLES = (
     *("companies", "scores", "seen", "results", "ledger", "contacts"),
-    *("profiles", "drafts", "sites", "searches", "responses"),
+    *("profiles", "drafts", "sites", "searches", "responses", "invites"),
 )
 
 
@@ -91,6 +98,7 @@ _UID_TABLES = (
 class Report:
     key: str = ""  # what the request named, as parsed: a UID or an address
     by_uid: bool = False
+    by_code: bool = False
     companies: list[str] = field(default_factory=list)
     suppressed: list[str] = field(default_factory=list)
     rows_deleted: int = 0
@@ -125,8 +133,8 @@ def parse_key(key: str) -> tuple[bool, str]:
     if not from_link and "@" in text and not any(c.isspace() for c in text):
         return False, text
     raise CompanyReachError(
-        f"{key.strip()!r} is neither a UID (CHE…), an e-mail address nor a survey"
-        " link with ?c=CHE…. Nothing was forgotten."
+        f"{key.strip()!r} is neither a UID (CHE…), a personal code (P-…), an"
+        " e-mail address nor a survey link with ?c=…. Nothing was forgotten."
     )
 
 
@@ -199,7 +207,37 @@ def _names(conn: sqlite3.Connection, uids: list[str]) -> set[str]:
         profile = CompanyProfile.model_validate_json(row["profile"])
         names.update(p.name for p in profile.persons)
         names.update(p.email for p in profile.persons if p.email)
+    for row in conn.execute(
+        f"select person, profile from invites where uid in ({marks})", uids
+    ):
+        names.update(n for n in (row["person"], row["profile"]) if n)
     return {n for n in names if n.strip()}
+
+
+def _invite_codes_by_profile(conn: sqlite3.Connection, key: str) -> list[str]:
+    """Personal links whose Profile field is this address: the E-mail
+    channel puts the address there, not a real profile, so an address
+    request must clear them too, whether or not a company matched."""
+    return [
+        r["code"]
+        for r in conn.execute(
+            "select code from invites where address_key(profile) = ?", (key,)
+        )
+    ]
+
+
+def _names_for_codes(conn: sqlite3.Connection, codes: list[str]) -> set[str]:
+    """The people named by these personal links, before they are cleared."""
+    if not codes:
+        return set()
+    marks = ",".join("?" * len(codes))
+    return {
+        r["person"]
+        for r in conn.execute(
+            f"select person from invites where code in ({marks})", codes
+        )
+        if r["person"]
+    }
 
 
 _ON_SITE = ("seen", "generic", "constructed")
@@ -362,6 +400,8 @@ def _still_named(
 def forget(settings: Settings, key: str) -> Report:
     """Raises `CompanyReachError`, before touching anything, when `key` is
     neither a valid UID, an address nor a survey link carrying one."""
+    if code := code_in(key):
+        return _forget_link(settings, code)
     by_uid, key = parse_key(key)
     report = Report(key=key if by_uid else address_key(key), by_uid=by_uid)
     with connect(settings.db_path) as conn:
@@ -372,16 +412,42 @@ def forget(settings: Settings, key: str) -> Report:
         # the key itself goes on the list when it is an address, or a UID
         # no table holds; a company found is suppressed by its uid below
         keys = [] if by_uid and uids else [report.key]
+        # the E-mail channel puts the address itself in a link's Profile
+        # field (`profile_key` of `anna@x.ch` is `anna@x.ch`), so an address
+        # request must reach it even when no company matches at all
+        linked_codes = (
+            _invite_codes_by_profile(conn, address_key(key)) if not by_uid else []
+        )
         if not by_uid:
             names.update({key.lower(), address_key(key)})
+            names.update(_names_for_codes(conn, linked_codes))
         domains = _domains(conn, uids) if uids else set()
         if uids:
             mailed = _mailed_addresses(conn, uids)
             keys += mailed
             names.update(mailed)
+            marks = ",".join("?" * len(uids))
+            keys += [
+                r["profile"]
+                for r in conn.execute(
+                    f"select profile from invites where uid in ({marks})"
+                    " and profile is not null",
+                    uids,
+                )
+            ]
+            # forgetting a company must still clear its personal links,
+            # whatever their own age (Important 1: `purge` clears links by
+            # their own `created_at` instead, in `old_links`)
+            codes = [
+                r["code"]
+                for r in conn.execute(
+                    f"select code from invites where uid in ({marks})", uids
+                )
+            ]
             report.rows_deleted = _delete_rows(
                 conn, uids, domains, reason="forgotten", clear_ledger_addresses=True
-            )
+            ) + clear_people(conn, codes)
+        report.rows_deleted += clear_people(conn, linked_codes)
         for uid in uids:
             suppress(conn, uid, reason="forgotten on request")
         report.suppressed = list(uids)
@@ -394,6 +460,33 @@ def forget(settings: Settings, key: str) -> Report:
     report.unknown = not uids
     report.companies = uids
     report.cache_files_deleted = _delete_cache(settings.data_dir / "cache", domains)
+    _compact(settings.db_path)
+    report.still_named, report.not_searched = _still_named(
+        settings.data_dir, names, db_path=settings.db_path
+    )
+    return report
+
+
+def _forget_link(settings: Settings, code: str) -> Report:
+    """The one person a personal link was made for. An unknown code
+    suppresses nothing: it names nobody the tool knows."""
+    report = Report(key=code, by_code=True)
+    with connect(settings.db_path) as conn:
+        row = conn.execute(
+            "select person, profile, uid from invites where code = ?", (code,)
+        ).fetchone()
+        if row is None:
+            report.unknown = True
+            return report
+        names = {n for n in (row["person"], row["profile"]) if n}
+        if row["profile"]:
+            suppress(conn, row["profile"], reason="forgotten on request")
+            report.suppressed.append(row["profile"])
+        report.rows_deleted = clear_people(conn, [code])
+        # the company itself is neither forgotten nor suppressed by a
+        # personal link's code: it stays in the pool, so it does not belong
+        # in the "N companies" the CLI prints
+        report.companies = []
     _compact(settings.db_path)
     report.still_named, report.not_searched = _still_named(
         settings.data_dir, names, db_path=settings.db_path
@@ -435,14 +528,22 @@ def purge(
     day = date.fromisoformat(today) if today else date.today()
     cutoff = (day - timedelta(days=older_than_days)).isoformat()
     with connect(settings.db_path) as conn:
+        old_links = [
+            r["code"]
+            for r in conn.execute(
+                "select code from invites where created_at < ?", (cutoff,)
+            )
+        ]
+        report.rows_deleted = clear_people(conn, old_links)
         uids = stale_uids(conn, cutoff=cutoff)
-        if not uids:
-            return report
-        domains = _domains(conn, uids)
-        report.rows_deleted = _delete_rows(
-            conn, uids, domains, reason="purged", clear_ledger_addresses=False
-        )
+        domains = _domains(conn, uids) if uids else set()
+        if uids:
+            report.rows_deleted += _delete_rows(
+                conn, uids, domains, reason="purged", clear_ledger_addresses=False
+            )
+    if not uids and not report.rows_deleted:
+        return report
     report.companies = uids
     report.cache_files_deleted = _delete_cache(settings.data_dir / "cache", domains)
-    _compact(settings.db_path)
+    _compact(settings.db_path)  # after the with block: VACUUM needs no open transaction
     return report

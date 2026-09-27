@@ -52,6 +52,22 @@
     });
   }
 
+  // Contacts page: a button that copies its link (the new link is also on
+  // screen as text, to select by hand), and a removal that asks first.
+  document.querySelectorAll("[data-copy]").forEach(function (button) {
+    button.addEventListener("click", function () {
+      if (!navigator.clipboard) return;
+      navigator.clipboard.writeText(button.getAttribute("data-copy")).then(function () {
+        button.textContent = "Copied";
+      });
+    });
+  });
+  document.querySelectorAll("[data-confirm]").forEach(function (button) {
+    button.addEventListener("click", function (e) {
+      if (!confirm(button.getAttribute("data-confirm"))) e.preventDefault();
+    });
+  });
+
   document.addEventListener("keydown", function (e) {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     var t = e.target;

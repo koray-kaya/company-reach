@@ -172,3 +172,23 @@ body.home{overflow:auto}
 .home table.stages tr.bad .stage{color:var(--warn-ink)}
 .home table.stages tr.done .stage,.home table.stages tr.wait .stage{color:var(--muted);font-weight:400}
 .home details.output{margin-top:12px} .home details.output summary{cursor:pointer;color:var(--muted);font-size:13px;margin-bottom:8px}
+
+/* contacts page (#68) */
+.home form.fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;align-items:end}
+.home form.fields label{display:flex;flex-direction:column;gap:4px;font-size:13px;color:var(--muted)}
+.home form.fields .wide{grid-column:1 / -1}
+.home form.fields input,.home form.fields select{width:100%}
+.home select{font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--ink)}
+.home .opt{font-size:12px;color:var(--faint)}
+.home .made{padding:16px;border-radius:10px;background:var(--tint);color:var(--tint-ink);display:flex;flex-direction:column;gap:8px}
+.home .linkrow{display:flex;align-items:center;gap:8px}
+.home .linkrow .lang{width:2em;font-weight:700;text-transform:uppercase;font-size:12.5px}
+.home .linkrow code{flex:1;min-width:0;overflow-wrap:anywhere;font-size:13px}
+.home .table-wrap{overflow-x:auto}
+.home table.log-table td,.home table.log-table th{text-align:left;vertical-align:top}
+.home .answer{font-size:12.5px;font-weight:700;padding:2px 8px;border-radius:999px;background:var(--card);color:var(--muted);white-space:nowrap}
+.home .answer.completed{background:var(--good);color:var(--good-ink)}
+.home .answer.started{background:var(--warn);color:var(--warn-ink)}
+.home .row-actions{display:flex;gap:6px;justify-content:flex-end}
+.home .row-actions form{margin:0}
+.home .gate ul{margin:6px 0 0;padding-left:18px}

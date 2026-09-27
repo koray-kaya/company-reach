@@ -58,6 +58,10 @@ class Settings(BaseSettings):
     # when it answered nothing at all, and before any "no website" verdict.
     # Unset, search is SearXNG alone.
     brave_search_api_key: SecretStr | None = None
+    # The survey's ADMIN_PASSWORD, so the Contacts page can ask the survey
+    # which links were answered (#68). Only tags and times come back, never
+    # answers. Unset, the page shows the contacts without answers.
+    form_admin_password: SecretStr | None = None
     # Ten children starting find_site at once would fire 30-40 queries from
     # one IP in the first seconds, which is the pattern that gets an engine
     # suspended. The fetcher's per-host delay does not cover these. Two in
@@ -108,7 +112,7 @@ class Settings(BaseSettings):
         default=False, validation_alias="COMPANY_REACH_TRACING"
     )
 
-    @field_validator("brave_search_api_key", mode="before")
+    @field_validator("brave_search_api_key", "form_admin_password", mode="before")
     @classmethod
     def _blank_is_none(cls, value):
         """An unset optional key is None, however the .env line was written.

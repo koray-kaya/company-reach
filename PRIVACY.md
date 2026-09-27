@@ -22,6 +22,10 @@ use it.
   contact it chose and why, an invitation draft, and the reviewer's decision
   (sent, skipped, never again, and a send taken back as not sent or
   bounced).
+- **For each personal link made on the Contacts page** — the person's name,
+  the company, the channel (LinkedIn, e-mail, phone, in person, other),
+  optionally the profile address and a note, and the code in the link. The
+  owner types these; nothing is read from LinkedIn.
 
 It does not collect anything from LinkedIn. When no address was found, a
 web search restricted to LinkedIn profiles may record a profile *URL* as a
@@ -33,7 +37,7 @@ Only on the machine that runs it, under `data/`:
 
 | Place | What |
 |---|---|
-| `data/company_reach.db` (SQLite) | companies, scores, site evidence, the search log (each query, and SearXNG's first ten result URLs — never Brave's), page text, profiles, contacts, drafts, results, the step each company of a running round is in (a step's name only), the ledger of decisions (for a mail sent: the address, the subject and a hash of the text), the never-again list, and — once imported from the survey's export — when each company's response started and finished (by UID; `report` prints only counts) |
+| `data/company_reach.db` (SQLite) | companies, scores, site evidence, the search log (each query, and SearXNG's first ten result URLs — never Brave's), page text, profiles, contacts, drafts, results, the step each company of a running round is in (a step's name only), the ledger of decisions (for a mail sent: the address, the subject and a hash of the text), the never-again list, the `invites` table (each personal link: the person, the company, the channel, the profile and note, the code), and — once imported from the survey's export or fetched from the survey — when each company's response started and finished (by UID or personal code; `report` prints only counts) |
 | `data/cache/` | the HTML of every page fetched |
 | `data/runs/<run>/manifest.json` | each run's settings, prompt versions and counts, and your own goal and `about_me` — nobody else's personal data |
 | `data/jobs/`, `data/logs/` | the output of the commands the front page started (the last 20 are kept) and the page's own log; both can name companies and contacts |
@@ -52,6 +56,10 @@ machine and keeps `data/`, `.env` and `profile.toml` there.
 | **Brave Search API**, only if you set `BRAVE_SEARCH_API_KEY` | company names with their seat, and UIDs — never a person's name: the LinkedIn lead search goes to SearXNG only | only when SearXNG fails, when it answered nothing, and before a company is recorded as having no website. Brave's results are not stored: for a Brave query the tool keeps the query, the number of results and any error, and a candidate site only Brave found is never written down |
 | **Company websites** | ordinary page requests, identified by the tool's user agent and a link to this repository | reading a site |
 | **LINDAS and SHAB** | a municipality number or a company's UID | building the pool; SHAB only when a site names nobody |
+
+The Contacts page asks the survey (`<survey>/api/admin/tags`, with the
+survey's admin password) which tags were started or completed. It sends
+nothing but the password; it receives tags and times, never answers.
 
 Choose the model endpoint with that list in mind: it is a third party
 processing the page text and names the tool reads. Tracing to LangSmith
@@ -144,6 +152,14 @@ gets it. Everything else is written by code (`tools/invitation.py`):
   sent, because "contacted once, ever" rests on them; only the mail's
   subject, which can name the person, is cleared. `company-reach doctor`
   reports how many companies a purge would clear.
+- **A personal link:** `forget P-…` (or a link carrying one) clears the
+  person, profile and note of that link and keeps the profile on the
+  never-again list; forgetting a company does the same for its links; `purge`
+  clears links older than its cutoff. The row itself stays, without a name,
+  so the company still counts as contacted.
+
+The survey deletes a response that is not finished within seven days, so a
+start the page showed can later read as "not yet".
 
 ## Before the first real invitation
 

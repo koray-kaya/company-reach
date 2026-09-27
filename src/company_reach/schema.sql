@@ -94,6 +94,17 @@ CREATE INDEX IF NOT EXISTS ledger_uid ON ledger (uid);
 -- whole on every import; a UID without a 'sent' row is kept and counted.
 CREATE TABLE IF NOT EXISTS responses (
   uid TEXT PRIMARY KEY, started_at TEXT, completed_at TEXT, imported_at TEXT NOT NULL);
+-- A personal link made on the Contacts page (#68): the code the survey stores
+-- with the answers, and who it went to. The survey keeps the code and never
+-- the person, so this row is the only place the two meet. `profile` is a
+-- profile address reduced to one key (invites.profile_key). forget and purge
+-- clear person, profile and note and keep the row, like the ledger: the
+-- company still counts as contacted after the name is gone.
+CREATE TABLE IF NOT EXISTS invites (
+  code TEXT PRIMARY KEY, person TEXT, company TEXT NOT NULL, uid TEXT,
+  channel TEXT NOT NULL, profile TEXT, note TEXT, created_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS invites_uid ON invites (uid);
+CREATE INDEX IF NOT EXISTS invites_profile ON invites (profile);
 CREATE TABLE IF NOT EXISTS suppression (
   key TEXT PRIMARY KEY, reason TEXT, added_at TEXT NOT NULL);
 -- Where find_site landed and why, for the review page, which reads only

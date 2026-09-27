@@ -16,6 +16,9 @@ Every card is its own URL, `/review/{run}/{n}`, and every action is a form
 POST, so the page works without its small script. Jinja2 autoescapes the
 `.html` templates, which matters here: company names, page quotes and drafts
 all started as text a website wrote.
+
+The Contacts page (#68) makes personal links and lists everyone contacted,
+with the survey's answer to each.
 """
 
 from datetime import datetime
@@ -31,9 +34,21 @@ from fastapi.templating import Jinja2Templates
 from company_reach.campaign import COLUMNS, campaign_status
 from company_reach.errors import ProfileError
 from company_reach.graph import STAGES
-from company_reach.models import Contact
+from company_reach.invites import (
+    CHANNELS,
+    InviteError,
+    NewInvite,
+    check,
+    contact_log,
+    invite_for,
+    personal_link,
+    record_invite,
+    remove_invite,
+)
+from company_reach.models import Contact, dotted_uid
 from company_reach.nodes.check_draft import reassemble
 from company_reach.profile import load_profile
+from company_reach.responses import SurveyUnreachable, refresh_from_survey
 from company_reach.review.cards import (
     Card,
     first_undecided,
@@ -57,7 +72,7 @@ from company_reach.tools.db import (
     undoable_bounce,
     unsuppress_bounced,
 )
-from company_reach.tools.invitation import as_html, named
+from company_reach.tools.invitation import as_html, is_placeholder_url, named
 from company_reach.tools.mailto import build
 
 HERE = Path(__file__).parent
@@ -201,6 +216,138 @@ def create_app(settings: Settings, *, jobs: Jobs | None = None) -> FastAPI:
         except JobBusy as error:
             raise HTTPException(409, str(error)) from error
         return RedirectResponse("/#job", status_code=303)
+
+    _FIELDS = ("person", "company", "uid", "channel", "profile", "note")
+
+    def survey_for_links() -> tuple[str | None, str | None]:
+        """The survey address links are made with, or why there is none."""
+        try:
+            url = load_profile(settings.profile_path).survey_url
+        except ProfileError as error:
+            return None, f"{error} — fill in profile.toml, then reload this page."
+        if not url or is_placeholder_url(url):
+            return None, (
+                "survey_url in profile.toml is still the example; links need"
+                " the real survey."
+            )
+        return url, None
+
+    def contacts_page(
+        request: Request,
+        *,
+        form: NewInvite | None = None,
+        error: str | None = None,
+        notes: list[str] | None = None,
+        new: str = "",
+        done: str = "",
+        fetch: bool = False,
+        status_code: int = 200,
+    ) -> HTMLResponse:
+        survey_url, problem = survey_for_links()
+        password = settings.form_admin_password
+        fetch_problem, fetched_now = None, False
+        with connect(settings.db_path) as conn:
+            if fetch and survey_url and password:
+                try:
+                    refresh_from_survey(conn, survey_url, password.get_secret_value())
+                    fetched_now = True
+                except SurveyUnreachable as err:
+                    fetch_problem = str(err)
+            log = contact_log(conn, survey_url)
+            last_fetch = conn.execute(
+                "select max(imported_at) from responses"
+            ).fetchone()[0]
+            made = invite_for(conn, new) if new else None
+            companies = [
+                r["name"]
+                for r in conn.execute(
+                    "select distinct name from companies order by name"
+                )
+            ]
+        links = (
+            {
+                lang: personal_link(survey_url, made.code, lang=lang)
+                for lang in ("de", "en")
+            }
+            if made and survey_url
+            else {}
+        )
+        return templates.TemplateResponse(
+            request,
+            "contacts.html",
+            {
+                "log": log,
+                "started": sum(r.answer != "not yet" for r in log),
+                "completed": sum(r.answer == "completed" for r in log),
+                "problem": problem,
+                "can_fetch": password is not None,
+                "fetched_now": fetched_now,
+                "fetch_problem": fetch_problem,
+                "last_fetch": last_fetch,
+                "made": made,
+                "matched_uid": dotted_uid(made.uid) if made and made.uid else None,
+                "links": links,
+                "form": form or NewInvite(person="", company=""),
+                "error": error,
+                "notes": notes or [],
+                "channels": CHANNELS,
+                "companies": companies,
+                "done": done,
+            },
+            status_code=status_code,
+        )
+
+    @app.get("/contacts", response_class=HTMLResponse)
+    def contacts(request: Request, new: str = "", done: str = "") -> HTMLResponse:
+        """Everyone contacted and what the survey says about each. It asks
+        the survey afresh each time it opens; no file, no command."""
+        return contacts_page(request, new=new, done=done, fetch=True)
+
+    @app.post("/contacts", response_model=None)
+    async def make_link(request: Request) -> HTMLResponse | RedirectResponse:
+        """Check, ask when the company or person was contacted before,
+        record, and show the new link. The same form again with
+        `confirm=yes` is the answer to the question."""
+        if request.headers.get("sec-fetch-site") not in _SAME_ORIGIN:
+            raise HTTPException(403, "links are made from this page only")
+        data = await request.form()
+        form = NewInvite(**{f: str(data.get(f, "")) for f in _FIELDS})
+        if survey_for_links()[0] is None:
+            return contacts_page(
+                request, form=form, error="No survey address yet.", status_code=400
+            )
+        error, notes, invite = None, [], None
+        with connect(settings.db_path) as conn:
+            try:
+                uid, notes = check(conn, form)
+                if not notes or data.get("confirm") == "yes":
+                    invite = record_invite(conn, form, uid=uid)
+            except InviteError as err:
+                error = str(err)
+        if invite:
+            return RedirectResponse(f"/contacts?new={invite.code}#new", status_code=303)
+        return contacts_page(
+            request,
+            form=form,
+            error=error,
+            notes=[] if error else notes,
+            status_code=400 if error else 200,
+        )
+
+    @app.post("/contacts/{code}/remove", response_model=None)
+    def remove_link(request: Request, code: str) -> RedirectResponse:
+        """A link made by mistake, while nobody has answered it."""
+        if request.headers.get("sec-fetch-site") not in _SAME_ORIGIN:
+            raise HTTPException(403, "links are removed from this page only")
+        with connect(settings.db_path) as conn:
+            if not remove_invite(conn, code):
+                raise HTTPException(
+                    409,
+                    "someone answered with this link, or it does not exist; it stays",
+                )
+        return RedirectResponse(
+            f"/contacts?done={quote(f'Link {code} removed')}", status_code=303
+        )
 
     @app.get("/review/{run_id}")
     def open_run(run_id: str) -> RedirectResponse:

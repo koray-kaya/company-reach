@@ -17,30 +17,50 @@ latest mail, so a bounce followed by a mail to another address is
 delivered. A send taken back as `not_sent` was never a mail and does not
 count at all. "Never" counts sent companies that are now on the never-again
 list — a «Nein» reply ends in `forget`.
+
+`refresh_from_survey` asks the survey itself (its `/api/admin/tags`,
+interview-form #24) and stores the answer the same way; the Contacts page
+does this each time it opens. Personal codes (`P-…`, `invites.py`) are
+stored and matched like UIDs.
 """
 
 import csv
 import math
 import sqlite3
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlsplit
+
+import httpx
 
 from company_reach.errors import CompanyReachError
+from company_reach.invites import code_in
 from company_reach.tools.db import NEVER_LEFT, UNDONE, now
 from company_reach.tools.invitation import compact_uid
 
-_COLUMNS = ("uid", "started_at", "completed_at")
+# the tag's column: company-reach's own name, and the survey's export's
+_TAG_COLUMNS = ("uid", "company_uid")
+_TIME_COLUMNS = ("started_at", "completed_at")
+TAGS_PATH = "/api/admin/tags"
 # companies a mail left for: a sent row not taken back as never sent
 _MAILED_UIDS = (
     f"(select uid from ledger where status = 'sent' and id not in {NEVER_LEFT})"
 )
+_MATCHED = f"(uid in {_MAILED_UIDS} or uid in (select code from invites))"
 
 
 @dataclass(frozen=True)
 class ImportReport:
     rows: int  # distinct UIDs in the export
-    matched: int  # of them, with a 'sent' row in the ledger
+    matched: int  # of them, with a 'sent' row in the ledger or a personal link
+
+
+class SurveyUnreachable(CompanyReachError):
+    """The survey could not be asked. Nothing was stored, so the answers
+    shown stay the last ones fetched: an outage must never read as
+    "nobody answered"."""
 
 
 @dataclass(frozen=True)
@@ -59,46 +79,44 @@ class Group:
         return self.sent - self.bounced
 
 
-def _when(value: str, line: int) -> str | None:
+def _when(value: str, where: str) -> str | None:
     value = value.strip()
     if not value:
         return None
     try:
         return datetime.fromisoformat(value).isoformat()
     except ValueError as e:
-        raise CompanyReachError(
-            f"line {line}: {value!r} is not an ISO date or time"
-        ) from e
+        raise CompanyReachError(f"{where}: {value!r} is not an ISO date or time") from e
 
 
-def import_responses(conn: sqlite3.Connection, path: Path) -> ImportReport:
-    """Replace the table with the export at `path`. The survey exports
-    everything so far every time, so the last import is the whole truth. A
-    UID written twice (a forwarded link) keeps its first start and its last
-    completion; a UID the ledger never sent to is kept and counted."""
-    with path.open(newline="", encoding="utf-8-sig") as f:
-        reader = csv.DictReader(f)
-        missing = [c for c in _COLUMNS if c not in (reader.fieldnames or [])]
-        if missing:
-            raise CompanyReachError(
-                f"{path} needs the columns {', '.join(_COLUMNS)}; missing "
-                f"{', '.join(missing)} (found {', '.join(reader.fieldnames or [])})"
-            )
-        found: dict[str, tuple[str | None, str | None]] = {}
-        for line, row in enumerate(reader, start=2):
-            raw = (row["uid"] or "").strip()
-            uid = compact_uid(raw) or raw
-            started = _when(row["started_at"] or "", line)
-            completed = _when(row["completed_at"] or "", line)
-            started = started or completed  # finishing means it was started
-            before = found.get(uid)
-            if before:
-                starts = [t for t in (before[0], started) if t]
-                ends = [t for t in (before[1], completed) if t]
-                started = min(starts) if starts else None
-                completed = max(ends) if ends else None
-            found[uid] = (started, completed)
+def _tag(raw: str) -> str:
+    """The key a response is stored under: a UID compacted, a personal
+    code in upper case, anything else as it came."""
+    raw = raw.strip()
+    return compact_uid(raw) or code_in(raw) or raw
 
+
+def store_responses(
+    conn: sqlite3.Connection, rows: Iterable[tuple[str, str | None, str | None]]
+) -> ImportReport:
+    """Replace the table with these (tag, started, completed) rows. The
+    survey hands over everything so far every time, so the last set is the
+    whole truth. A tag written twice (a forwarded link) keeps its first
+    start and its last completion; a tag nobody here knows is kept and
+    counted; a response without a tag names no invitation and is left out."""
+    found: dict[str, tuple[str | None, str | None]] = {}
+    for raw, started, completed in rows:
+        uid = _tag(raw)
+        if not uid:
+            continue
+        started = started or completed  # finishing means it was started
+        before = found.get(uid)
+        if before:
+            starts = [t for t in (before[0], started) if t]
+            ends = [t for t in (before[1], completed) if t]
+            started = min(starts) if starts else None
+            completed = max(ends) if ends else None
+        found[uid] = (started, completed)
     conn.execute("delete from responses")
     conn.executemany(
         "insert into responses (uid, started_at, completed_at, imported_at)"
@@ -106,9 +124,89 @@ def import_responses(conn: sqlite3.Connection, path: Path) -> ImportReport:
         [(uid, s, c, now()) for uid, (s, c) in found.items()],
     )
     matched = conn.execute(
-        f"select count(*) from responses where uid in {_MAILED_UIDS}"
+        f"select count(*) from responses where {_MATCHED}"
     ).fetchone()[0]
     return ImportReport(rows=len(found), matched=matched)
+
+
+def import_responses(conn: sqlite3.Connection, path: Path) -> ImportReport:
+    """The survey's CSV export at `path`, stored by `store_responses`."""
+    with path.open(newline="", encoding="utf-8-sig") as f:
+        reader = csv.DictReader(f)
+        fields = reader.fieldnames or []
+        tag = next((c for c in _TAG_COLUMNS if c in fields), None)
+        missing = [c for c in _TIME_COLUMNS if c not in fields]
+        if tag is None:
+            missing.insert(0, "uid (or company_uid)")
+        if missing:
+            raise CompanyReachError(
+                f"{path} needs the columns uid, started_at, completed_at; missing "
+                f"{', '.join(missing)} (found {', '.join(fields)})"
+            )
+        rows = [
+            (
+                row[tag] or "",
+                _when(row["started_at"] or "", f"line {n}"),
+                _when(row["completed_at"] or "", f"line {n}"),
+            )
+            for n, row in enumerate(reader, start=2)
+        ]
+    return store_responses(conn, rows)
+
+
+def fetch_tags(
+    survey_url: str, password: str
+) -> list[tuple[str, str | None, str | None]]:
+    """Every response's tag and times, from the survey's admin endpoint at
+    the survey's root. Raises SurveyUnreachable, and returns nothing, when
+    the survey cannot be asked or answers something else."""
+    url = urlsplit(survey_url)._replace(path=TAGS_PATH, query="", fragment="").geturl()
+    try:
+        response = httpx.get(url, auth=("company-reach", password), timeout=5.0)
+    except (httpx.HTTPError, httpx.InvalidURL) as error:
+        raise SurveyUnreachable(
+            f"Could not reach the survey ({type(error).__name__})."
+        ) from error
+    if response.status_code == 401:
+        raise SurveyUnreachable(
+            "The survey refused the password: FORM_ADMIN_PASSWORD must be"
+            " the survey's ADMIN_PASSWORD."
+        )
+    if response.status_code != 200:
+        raise SurveyUnreachable(
+            f"The survey answered {response.status_code} at {TAGS_PATH}."
+        )
+    try:
+        items = response.json()["tags"]
+        return [_tag_row(item, n) for n, item in enumerate(items, start=1)]
+    except (ValueError, KeyError, TypeError, CompanyReachError) as error:
+        raise SurveyUnreachable(
+            f"The survey's answer was not a list of tags ({error})."
+        ) from error
+
+
+def _tag_row(item: dict, n: int) -> tuple[str, str | None, str | None]:
+    """One tag from the survey's answer, checked before it is trusted: a
+    `started_at`/`completed_at` that is not a string or null raises
+    AttributeError inside `_when` otherwise, and a null or non-string tag
+    would silently become the text "None" or crash a lookup downstream."""
+    tag = item["tag"]
+    if not isinstance(tag, str) or not tag.strip():
+        raise ValueError(f"tag {n} is not a non-empty string: {tag!r}")
+    times = {}
+    for key in _TIME_COLUMNS:
+        value = item.get(key)
+        if value is not None and not isinstance(value, str):
+            raise ValueError(f"tag {n} {key} is not a string or null: {value!r}")
+        times[key] = _when(value or "", f"tag {n}")
+    return tag, times["started_at"], times["completed_at"]
+
+
+def refresh_from_survey(
+    conn: sqlite3.Connection, survey_url: str, password: str
+) -> ImportReport:
+    """Ask first, store after: a failed fetch leaves the table as it was."""
+    return store_responses(conn, fetch_tags(survey_url, password))
 
 
 def report_rows(
@@ -173,9 +271,19 @@ def report_rows(
         for r in rows
     ]
     unmatched = conn.execute(
-        f"select count(*) from responses where uid not in {_MAILED_UIDS}"
+        f"select count(*) from responses where not {_MATCHED}"
     ).fetchone()[0]
     return groups, unmatched
+
+
+def personal_link_answers(conn: sqlite3.Connection) -> int:
+    """Responses through a personal link: matched (they are in `_MATCHED`),
+    but to no company mailed by the tool, so they belong in neither a
+    frame's arm group nor `report_rows`'s count of responses with no
+    invitation at all — this is `report`'s own line for them."""
+    return conn.execute(
+        "select count(*) from responses where uid in (select code from invites)"
+    ).fetchone()[0]
 
 
 def wilson(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
