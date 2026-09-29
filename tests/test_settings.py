@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from company_reach.settings import Settings
+from company_reach.settings import Settings, model_ids
 
 
 def test_defaults_and_env(monkeypatch, tmp_path: Path):
@@ -95,3 +95,41 @@ def test_no_playwright_setting_is_left():
     no Playwright service exists. It returns with the service, if ever."""
     assert "playwright_url" not in Settings.model_fields
     assert "PLAYWRIGHT" not in Path(".env.example").read_text()
+
+
+# --- model_ids (#75): the school hub and the AI Gateway can serve the same
+# --- model under two different ids -----------------------------------------
+
+
+def test_model_ids_pairs_the_configured_and_fallback_models(monkeypatch, tmp_path):
+    """A command that never resolves an endpoint (`status`, `report`, the
+    review page's reads) has no `choose_endpoint` copy to read; `model_ids`
+    computes the pair itself from a plain settings object."""
+    monkeypatch.setenv("LLM_API_KEY", "abc")
+    monkeypatch.setenv("LLM_MODEL", "GLM-5.3-Flash")
+    monkeypatch.setenv("LLM_FALLBACK_MODEL", "zai/glm-5.3-flash")
+    s = Settings(_env_file=None, data_dir=tmp_path)
+    assert model_ids(s) == ("GLM-5.3-Flash", "zai/glm-5.3-flash")
+
+
+def test_model_ids_does_not_repeat_an_identical_fallback(monkeypatch, tmp_path):
+    monkeypatch.setenv("LLM_API_KEY", "abc")
+    monkeypatch.setenv("LLM_MODEL", "same-id")
+    monkeypatch.setenv("LLM_FALLBACK_MODEL", "same-id")
+    s = Settings(_env_file=None, data_dir=tmp_path)
+    assert model_ids(s) == ("same-id",)
+
+
+def test_model_ids_prefers_the_field_choose_endpoint_filled(monkeypatch, tmp_path):
+    """Once the gateway branch has overwritten `llm_model` with the
+    fallback's id, recomputing from `llm_model`/`llm_fallback_model` alone
+    would see the fallback twice and lose the school's id — this is exactly
+    what broke #75. `model_ids` must read the field instead when it is set,
+    not recompute."""
+    monkeypatch.setenv("LLM_API_KEY", "abc")
+    monkeypatch.setenv("LLM_MODEL", "zai/glm-5.3-flash")  # as choose_endpoint left it
+    monkeypatch.setenv("LLM_FALLBACK_MODEL", "zai/glm-5.3-flash")
+    s = Settings(_env_file=None, data_dir=tmp_path).model_copy(
+        update={"llm_model_ids": ("GLM-5.3-Flash", "zai/glm-5.3-flash")}
+    )
+    assert model_ids(s) == ("GLM-5.3-Flash", "zai/glm-5.3-flash")

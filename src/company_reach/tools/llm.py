@@ -24,7 +24,7 @@ from openai import APIStatusError, LengthFinishReasonError
 from pydantic import BaseModel
 
 from company_reach.errors import LlmError, PromptError
-from company_reach.settings import Settings
+from company_reach.settings import Settings, model_ids
 from company_reach.tools.gates import gate
 
 Effort = Literal["low", "high", "max"]
@@ -282,6 +282,10 @@ def _gateway_settings(settings: Settings) -> Settings:
             "llm_base_url": settings.llm_fallback_base_url,
             "llm_api_key": settings.llm_fallback_api_key,
             "llm_model": settings.llm_fallback_model,
+            # Computed from `settings` before this copy overwrites
+            # `llm_model` above — after that, the school's id would already
+            # be gone (#75).
+            "llm_model_ids": model_ids(settings),
         }
     )
 
@@ -302,7 +306,7 @@ async def choose_endpoint(settings: Settings) -> Settings:
     """
     if settings.llm_endpoint == "hub":
         print("endpoint: hub, set by LLM_ENDPOINT")
-        return settings
+        return settings.model_copy(update={"llm_model_ids": model_ids(settings)})
     if settings.llm_endpoint == "gateway":
         resolved = _gateway_settings(settings)  # raises before anything prints
         print("endpoint: gateway, set by LLM_ENDPOINT")
@@ -326,4 +330,6 @@ async def choose_endpoint(settings: Settings) -> Settings:
         )
         return _gateway_settings(settings)
     print(f"endpoint: {settings.llm_base_url} answered; using it for this run")
-    return settings.model_copy(update={"llm_endpoint": "hub"})
+    return settings.model_copy(
+        update={"llm_endpoint": "hub", "llm_model_ids": model_ids(settings)}
+    )

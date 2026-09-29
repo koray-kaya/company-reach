@@ -6,14 +6,17 @@ from company_reach.models import (
     CompanyProfile,
     CompanyRecord,
     Person,
+    Score,
     SelectionCriteria,
 )
 from company_reach.tools.db import (
     connect,
+    count_scored,
     errored_uids,
     init_db,
     is_suppressed,
     load_criteria,
+    pool_standing,
     profile_by_uid,
     record_decision,
     record_page,
@@ -22,8 +25,10 @@ from company_reach.tools.db import (
     search_log,
     store_criteria,
     suppress,
+    unscored_companies,
     upsert_companies,
     upsert_profile,
+    upsert_scores,
 )
 from company_reach.tools.search import Asked, Result
 
@@ -513,6 +518,213 @@ def test_replaced_criteria_are_kept_in_history(tmp_path: Path):
     assert SelectionCriteria.model_validate_json(kept[0]["criteria"]) == sets[0]
     assert all(row["goal_hash"] == "g1" and row["replaced_at"] for row in kept)
     assert current is not None and current.criteria_hash == "h3"
+
+
+# --- model equivalence (#75): the school hub and the AI Gateway can serve
+# --- the same model under two different ids --------------------------------
+
+
+def _seed_one_company(conn, uid: str = "CHE000000001") -> None:
+    upsert_companies(conn, [rec(uid)], "import")
+
+
+def test_a_score_under_the_school_id_counts_when_the_run_uses_the_gateway_id(
+    tmp_path: Path,
+):
+    """The bug (#75): 1500 scores made by the school endpoint's model must
+    still count once a run resolves to the AI Gateway's id for the same
+    model."""
+    path = tmp_path / "t.db"
+    init_db(path)
+    with connect(path) as conn:
+        _seed_one_company(conn)
+        upsert_scores(
+            conn,
+            [Score(uid="CHE000000001", score=9, reason="x")],
+            goal_hash="g1",
+            prompt_version="1",
+            model="GLM-5.3-Flash",  # the school endpoint's id
+            criteria_hash="c1",
+        )
+        # the run resolved to the gateway; its own id comes first, the
+        # school's id most companies were scored under comes second
+        key = dict(
+            goal_hash="g1",
+            prompt_version="1",
+            model_ids=("zai/glm-5.3-flash", "GLM-5.3-Flash"),
+            criteria_hash="c1",
+        )
+        assert unscored_companies(conn, **key) == []
+        assert count_scored(conn, **key) == 1
+
+
+def test_a_score_under_the_gateway_id_counts_when_the_run_uses_the_school_id(
+    tmp_path: Path,
+):
+    """The reverse direction: option B (rescoring through the gateway) was
+    rejected precisely because this would break again, the other way,
+    whenever the school endpoint comes back."""
+    path = tmp_path / "t.db"
+    init_db(path)
+    with connect(path) as conn:
+        _seed_one_company(conn)
+        upsert_scores(
+            conn,
+            [Score(uid="CHE000000001", score=9, reason="x")],
+            goal_hash="g1",
+            prompt_version="1",
+            model="zai/glm-5.3-flash",
+            criteria_hash="c1",
+        )
+        key = dict(
+            goal_hash="g1",
+            prompt_version="1",
+            model_ids=("GLM-5.3-Flash", "zai/glm-5.3-flash"),
+            criteria_hash="c1",
+        )
+        assert unscored_companies(conn, **key) == []
+        assert count_scored(conn, **key) == 1
+
+
+def test_a_score_under_an_unrelated_model_still_counts_as_another_model(
+    tmp_path: Path,
+):
+    """Not every other id is the same model — only the two named in
+    `model_ids` are. A score made by a third, unrelated model must stay
+    unscored for this run and still be offered by `unscored_companies`."""
+    path = tmp_path / "t.db"
+    init_db(path)
+    with connect(path) as conn:
+        _seed_one_company(conn)
+        upsert_scores(
+            conn,
+            [Score(uid="CHE000000001", score=9, reason="x")],
+            goal_hash="g1",
+            prompt_version="1",
+            model="some-other-model-entirely",
+            criteria_hash="c1",
+        )
+        key = dict(
+            goal_hash="g1",
+            prompt_version="1",
+            model_ids=("GLM-5.3-Flash", "zai/glm-5.3-flash"),
+            criteria_hash="c1",
+        )
+        assert [c.uid for c in unscored_companies(conn, **key)] == ["CHE000000001"]
+        assert count_scored(conn, **key) == 0
+
+
+def test_upsert_scores_records_the_real_id_the_run_actually_used(tmp_path: Path):
+    """Provenance is unchanged (#75, "decided"): the row a gateway run
+    writes still names the gateway's id, never the whole equivalence set,
+    however that score is later looked up."""
+    path = tmp_path / "t.db"
+    init_db(path)
+    with connect(path) as conn:
+        _seed_one_company(conn)
+        upsert_scores(
+            conn,
+            [Score(uid="CHE000000001", score=9, reason="x")],
+            goal_hash="g1",
+            prompt_version="1",
+            model="zai/glm-5.3-flash",
+            criteria_hash="c1",
+        )
+        row = conn.execute(
+            "select model from scores where uid = 'CHE000000001'"
+        ).fetchone()
+    assert row["model"] == "zai/glm-5.3-flash"
+
+
+def test_pool_standing_counts_a_score_from_the_equivalent_id_as_current(
+    tmp_path: Path,
+):
+    path = tmp_path / "t.db"
+    init_db(path)
+    with connect(path) as conn:
+        _seed_one_company(conn)
+        upsert_scores(
+            conn,
+            [Score(uid="CHE000000001", score=9, reason="x")],
+            goal_hash="g1",
+            prompt_version="1",
+            model="GLM-5.3-Flash",
+            criteria_hash="c1",
+        )
+        standing = pool_standing(
+            conn,
+            run_id="r1",
+            goal_hash="g1",
+            prompt_version="1",
+            model_ids=("zai/glm-5.3-flash", "GLM-5.3-Flash"),
+            criteria_hash="c1",
+            min_score=7,
+        )
+    assert standing.current == 1
+    assert standing.other_model == 0
+    assert standing.best == 9
+    assert standing.clear == 1
+    assert standing.drawable == 1
+
+
+def test_pool_standing_still_treats_an_unrelated_model_as_other_model(
+    tmp_path: Path,
+):
+    path = tmp_path / "t.db"
+    init_db(path)
+    with connect(path) as conn:
+        _seed_one_company(conn)
+        upsert_scores(
+            conn,
+            [Score(uid="CHE000000001", score=9, reason="x")],
+            goal_hash="g1",
+            prompt_version="1",
+            model="some-other-model-entirely",
+            criteria_hash="c1",
+        )
+        standing = pool_standing(
+            conn,
+            run_id="r1",
+            goal_hash="g1",
+            prompt_version="1",
+            model_ids=("zai/glm-5.3-flash", "GLM-5.3-Flash"),
+            criteria_hash="c1",
+            min_score=7,
+        )
+    assert standing.current == 0
+    assert standing.other_model == 1
+    assert standing.drawable == 0
+
+
+def test_pool_standing_counts_a_company_scored_under_both_ids_once(tmp_path: Path):
+    """A database from before #75 may hold one row per id in the set for the
+    same company — either from testing both endpoints by hand, or from a
+    rescore attempted as a workaround. That company clears the bar once, not
+    twice, and is drawn once, not twice."""
+    path = tmp_path / "t.db"
+    init_db(path)
+    with connect(path) as conn:
+        _seed_one_company(conn)
+        for model in ("GLM-5.3-Flash", "zai/glm-5.3-flash"):
+            upsert_scores(
+                conn,
+                [Score(uid="CHE000000001", score=9, reason="x")],
+                goal_hash="g1",
+                prompt_version="1",
+                model=model,
+                criteria_hash="c1",
+            )
+        standing = pool_standing(
+            conn,
+            run_id="r1",
+            goal_hash="g1",
+            prompt_version="1",
+            model_ids=("zai/glm-5.3-flash", "GLM-5.3-Flash"),
+            criteria_hash="c1",
+            min_score=7,
+        )
+    assert standing.clear == 1
+    assert standing.drawable == 1
 
 
 def test_a_scratch_copy_leaves_the_real_database_alone(settings):

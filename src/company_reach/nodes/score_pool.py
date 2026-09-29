@@ -28,6 +28,7 @@ from company_reach.models import CompanyRecord, Score, ScoreBatch, StoredCriteri
 from company_reach.nodes.write_criteria import format_criteria
 from company_reach.profile import goal_hash
 from company_reach.settings import Settings
+from company_reach.settings import model_ids as settings_model_ids
 from company_reach.tools import llm
 from company_reach.tools.db import (
     connect,
@@ -133,16 +134,26 @@ async def score_pool(
     `draw_batch`, which reads the stored one, never draws."""
     started = time.monotonic()
     prompt_version, _ = llm.load_prompt("score")
-    key = dict(
+    # `lookup_key` finds and counts what already counts as scored — under
+    # any id in the equivalence set (#75), whichever endpoint made it.
+    # `insert_key` is provenance: every new score records the one real id
+    # this run actually used, never the whole set.
+    lookup_key = dict(
         goal_hash=goal_hash(goal),
+        prompt_version=prompt_version,
+        model_ids=settings_model_ids(settings),
+        criteria_hash=criteria.criteria_hash,
+    )
+    insert_key = dict(
+        goal_hash=lookup_key["goal_hash"],
         prompt_version=prompt_version,
         model=settings.llm_model,
         criteria_hash=criteria.criteria_hash,
     )
 
     with connect(settings.db_path) as conn:
-        candidates = unscored_companies(conn, **key)
-        already = count_scored(conn, **key)
+        candidates = unscored_companies(conn, **lookup_key)
+        already = count_scored(conn, **lookup_key)
 
     random.Random(seed).shuffle(candidates)
     candidates = candidates[: (limit if limit is not None else settings.score_limit)]
@@ -172,7 +183,7 @@ async def score_pool(
 
     if scored:
         with connect(settings.db_path) as conn:
-            upsert_scores(conn, scored, **key)
+            upsert_scores(conn, scored, **insert_key)
 
     return ScoreReport(
         scored=len(scored),
