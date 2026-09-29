@@ -52,6 +52,7 @@ machine and keeps `data/`, `.env` and `profile.toml` there.
 | Recipient | What it receives | When |
 |---|---|---|
 | **The language model endpoint** you configure (`LLM_BASE_URL`) | register purposes (scoring); the text of candidate and company pages, which can contain names and addresses (site choice, page choice, extraction); the company description, the contact's role and your `about_me` (drafting) | every run |
+| **The Vercel AI Gateway** (`LLM_FALLBACK_BASE_URL`), which forwards the request to one of DeepInfra, Together AI or Fireworks — whichever `LLM_FALLBACK_PROVIDERS` allowlists — with prompt training disallowed on every request | the same as above | only when `LLM_ENDPOINT` is `gateway`, or `auto` and the endpoint above does not answer |
 | **Search engines**, through your SearXNG instance | company names, UIDs and addresses; for a LinkedIn lead, a person's name with the company name | finding a site; a lead |
 | **Brave Search API**, only if you set `BRAVE_SEARCH_API_KEY` | company names with their seat, and UIDs — never a person's name: the LinkedIn lead search goes to SearXNG only | only when SearXNG fails, when it answered nothing, and before a company is recorded as having no website. Brave's results are not stored: for a Brave query the tool keeps the query, the number of results and any error, and a candidate site only Brave found is never written down |
 | **Company websites** | ordinary page requests, identified by the tool's user agent and a link to this repository | reading a site |
@@ -62,7 +63,16 @@ survey's admin password) which tags were started or completed. It sends
 nothing but the password; it receives tags and times, never answers.
 
 Choose the model endpoint with that list in mind: it is a third party
-processing the page text and names the tool reads. Tracing to LangSmith
+processing the page text and names the tool reads. When `LLM_ENDPOINT` is
+`gateway`, or `auto` and the endpoint above does not answer within
+`LLM_PROBE_TIMEOUT_S`, the same page text and names go to the Vercel AI
+Gateway instead, for the rest of that run. The gateway forwards the request
+to one of a few allowlisted US providers — DeepInfra, Together AI or
+Fireworks, exactly as `LLM_FALLBACK_PROVIDERS` names them — and disallows
+prompt training on every request it sends; that is the only claim made
+about it here, and no retention period is promised. `doctor` and every
+command that talks to a model print which endpoint the run is using, and
+why. Tracing to LangSmith
 (`COMPANY_REACH_TRACING` in `.env`) is off by default and should stay off —
 a trace would contain the same page text and names and send them to one
 more party. Only that setting counts: a `LANGSMITH_TRACING` or

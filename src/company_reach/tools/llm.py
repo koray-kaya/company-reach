@@ -132,6 +132,22 @@ def tracing(settings: Settings) -> AbstractContextManager[None]:
     return tracing_context(enabled=settings.langsmith_tracing)
 
 
+def _gateway_extra_body(settings: Settings) -> dict | None:
+    """Only when the endpoint in use is the gateway: which providers may
+    serve the call, and that none of them may train on it. Nothing extra
+    goes to the school endpoint, which would not understand it."""
+    if settings.llm_endpoint != "gateway":
+        return None
+    return {
+        "providerOptions": {
+            "gateway": {
+                "only": settings.llm_fallback_providers,
+                "disallowPromptTraining": True,
+            }
+        }
+    }
+
+
 def _client(
     settings: Settings, max_tokens: int, effort: Effort, http_client: httpx.AsyncClient
 ) -> ChatOpenAI:
@@ -140,6 +156,12 @@ def _client(
     second. (The long timeout could also be set with `request_timeout`; the
     client is injected for the tests.) The cost is one TCP connection per
     call, against a call that measured 41-130 seconds."""
+    if settings.llm_endpoint == "auto":
+        # Not just a convention a caller is expected to follow: "auto" is not
+        # an endpoint, and building a client for it would silently talk to
+        # whatever llm_base_url happened to be — the hub, which is the one
+        # endpoint a run in "auto" cannot assume answers.
+        raise LlmError("llm_endpoint is 'auto': call choose_endpoint() first")
     return ChatOpenAI(
         model=settings.llm_model,
         base_url=settings.llm_base_url,
@@ -154,6 +176,7 @@ def _client(
         # Timeout object goes to both.
         timeout=_timeout(settings),
         max_retries=0,  # retrying is this module's job, and it counts attempts
+        extra_body=_gateway_extra_body(settings),
     )
 
 
@@ -234,3 +257,73 @@ async def ask[ModelT: BaseModel](
                 )
 
     raise LlmError(f"{prompt_name}: no usable answer after 2 attempts: {last}")
+
+
+class _Probe(BaseModel):
+    """What `choose_endpoint`'s "auto" probe asks for — the same shape
+    `doctor` asks the hub for, echoed back, so the probe also proves the
+    endpoint answers and honours a JSON schema, not just that it accepts a
+    connection."""
+
+    marker: str
+
+
+_PROBE_MARKER = "COMPANY-REACH-AUTO-PROBE"
+
+
+def _gateway_settings(settings: Settings) -> Settings:
+    if settings.llm_fallback_api_key is None:
+        raise LlmError(
+            "the gateway endpoint needs LLM_FALLBACK_API_KEY, which is not set"
+        )
+    return settings.model_copy(
+        update={
+            "llm_endpoint": "gateway",
+            "llm_base_url": settings.llm_fallback_base_url,
+            "llm_api_key": settings.llm_fallback_api_key,
+            "llm_model": settings.llm_fallback_model,
+        }
+    )
+
+
+async def choose_endpoint(settings: Settings) -> Settings:
+    """Which endpoint a run uses, decided once and reused for every call the
+    run makes — never per call: a call measures 41-130 s against a 600 s
+    read timeout, so trying the hub on every call would cost minutes each
+    time. Returns a settings copy whose llm_base_url/llm_api_key/llm_model
+    point at the endpoint chosen, and whose llm_endpoint is "hub" or
+    "gateway" — "auto" never comes back out.
+
+    "hub" and "gateway" are unchanged and chosen outright. "auto" probes the
+    hub, with llm_probe_timeout_s rather than the call timeout, and falls
+    back to the gateway on any failure — a timeout, a connection error, a
+    server error, or an answer that does not honour the schema: `ask`
+    raises `LlmError` for all of them alike, so catching it here is enough.
+    """
+    if settings.llm_endpoint == "hub":
+        print("endpoint: hub, set by LLM_ENDPOINT")
+        return settings
+    if settings.llm_endpoint == "gateway":
+        resolved = _gateway_settings(settings)  # raises before anything prints
+        print("endpoint: gateway, set by LLM_ENDPOINT")
+        return resolved
+
+    probe = settings.model_copy(
+        update={
+            # The probe asks the hub specifically; without this, the new
+            # `_client` guard would refuse the probe's own call, since the
+            # copy would otherwise still read llm_endpoint == "auto".
+            "llm_endpoint": "hub",
+            "llm_timeout_seconds": settings.llm_probe_timeout_s,
+        }
+    )
+    try:
+        await ask("doctor", _Probe, settings=probe, marker=_PROBE_MARKER)
+    except Exception as error:
+        print(
+            f"endpoint: {settings.llm_base_url} did not answer "
+            f"({type(error).__name__}); using the gateway for this run"
+        )
+        return _gateway_settings(settings)
+    print(f"endpoint: {settings.llm_base_url} answered; using it for this run")
+    return settings.model_copy(update={"llm_endpoint": "hub"})

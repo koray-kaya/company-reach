@@ -193,7 +193,8 @@ def _require_a_scored_pool(s, goal: str, run_id: str) -> None:
 @app.command()
 def doctor() -> None:
     """Check settings, prompts, database and model endpoint before a run."""
-    checks = asyncio.run(run_checks(get_settings()))
+    s = asyncio.run(llm.choose_endpoint(get_settings()))
+    checks = asyncio.run(run_checks(s))
     for check in checks:
         mark = "ok  " if check.ok else "FAIL"
         typer.echo(f"{mark}  {check.name:<13} {check.detail}")
@@ -341,7 +342,7 @@ def criteria(
 ) -> None:
     """Show the goal's selection criteria before scoring anything. The first
     time they are written and stored; every `score` then uses that set."""
-    s = get_settings()
+    s = asyncio.run(llm.choose_endpoint(get_settings()))
     text = _resolve_goal(goal)
     typer.echo(f"goal     {text}")
     typer.echo(f"hash     {goal_hash(text)}")
@@ -361,7 +362,7 @@ def score(
 ) -> None:
     """Score screened companies against the goal. Incremental and resumable:
     already-scored companies cost nothing, so run it again to score more."""
-    s = get_settings()
+    s = asyncio.run(llm.choose_endpoint(get_settings()))
     text = _resolve_goal(goal)
     rid = _run_id(run_id)
 
@@ -531,6 +532,10 @@ def run(
     # --goal overrides the goal only; the drafts still say who writes
     about_me = _profile(s).about_me
     rid = _run_id(run_id)
+    if not dry:
+        # --dry loops over the stub child, which never calls the model; the
+        # real endpoint is chosen only when it will actually be asked.
+        s = asyncio.run(llm.choose_endpoint(s))
 
     # `work` holds the database the run reads and writes; `s` the real data
     # directory, where the manifest goes whether the run is dry or not.
@@ -774,7 +779,7 @@ def retry(
     `--no-site` redoes the "no website" skips too, for a run whose search log
     shows it was throttled; a company a reviewer decided about stays as it is.
     """
-    s = get_settings()
+    s = asyncio.run(llm.choose_endpoint(get_settings()))
     try:
         results = asyncio.run(
             retry_errors(
@@ -814,7 +819,7 @@ def redraft(
     """
     from company_reach.redraft import redraft_run
 
-    s = get_settings()
+    s = asyncio.run(llm.choose_endpoint(get_settings()))
     try:
         outcomes = asyncio.run(redraft_run(run_id, settings=s, uid=uid))
     except CompanyReachError as error:
@@ -851,7 +856,7 @@ def enrich(
             "--until takes 'site', 'profile', 'contact' or 'draft'."
         )
 
-    s = get_settings()
+    s = asyncio.run(llm.choose_endpoint(get_settings()))
     with connect(s.db_path) as conn:
         refused = off_limits_because(conn, uid)
     if refused:
