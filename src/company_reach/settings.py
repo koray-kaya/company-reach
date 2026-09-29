@@ -52,6 +52,25 @@ class Settings(BaseSettings):
     # Ten concurrent requests timed out four of ten on the shared endpoint
     # without raising throughput.
     llm_concurrency: int = 3
+    # "hub" is today's behaviour, unchanged: only the endpoint above.
+    # "gateway" sends every call through the fallback below. "auto" probes
+    # the hub once per run, with llm_probe_timeout_s, and uses the gateway
+    # for the rest of the run if it does not answer — never per call, since
+    # a call measures 41-130 s. See `llm.choose_endpoint`.
+    llm_endpoint: Literal["auto", "hub", "gateway"] = "hub"
+    # The Vercel AI Gateway's OpenAI-compatible endpoint (Chat Completions).
+    llm_fallback_base_url: str = "https://ai-gateway.vercel.sh/v1"
+    llm_fallback_api_key: SecretStr | None = None
+    llm_fallback_model: str = "zai/glm-5.3-flash"
+    # Provider ids exactly as the gateway's
+    # /v1/models/<model>/endpoints lists them; sent as
+    # providerOptions.gateway.only on every gateway request. A JSON list in
+    # .env: pydantic-settings reads a list field from JSON without extra
+    # configuration, and a comma list is not parsed as one.
+    llm_fallback_providers: list[str] = ["deepinfra", "togetherai", "fireworks"]
+    # How long the "auto" probe waits for the hub before falling back to the
+    # gateway. Short on purpose: it decides once per run, not once per call.
+    llm_probe_timeout_s: float = 60.0
 
     searxng_url: str = "http://127.0.0.1:8080"
     # The paid second opinion (decided 2026-09-25): asked when SearXNG fails,
@@ -112,7 +131,12 @@ class Settings(BaseSettings):
         default=False, validation_alias="COMPANY_REACH_TRACING"
     )
 
-    @field_validator("brave_search_api_key", "form_admin_password", mode="before")
+    @field_validator(
+        "brave_search_api_key",
+        "form_admin_password",
+        "llm_fallback_api_key",
+        mode="before",
+    )
     @classmethod
     def _blank_is_none(cls, value):
         """An unset optional key is None, however the .env line was written.

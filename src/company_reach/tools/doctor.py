@@ -45,10 +45,14 @@ class Check:
 
 
 def _settings_check(settings: Settings) -> Check:
+    # `settings` has already been through `llm.choose_endpoint`, so
+    # llm_endpoint is "hub" or "gateway" here, never "auto": this is the
+    # endpoint the run is actually using, not what .env asks for.
     return Check(
         "settings",
         True,
-        f"model={settings.llm_model} effort={settings.llm_reasoning_effort} "
+        f"endpoint={settings.llm_endpoint} model={settings.llm_model} "
+        f"effort={settings.llm_reasoning_effort} "
         f"max_tokens={settings.llm_max_tokens} concurrency={settings.llm_concurrency} "
         f"sending_approved={settings.sending_approved} "
         f"paid_fallback={'brave' if settings.brave_search_api_key else 'none'} "

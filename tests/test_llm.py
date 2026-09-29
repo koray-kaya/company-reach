@@ -5,6 +5,7 @@ import time
 import httpx
 import pytest
 import respx
+from pydantic import SecretStr
 
 from company_reach.errors import LlmError
 from company_reach.models import SelectionCriteria
@@ -12,6 +13,7 @@ from company_reach.settings import Settings
 from company_reach.tools import llm
 
 URL = "https://api.openai.com/v1/chat/completions"  # the fixture default
+GATEWAY_URL = "https://ai-gateway.vercel.sh/v1/chat/completions"  # the fixture default
 
 CRITERIA = {
     "must": ["makes something"],
@@ -232,3 +234,122 @@ async def test_the_setting_is_what_turns_tracing_on(settings, traces_sent):
     await llm.ask("criteria", SelectionCriteria, settings=on, goal="g")
 
     assert any(request.startswith("POST /runs") for request in traces_sent())
+
+
+# --- choose_endpoint (company-reach#73): the school hub or the AI Gateway ----
+
+
+def probe_answer(marker: str = "x") -> httpx.Response:
+    return answer(json.dumps({"marker": marker}))
+
+
+@respx.mock
+async def test_hub_is_unchanged(settings):
+    """ "hub" is today's behaviour exactly: no probe, same endpoint. Nothing
+    is mocked here, so a stray request to either endpoint fails the test."""
+    resolved = await llm.choose_endpoint(settings)
+    assert resolved.llm_endpoint == "hub"
+    assert resolved.llm_base_url == settings.llm_base_url
+    assert resolved.llm_model == settings.llm_model
+
+
+async def test_gateway_uses_the_fallback_values(settings):
+    keyed = settings.model_copy(
+        update={"llm_endpoint": "gateway", "llm_fallback_api_key": SecretStr("gw-key")}
+    )
+    resolved = await llm.choose_endpoint(keyed)
+    assert resolved.llm_endpoint == "gateway"
+    assert resolved.llm_base_url == "https://ai-gateway.vercel.sh/v1"
+    assert resolved.llm_api_key.get_secret_value() == "gw-key"
+    assert resolved.llm_model == "zai/glm-5.3-flash"
+
+
+async def test_gateway_without_a_key_errors_clearly(settings):
+    keyed = settings.model_copy(update={"llm_endpoint": "gateway"})
+    with pytest.raises(LlmError, match="LLM_FALLBACK_API_KEY"):
+        await llm.choose_endpoint(keyed)
+
+
+@respx.mock
+async def test_auto_picks_hub_when_it_answers(settings):
+    route = respx.post(URL).mock(return_value=probe_answer())
+    resolved = await llm.choose_endpoint(
+        settings.model_copy(update={"llm_endpoint": "auto"})
+    )
+    assert resolved.llm_endpoint == "hub"
+    assert resolved.llm_base_url == settings.llm_base_url
+    assert route.call_count == 1
+
+
+@respx.mock
+async def test_auto_falls_back_to_the_gateway_when_the_hub_times_out(settings):
+    respx.post(URL).mock(side_effect=httpx.ConnectTimeout("no route"))
+    auto = settings.model_copy(
+        update={"llm_endpoint": "auto", "llm_fallback_api_key": SecretStr("gw-key")}
+    )
+    resolved = await llm.choose_endpoint(auto)
+    assert resolved.llm_endpoint == "gateway"
+    assert resolved.llm_base_url == "https://ai-gateway.vercel.sh/v1"
+    assert resolved.llm_model == "zai/glm-5.3-flash"
+
+
+@respx.mock
+async def test_auto_falls_back_to_the_gateway_on_a_server_error(settings):
+    respx.post(URL).mock(return_value=httpx.Response(500))
+    auto = settings.model_copy(
+        update={"llm_endpoint": "auto", "llm_fallback_api_key": SecretStr("gw-key")}
+    )
+    resolved = await llm.choose_endpoint(auto)
+    assert resolved.llm_endpoint == "gateway"
+
+
+@respx.mock
+async def test_auto_without_a_fallback_key_still_errors_clearly(settings):
+    """A down hub and no gateway key: the run cannot start either way, and
+    the message has to say what is missing, not a bare connection error."""
+    respx.post(URL).mock(side_effect=httpx.ConnectTimeout("no route"))
+    with pytest.raises(LlmError, match="LLM_FALLBACK_API_KEY"):
+        await llm.choose_endpoint(settings.model_copy(update={"llm_endpoint": "auto"}))
+
+
+@respx.mock
+async def test_the_auto_probe_uses_the_short_timeout(settings):
+    """Not LLM_TIMEOUT_SECONDS (600 s): a probe that waited as long as a real
+    call would defeat the point of deciding once, quickly, per run."""
+    route = respx.post(URL).mock(return_value=probe_answer())
+    s = settings.model_copy(update={"llm_endpoint": "auto", "llm_probe_timeout_s": 5.0})
+    await llm.choose_endpoint(s)
+    timeout = route.calls.last.request.extensions["timeout"]
+    assert timeout["read"] == 5.0
+    assert timeout["connect"] == 10.0
+
+
+@respx.mock
+async def test_the_gateway_sends_provider_options(settings):
+    route = respx.post(GATEWAY_URL).mock(return_value=answer(json.dumps(CRITERIA)))
+    keyed = settings.model_copy(
+        update={
+            "llm_endpoint": "gateway",
+            "llm_fallback_api_key": SecretStr("gw-key"),
+            "llm_fallback_providers": ["deepinfra", "togetherai"],
+        }
+    )
+    resolved = await llm.choose_endpoint(keyed)
+
+    await llm.ask("criteria", SelectionCriteria, settings=resolved, goal="g")
+
+    sent = json.loads(route.calls.last.request.content)
+    assert sent["providerOptions"] == {
+        "gateway": {
+            "only": ["deepinfra", "togetherai"],
+            "disallowPromptTraining": True,
+        }
+    }
+
+
+@respx.mock
+async def test_nothing_extra_goes_to_the_hub(settings):
+    route = respx.post(URL).mock(return_value=answer(json.dumps(CRITERIA)))
+    await llm.ask("criteria", SelectionCriteria, settings=settings, goal="g")
+    sent = json.loads(route.calls.last.request.content)
+    assert "providerOptions" not in sent
