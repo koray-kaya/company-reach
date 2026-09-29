@@ -14,7 +14,10 @@ from company_reach.tools.db import (
     upsert_scores,
 )
 
-KEY = dict(goal_hash="g1", prompt_version="1", model="m1", criteria_hash="c1")
+# Scores are stored under one real model id (provenance); drawn back with
+# the equivalence set that id belongs to (#75) — here, just itself.
+SCORE_KEY = dict(goal_hash="g1", prompt_version="1", model="m1", criteria_hash="c1")
+KEY = dict(goal_hash="g1", prompt_version="1", model_ids=("m1",), criteria_hash="c1")
 
 
 def rec(uid: str) -> CompanyRecord:
@@ -49,7 +52,7 @@ def db(tmp_path: Path) -> Path:
                 Score(uid=uid(4), score=3, reason="x"),
                 Score(uid=uid(5), score=1, reason="x"),
             ],
-            **KEY,
+            **SCORE_KEY,
         )
     return path
 
@@ -200,6 +203,30 @@ def test_a_score_under_other_criteria_is_not_drawn(db: Path):
         upsert_scores(
             conn,
             [Score(uid=uid(1), score=9, reason="x")],
-            **(KEY | {"criteria_hash": "c0"}),
+            **(SCORE_KEY | {"criteria_hash": "c0"}),
         )
         assert uid(1) not in draw(conn)
+
+
+def test_a_score_made_under_an_equivalent_model_id_is_drawn(db: Path):
+    """#75: the school endpoint's model and the AI Gateway's model are the
+    same model under two ids. A run that resolved to "m2" this time must
+    still draw what "m1" scored earlier, and vice versa."""
+    with connect(db) as conn:
+        upsert_scores(
+            conn,
+            [Score(uid=uid(1), score=9, reason="x")],
+            **(SCORE_KEY | {"model": "m2"}),
+        )
+        drawn = draw_batch(
+            conn,
+            run_id="r1",
+            batch_no=1,
+            min_score=5,
+            limit=10,
+            **(KEY | {"model_ids": ("m1", "m2")}),
+        )
+    # uid(1) was scored under both "m1" (fixture) and "m2" (just above);
+    # either alone would draw it once, so a set that collapsed the two into
+    # one row, or counted it twice, would both be wrong.
+    assert drawn.count(uid(1)) == 1

@@ -15,6 +15,7 @@ from company_reach.models import (
 )
 from company_reach.nodes.score_pool import score_pool
 from company_reach.profile import goal_hash
+from company_reach.settings import model_ids
 from company_reach.tools import llm
 from company_reach.tools.db import (
     connect,
@@ -381,7 +382,7 @@ def test_scores_carry_the_stored_hash(settings, monkeypatch):
             batch_no=1,
             goal_hash=key,
             prompt_version=llm.load_prompt("score")[0],
-            model=settings.llm_model,
+            model_ids=model_ids(settings),
             criteria_hash=current_criteria_hash(conn, key),
             min_score=7,
             limit=10,

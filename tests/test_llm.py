@@ -253,6 +253,15 @@ async def test_hub_is_unchanged(settings):
     assert resolved.llm_model == settings.llm_model
 
 
+@respx.mock
+async def test_hub_fills_model_ids(settings):
+    """#75: even the unchanged "hub" branch must record the equivalence set
+    a score lookup needs — a run through the hub still has to recognise a
+    score the gateway made under its own id."""
+    resolved = await llm.choose_endpoint(settings)
+    assert resolved.llm_model_ids == (settings.llm_model, settings.llm_fallback_model)
+
+
 async def test_gateway_uses_the_fallback_values(settings):
     keyed = settings.model_copy(
         update={"llm_endpoint": "gateway", "llm_fallback_api_key": SecretStr("gw-key")}
@@ -262,6 +271,18 @@ async def test_gateway_uses_the_fallback_values(settings):
     assert resolved.llm_base_url == "https://ai-gateway.vercel.sh/v1"
     assert resolved.llm_api_key.get_secret_value() == "gw-key"
     assert resolved.llm_model == "zai/glm-5.3-flash"
+
+
+async def test_gateway_fills_model_ids_with_the_school_id_too(settings):
+    """The core of #75: after this switch `llm_model` is the gateway's id,
+    so `llm_model_ids` is the only place the school's original id survives
+    for a score lookup to find it by."""
+    keyed = settings.model_copy(
+        update={"llm_endpoint": "gateway", "llm_fallback_api_key": SecretStr("gw-key")}
+    )
+    resolved = await llm.choose_endpoint(keyed)
+    assert resolved.llm_model_ids == (settings.llm_model, settings.llm_fallback_model)
+    assert settings.llm_model in resolved.llm_model_ids
 
 
 async def test_gateway_without_a_key_errors_clearly(settings):
@@ -291,6 +312,20 @@ async def test_auto_falls_back_to_the_gateway_when_the_hub_times_out(settings):
     assert resolved.llm_endpoint == "gateway"
     assert resolved.llm_base_url == "https://ai-gateway.vercel.sh/v1"
     assert resolved.llm_model == "zai/glm-5.3-flash"
+    # #75: the id "auto" resolved away from must still be in the set, or a
+    # score the hub made before this run fell back stops counting.
+    assert settings.llm_model in resolved.llm_model_ids
+    assert resolved.llm_model_ids == (settings.llm_model, settings.llm_fallback_model)
+
+
+@respx.mock
+async def test_auto_fills_model_ids_when_it_picks_the_hub(settings):
+    respx.post(URL).mock(return_value=probe_answer())
+    resolved = await llm.choose_endpoint(
+        settings.model_copy(update={"llm_endpoint": "auto"})
+    )
+    assert resolved.llm_endpoint == "hub"
+    assert resolved.llm_model_ids == (settings.llm_model, settings.llm_fallback_model)
 
 
 @respx.mock

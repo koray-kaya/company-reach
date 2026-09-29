@@ -5,7 +5,7 @@ import sqlite3
 from dataclasses import dataclass
 
 from company_reach.profile import goal_hash
-from company_reach.settings import Settings
+from company_reach.settings import Settings, model_ids
 from company_reach.tools import llm
 from company_reach.tools.db import current_criteria_hash, status_by_municipality
 
@@ -35,7 +35,7 @@ def campaign_status(
         conn,
         goal_hash=key,
         prompt_version=version,
-        model=settings.llm_model,
+        model_ids=model_ids(settings),
         criteria_hash=criteria,
         min_score=settings.draw_min_score,
     )

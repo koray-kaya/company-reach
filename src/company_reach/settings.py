@@ -75,6 +75,14 @@ class Settings(BaseSettings):
     # one retry, not once. Short on purpose: it decides once per run, not
     # once per call.
     llm_probe_timeout_s: float = 60.0
+    # The ids that count as one model wherever a score — or another
+    # model-keyed cached answer — is looked up (#75): `llm.choose_endpoint`
+    # fills this with `model_ids()`'s answer, computed before the gateway
+    # branch overwrites `llm_model` with the fallback's id. Empty on
+    # settings that never went through it; read through `model_ids()`, not
+    # this field directly, which falls back to computing the same pair
+    # itself when it finds this empty.
+    llm_model_ids: tuple[str, ...] = ()
 
     searxng_url: str = "http://127.0.0.1:8080"
     # The paid second opinion (decided 2026-09-25): asked when SearXNG fails,
@@ -155,6 +163,30 @@ class Settings(BaseSettings):
     @property
     def db_path(self) -> Path:
         return self.data_dir / "company_reach.db"
+
+
+def model_ids(settings: Settings) -> tuple[str, ...]:
+    """The model ids that count as one model wherever a score — or another
+    model-keyed cached answer — is looked up: standing, draw, cache reuse
+    (#75). The school endpoint's configured model and the AI Gateway's
+    fallback model are the same model under two ids; whichever one a run
+    actually used, a score made with the other still counts.
+
+    Prefers `settings.llm_model_ids` when a run through `choose_endpoint`
+    filled it — necessary once the gateway branch has overwritten
+    `llm_model` with the fallback's id, since recomputing from that copy
+    would see the fallback twice and lose the school's id. Otherwise (a
+    command such as `status`, `report`, or the review page's reads, none of
+    which resolve an endpoint) computes the same pair directly: `llm_model`
+    there is still the school's configured id.
+    """
+    if settings.llm_model_ids:
+        return settings.llm_model_ids
+    ids: list[str] = []
+    for candidate in (settings.llm_model, settings.llm_fallback_model):
+        if candidate not in ids:
+            ids.append(candidate)
+    return tuple(ids)
 
 
 @lru_cache

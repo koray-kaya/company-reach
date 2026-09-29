@@ -35,6 +35,7 @@ from company_reach.nodes.write_criteria import (
 )
 from company_reach.profile import Profile, goal_hash, load_profile
 from company_reach.settings import Settings, get_settings
+from company_reach.settings import model_ids as settings_model_ids
 from company_reach.tools import llm
 from company_reach.tools.db import (
     connect,
@@ -141,7 +142,7 @@ def _require_a_scored_pool(s, goal: str, run_id: str) -> None:
             run_id=run_id,
             goal_hash=key,
             prompt_version=version,
-            model=s.llm_model,
+            model_ids=settings_model_ids(s),
             criteria_hash=current_criteria_hash(conn, key),
             min_score=s.draw_min_score,
         )
@@ -252,7 +253,11 @@ def _replace_criteria(s, goal: str, key: str, *, yes: bool) -> StoredCriteria:
     with connect(s.db_path) as conn:
         old = load_criteria(conn, key)
         current = count_scored(
-            conn, key, version, s.llm_model, old.criteria_hash if old else None
+            conn,
+            key,
+            version,
+            settings_model_ids(s),
+            old.criteria_hash if old else None,
         )
     if current:
         passes = math.ceil(current / s.score_limit)

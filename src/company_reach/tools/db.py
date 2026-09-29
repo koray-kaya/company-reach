@@ -7,7 +7,7 @@ exception — it does not close, so we close in the finally."""
 import json
 import sqlite3
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -233,31 +233,48 @@ def upsert_companies(
     return len(rows)
 
 
+def _in_clause(prefix: str, model_ids: Sequence[str]) -> tuple[str, dict[str, str]]:
+    """A `:name0, :name1, ...` fragment for a `column IN (...)` and the
+    params dict to go with it. sqlite3 has no way to bind a list to one
+    named placeholder, so each id in the equivalence set (#75) gets its own.
+    `model_ids` is never empty: `model_ids(settings)` in `settings.py`
+    always has at least the one model a run is configured with."""
+    names = [f"{prefix}{i}" for i in range(len(model_ids))]
+    return ", ".join(f":{n}" for n in names), dict(zip(names, model_ids, strict=True))
+
+
 def unscored_companies(
     conn: sqlite3.Connection,
     goal_hash: str,
     prompt_version: str,
-    model: str,
+    model_ids: Sequence[str],
     criteria_hash: str | None,
 ) -> list[CompanyRecord]:
     """Companies the rules kept and this (goal, prompt, model, criteria) has
-    not scored.
+    not scored. `model_ids` are the ids that count as one model (#75): a
+    score made with any of them counts as scored.
 
     The left join is the score cache: rerunning after an interrupted pass, or
     with a longer --limit, costs nothing for work already done. `is` rather
     than `=` for the criteria, because it also matches NULL to NULL: a score
     made before criteria were stored, while its goal has none stored yet."""
+    clause, params = _in_clause("model", model_ids)
     rows = conn.execute(
-        """select c.uid, c.name, c.legal_form, c.municipality, c.street,
+        f"""select c.uid, c.name, c.legal_form, c.municipality, c.street,
                   c.postal_code, c.city, c.purpose, c.purpose_head
              from companies c
              left join scores s
-               on s.uid = c.uid and s.goal_hash = ?
-              and s.prompt_version = ? and s.model = ?
-              and s.criteria_hash is ?
+               on s.uid = c.uid and s.goal_hash = :goal_hash
+              and s.prompt_version = :prompt_version and s.model in ({clause})
+              and s.criteria_hash is :criteria_hash
             where c.screen_reason is null and s.uid is null
             order by c.uid""",
-        (goal_hash, prompt_version, model, criteria_hash),
+        {
+            "goal_hash": goal_hash,
+            "prompt_version": prompt_version,
+            "criteria_hash": criteria_hash,
+            **params,
+        },
     ).fetchall()
     return [CompanyRecord(**dict(row)) for row in rows]
 
@@ -266,13 +283,24 @@ def count_scored(
     conn: sqlite3.Connection,
     goal_hash: str,
     prompt_version: str,
-    model: str,
+    model_ids: Sequence[str],
     criteria_hash: str | None,
 ) -> int:
+    """Companies scored under any id in `model_ids`. `count(distinct uid)`,
+    not `count(*)`: a database from before #75 may hold one row per id for
+    the same company (each endpoint scored it before the two counted as
+    one), and that must still read as one company scored, not two."""
+    clause, params = _in_clause("model", model_ids)
     return conn.execute(
-        "select count(*) from scores where goal_hash = ? and prompt_version = ? "
-        "and model = ? and criteria_hash is ?",
-        (goal_hash, prompt_version, model, criteria_hash),
+        f"select count(distinct uid) from scores where goal_hash = :goal_hash "
+        f"and prompt_version = :prompt_version and model in ({clause}) "
+        f"and criteria_hash is :criteria_hash",
+        {
+            "goal_hash": goal_hash,
+            "prompt_version": prompt_version,
+            "criteria_hash": criteria_hash,
+            **params,
+        },
     ).fetchone()[0]
 
 
@@ -457,12 +485,23 @@ def finish_run(
 # What a run may draw, written once. `draw_batch`, the guard in `run` and
 # `status` all read this text, so they cannot disagree about it: the guard
 # used to count any score, and passed a pool nothing could be drawn from.
+# `{model_clause}` is filled in by each caller with `_in_clause`'s IN
+# fragment, since the equivalence set (#75) has no fixed size.
+#
+# The join is against scores grouped by uid, not the bare table: a database
+# from before #75 may hold one row per id in the set for the same company
+# (each endpoint scored it before the two counted as one), and a plain join
+# would then draw that company twice from one batch. `max(score)` also
+# means the better of the two counts, when they differ.
 _DRAWABLE = """
              from companies c
-             join scores s
-               on s.uid = c.uid and s.goal_hash = :goal_hash
-              and s.prompt_version = :prompt_version and s.model = :model
-              and s.criteria_hash is :criteria_hash
+             join (select uid, max(score) as score from scores
+                    where goal_hash = :goal_hash
+                      and prompt_version = :prompt_version
+                      and model in ({model_clause})
+                      and criteria_hash is :criteria_hash
+                    group by uid) s
+               on s.uid = c.uid
             where c.screen_reason is null
               and s.score >= :min_score
               -- not already drawn in THIS run, or the loop would redraw it
@@ -493,7 +532,7 @@ def draw_batch(
     batch_no: int,
     goal_hash: str,
     prompt_version: str,
-    model: str,
+    model_ids: Sequence[str],
     criteria_hash: str | None,
     min_score: int,
     limit: int,
@@ -521,16 +560,18 @@ def draw_batch(
     if recorded:
         return recorded
 
+    clause, model_params = _in_clause("model", model_ids)
     rows = conn.execute(
-        f"select c.uid {_DRAWABLE} order by s.score desc limit :limit",
+        f"select c.uid {_DRAWABLE.format(model_clause=clause)} "
+        f"order by s.score desc limit :limit",
         {
             "run_id": run_id,
             "goal_hash": goal_hash,
             "prompt_version": prompt_version,
-            "model": model,
             "criteria_hash": criteria_hash,
             "min_score": min_score,
             "limit": limit,
+            **model_params,
         },
     ).fetchall()
     return [r["uid"] for r in rows]
@@ -561,35 +602,37 @@ def pool_standing(
     run_id: str,
     goal_hash: str,
     prompt_version: str,
-    model: str,
+    model_ids: Sequence[str],
     criteria_hash: str | None,
     min_score: int,
 ) -> Standing:
+    clause, model_params = _in_clause("model", model_ids)
     key = {
         "run_id": run_id,
         "goal_hash": goal_hash,
         "prompt_version": prompt_version,
-        "model": model,
         "criteria_hash": criteria_hash,
         "min_score": min_score,
+        **model_params,
     }
     kinds = {
         r["kind"]: r["n"]
         for r in conn.execute(
-            """select case
+            f"""select case
                  when exists (select 1 from scores s where s.uid = c.uid
                                 and s.goal_hash = :goal_hash
                                 and s.prompt_version = :prompt_version
-                                and s.model = :model
+                                and s.model in ({clause})
                                 and s.criteria_hash is :criteria_hash)
                    then 'current'
                  when exists (select 1 from scores s where s.uid = c.uid
                                 and s.goal_hash = :goal_hash
                                 and s.prompt_version = :prompt_version
-                                and s.model = :model)
+                                and s.model in ({clause}))
                    then 'earlier_criteria'
                  when exists (select 1 from scores s where s.uid = c.uid
-                                and s.goal_hash = :goal_hash and s.model = :model)
+                                and s.goal_hash = :goal_hash
+                                and s.model in ({clause}))
                    then 'other_prompt'
                  when exists (select 1 from scores s where s.uid = c.uid
                                 and s.goal_hash = :goal_hash)
@@ -600,19 +643,23 @@ def pool_standing(
             key,
         )
     }
+    # count(distinct s.uid), not count(*): a database from before #75 may
+    # hold one row per id in the set for the same company, and that must
+    # still count as one company clearing the bar, not two.
     best, clear = conn.execute(
-        """select max(s.score), count(*) filter (where s.score >= :min_score)
+        f"""select max(s.score),
+                   count(distinct s.uid) filter (where s.score >= :min_score)
              from scores s join companies c on c.uid = s.uid
             where c.screen_reason is null and s.goal_hash = :goal_hash
-              and s.prompt_version = :prompt_version and s.model = :model
+              and s.prompt_version = :prompt_version and s.model in ({clause})
               and s.criteria_hash is :criteria_hash""",
         key,
     ).fetchone()
     versions = [
         r[0]
         for r in conn.execute(
-            """select distinct prompt_version from scores
-                where goal_hash = :goal_hash and model = :model
+            f"""select distinct prompt_version from scores
+                where goal_hash = :goal_hash and model in ({clause})
                   and prompt_version <> :prompt_version
                 order by prompt_version""",
             key,
@@ -624,7 +671,9 @@ def pool_standing(
         current=kinds.get("current", 0),
         best=best,
         clear=clear,
-        drawable=conn.execute(f"select count(*) {_DRAWABLE}", key).fetchone()[0],
+        drawable=conn.execute(
+            f"select count(*) {_DRAWABLE.format(model_clause=clause)}", key
+        ).fetchone()[0],
         earlier_criteria=kinds.get("earlier_criteria", 0),
         other_prompt=kinds.get("other_prompt", 0),
         other_prompt_versions=versions,
@@ -638,7 +687,7 @@ def status_by_municipality(
     *,
     goal_hash: str,
     prompt_version: str,
-    model: str,
+    model_ids: Sequence[str],
     criteria_hash: str | None,
     min_score: int,
 ) -> list[sqlite3.Row]:
@@ -646,12 +695,13 @@ def status_by_municipality(
     under the current key, drawable by a new run, drawn, sent, and send
     cards nobody has decided yet. Drawable is `_DRAWABLE` for a run that has
     drawn nothing (run id ""), so it says what the next `run` could take."""
+    clause, model_params = _in_clause("model", model_ids)
     return conn.execute(
-        f"""with drawable as (select c.uid {_DRAWABLE}),
+        f"""with drawable as (select c.uid {_DRAWABLE.format(model_clause=clause)}),
                  current as (
                    select uid from scores
                     where goal_hash = :goal_hash
-                      and prompt_version = :prompt_version and model = :model
+                      and prompt_version = :prompt_version and model in ({clause})
                       and criteria_hash is :criteria_hash),
                  -- a company's decision is its latest ledger row, unless undone
                  decided as (
@@ -677,9 +727,9 @@ def status_by_municipality(
             "run_id": "",
             "goal_hash": goal_hash,
             "prompt_version": prompt_version,
-            "model": model,
             "criteria_hash": criteria_hash,
             "min_score": min_score,
+            **model_params,
         },
     ).fetchall()
 

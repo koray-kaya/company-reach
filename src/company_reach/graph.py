@@ -40,7 +40,7 @@ from company_reach.nodes.probe_search import probe_search
 from company_reach.nodes.read_pages import read_pages
 from company_reach.nodes.recommend import recommend
 from company_reach.profile import goal_hash, load_profile
-from company_reach.settings import Settings
+from company_reach.settings import Settings, model_ids
 from company_reach.tools import llm
 from company_reach.tools.db import (
     connect,
@@ -150,7 +150,7 @@ def draw_batch(state: ReachState, *, settings: Settings) -> dict:
             batch_no=batch_no,
             goal_hash=goal,
             prompt_version=prompt_version,
-            model=settings.llm_model,
+            model_ids=model_ids(settings),
             criteria_hash=current_criteria_hash(conn, goal),
             min_score=settings.draw_min_score,
             limit=state["batch_size"],
