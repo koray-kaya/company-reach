@@ -68,8 +68,12 @@ class Settings(BaseSettings):
     # .env: pydantic-settings reads a list field from JSON without extra
     # configuration, and a comma list is not parsed as one.
     llm_fallback_providers: list[str] = ["deepinfra", "togetherai", "fireworks"]
-    # How long the "auto" probe waits for the hub before falling back to the
-    # gateway. Short on purpose: it decides once per run, not once per call.
+    # How long each of the "auto" probe's tries waits for the hub. ask()
+    # retries once, after llm_retry_pause_s, so the probe's worst case
+    # before falling back to the gateway is about two of these plus that
+    # pause — about two minutes with the defaults: one try, a short pause,
+    # one retry, not once. Short on purpose: it decides once per run, not
+    # once per call.
     llm_probe_timeout_s: float = 60.0
 
     searxng_url: str = "http://127.0.0.1:8080"

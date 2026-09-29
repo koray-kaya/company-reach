@@ -156,6 +156,12 @@ def _client(
     second. (The long timeout could also be set with `request_timeout`; the
     client is injected for the tests.) The cost is one TCP connection per
     call, against a call that measured 41-130 seconds."""
+    if settings.llm_endpoint == "auto":
+        # Not just a convention a caller is expected to follow: "auto" is not
+        # an endpoint, and building a client for it would silently talk to
+        # whatever llm_base_url happened to be — the hub, which is the one
+        # endpoint a run in "auto" cannot assume answers.
+        raise LlmError("llm_endpoint is 'auto': call choose_endpoint() first")
     return ChatOpenAI(
         model=settings.llm_model,
         base_url=settings.llm_base_url,
@@ -295,12 +301,21 @@ async def choose_endpoint(settings: Settings) -> Settings:
     raises `LlmError` for all of them alike, so catching it here is enough.
     """
     if settings.llm_endpoint == "hub":
+        print("endpoint: hub, set by LLM_ENDPOINT")
         return settings
     if settings.llm_endpoint == "gateway":
-        return _gateway_settings(settings)
+        resolved = _gateway_settings(settings)  # raises before anything prints
+        print("endpoint: gateway, set by LLM_ENDPOINT")
+        return resolved
 
     probe = settings.model_copy(
-        update={"llm_timeout_seconds": settings.llm_probe_timeout_s}
+        update={
+            # The probe asks the hub specifically; without this, the new
+            # `_client` guard would refuse the probe's own call, since the
+            # copy would otherwise still read llm_endpoint == "auto".
+            "llm_endpoint": "hub",
+            "llm_timeout_seconds": settings.llm_probe_timeout_s,
+        }
     )
     try:
         await ask("doctor", _Probe, settings=probe, marker=_PROBE_MARKER)

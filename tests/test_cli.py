@@ -36,6 +36,13 @@ PAGE = json.loads((Path(__file__).parent / "fixtures/lindas_page.json").read_tex
 runner = CliRunner()
 
 
+def _run_line(output: str) -> str:
+    """`run`'s own first line ("run <id> — if it stops, ..."), skipping
+    `choose_endpoint`'s "endpoint: ..." line, which now prints ahead of it
+    for every endpoint, not only "auto" (review round 1, item 3)."""
+    return next(line for line in output.splitlines() if line.startswith("run "))
+
+
 @respx.mock
 def test_pool_then_screen(settings, monkeypatch):
     monkeypatch.setattr(cli, "get_settings", lambda: settings)
@@ -414,7 +421,7 @@ def test_run_target_reaches_the_loop_and_the_resume_hint(settings, monkeypatch):
 
     assert r.exit_code == 0, r.output
     assert captured["target"] == 5
-    assert "--target 5" in r.output.splitlines()[0]
+    assert "--target 5" in _run_line(r.output)
     assert "1 of 5 sendable" in r.output
     assert "batch cap" in r.output
 
@@ -841,13 +848,15 @@ def _real_run_without_network(monkeypatch) -> None:
 
 def test_run_names_its_id_before_it_starts(settings, monkeypatch):
     """A run that is stopped halfway can be resumed only with its id, so the
-    id is printed before anything else happens."""
+    id is printed before the graph runs — right after `choose_endpoint`'s own
+    "endpoint: ..." line, which now prints for every endpoint (review round
+    1, item 3), not only "auto"."""
     monkeypatch.setattr(cli, "get_settings", lambda: settings)
     _real_run_without_network(monkeypatch)
     _seed_scored_pool(settings, {"CHE000000001": 9})
     r = runner.invoke(cli.app, ["run", "--goal", "make and sell", "--run-id", "r7"])
     assert r.exit_code == 0, r.output
-    first = r.output.splitlines()[0]
+    first = _run_line(r.output)
     assert "r7" in first and "--run-id r7" in first
     assert "CHE000000001" in r.output  # the company line, as it finished
 
@@ -872,7 +881,7 @@ def test_the_resume_hint_repeats_the_options_given(settings, monkeypatch):
             "2",
         ],
     )
-    first = r.output.splitlines()[0]
+    first = _run_line(r.output)
     assert '--goal "make and sell"' in first
     assert "--seed 3" in first and "--target 2" in first
 

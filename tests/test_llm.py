@@ -353,3 +353,54 @@ async def test_nothing_extra_goes_to_the_hub(settings):
     await llm.ask("criteria", SelectionCriteria, settings=settings, goal="g")
     sent = json.loads(route.calls.last.request.content)
     assert "providerOptions" not in sent
+
+
+@respx.mock
+async def test_the_gateway_request_carries_the_fallback_key(settings):
+    """Review round 1, item 4: the key `choose_endpoint` put in the settings
+    copy is the one the request actually authenticates with."""
+    route = respx.post(GATEWAY_URL).mock(return_value=answer(json.dumps(CRITERIA)))
+    keyed = settings.model_copy(
+        update={
+            "llm_endpoint": "gateway",
+            "llm_fallback_api_key": SecretStr("gw-secret-key"),
+        }
+    )
+    resolved = await llm.choose_endpoint(keyed)
+
+    await llm.ask("criteria", SelectionCriteria, settings=resolved, goal="g")
+
+    assert route.calls.last.request.headers["authorization"] == "Bearer gw-secret-key"
+
+
+@respx.mock
+async def test_a_client_refuses_an_unresolved_auto_endpoint(settings):
+    """Review round 1, item 1: 'auto' must never reach a client, not only be
+    avoided by convention — `choose_endpoint` always resolves it to 'hub' or
+    'gateway' first, and this is what stops a caller that skips that step."""
+    auto = settings.model_copy(update={"llm_endpoint": "auto"})
+    with pytest.raises(LlmError, match="choose_endpoint"):
+        await llm.ask("criteria", SelectionCriteria, settings=auto, goal="g")
+
+
+async def test_hub_prints_the_endpoint(settings, capsys):
+    """Review round 1, item 3: the explicit branches print too, matching the
+    auto branch's style."""
+    await llm.choose_endpoint(settings)
+    out = capsys.readouterr().out
+    assert "hub" in out
+    assert "LLM_ENDPOINT" in out
+
+
+async def test_gateway_prints_the_endpoint_not_the_key(settings, capsys):
+    keyed = settings.model_copy(
+        update={
+            "llm_endpoint": "gateway",
+            "llm_fallback_api_key": SecretStr("super-secret"),
+        }
+    )
+    await llm.choose_endpoint(keyed)
+    out = capsys.readouterr().out
+    assert "gateway" in out
+    assert "LLM_ENDPOINT" in out
+    assert "super-secret" not in out
