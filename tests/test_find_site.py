@@ -245,6 +245,110 @@ def test_the_cap_is_respected_even_without_bulk_paths():
     assert len(prune_page_urls([f"{SITE}/p{n}" for n in range(500)], limit=200)) == 200
 
 
+# --- the sitemap walk does not loop forever (#77) -----------------------------
+
+
+def test_read_sitemap_unescapes_the_loc_url():
+    """A TYPO3 sitemap index escapes its own query string per the XML spec;
+    left as `&amp;`, the URL is malformed and the site answers it with the
+    index again, which is how the walk below started looping."""
+    xml = (
+        "<sitemapindex><sitemap>"
+        "<loc>https://muster-metallbau.ch/?sitemap=pages&amp;cHash=abc</loc>"
+        "</sitemap></sitemapindex>"
+    )
+    _, nested = node.read_sitemap(xml)
+    assert nested == ["https://muster-metallbau.ch/?sitemap=pages&cHash=abc"]
+
+
+async def test_all_page_urls_stops_on_a_self_referencing_sitemap_index():
+    """A sitemap index that lists its own URL must be fetched once, not
+    forever (#77): with no record of what had already been read, the walk
+    never ended, and because the fetcher answers a repeated URL from its
+    cache without yielding, the shared event loop starved and the whole
+    batch froze."""
+    from company_reach.tools.fetcher import Page
+
+    index_url = f"{SITE}/sitemap.xml"
+
+    class LoopingFetcher:
+        def __init__(self):
+            self.calls: list[str] = []
+
+        async def get(self, url):
+            self.calls.append(url)
+            if len(self.calls) > 20:
+                # Bounds a real loop to a fast, deterministic test failure
+                # instead of hanging the suite.
+                raise AssertionError(f"fetched more than 20 times: {url}")
+            if url == index_url:
+                return Page(
+                    url=url,
+                    html=(
+                        f"<sitemapindex><sitemap><loc>{index_url}</loc>"
+                        "</sitemap></sitemapindex>"
+                    ),
+                )
+            return Page(url=url, error="404")
+
+    fetcher = LoopingFetcher()
+
+    urls = await node.all_page_urls(f"{SITE}/", fetcher=fetcher, limit=200)
+
+    assert urls == [f"{SITE}/"]
+    assert fetcher.calls == [index_url, f"{SITE}/"]
+    assert fetcher.calls.count(index_url) == 1
+
+
+async def test_all_page_urls_stops_on_an_indirect_sitemap_loop():
+    """The index and a nested sitemap can bounce forever without an exact
+    self-reference: a malformed nested URL was answered with the index
+    again. Each sitemap URL is still fetched at most once per walk, and
+    pages found before the loop closes are kept (#77)."""
+    from company_reach.tools.fetcher import Page
+
+    index_url = f"{SITE}/sitemap.xml"
+    nested_url = f"{SITE}/sitemap-pages.xml"
+    real_pages_url = f"{SITE}/sitemap-real.xml"
+    page_url = f"{SITE}/de/kontakt"
+
+    responses = {
+        index_url: (
+            "<sitemapindex>"
+            f"<sitemap><loc>{nested_url}</loc></sitemap>"
+            f"<sitemap><loc>{real_pages_url}</loc></sitemap>"
+            "</sitemapindex>"
+        ),
+        # The nested sitemap answers with the index again — the loop TYPO3
+        # produced, reached here without needing an escaped URL.
+        nested_url: (
+            f"<sitemapindex><sitemap><loc>{index_url}</loc></sitemap></sitemapindex>"
+        ),
+        real_pages_url: f"<urlset><url><loc>{page_url}</loc></url></urlset>",
+    }
+
+    class LoopingFetcher:
+        def __init__(self):
+            self.calls: list[str] = []
+
+        async def get(self, url):
+            self.calls.append(url)
+            if len(self.calls) > 20:
+                raise AssertionError(f"fetched more than 20 times: {url}")
+            html = responses.get(url)
+            if html is None:
+                return Page(url=url, error="404")
+            return Page(url=url, html=html)
+
+    fetcher = LoopingFetcher()
+
+    urls = await node.all_page_urls(f"{SITE}/", fetcher=fetcher, limit=200)
+
+    assert page_url in urls
+    assert urls[-1] == f"{SITE}/"
+    assert sorted(fetcher.calls) == sorted({index_url, nested_url, real_pages_url})
+
+
 # --- the three tiers ---------------------------------------------------------
 
 IMPRESSUM_WITH_UID = (

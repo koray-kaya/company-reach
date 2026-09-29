@@ -42,6 +42,7 @@ keeping them, so a candidate only Brave found is left out of the record.
 """
 
 import asyncio
+import html
 import re
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -274,8 +275,13 @@ def harvest_links(html: str, base: str) -> list[str]:
 def read_sitemap(xml: str) -> tuple[list[str], list[str]]:
     """(page urls, nested sitemap urls). Hand-rolled because the maintained
     parser is GPL and trafilatura's own helper hides the fetch, which would
-    lose the cache, the user agent and the per-host delay."""
-    locations = re.findall(r"<loc>\s*(.*?)\s*</loc>", xml, flags=re.DOTALL)
+    lose the cache, the user agent and the per-host delay. Each `<loc>` is
+    XML-unescaped, so a `&amp;` in a query string comes back as `&`.
+    """
+    locations = [
+        html.unescape(loc)
+        for loc in re.findall(r"<loc>\s*(.*?)\s*</loc>", xml, flags=re.DOTALL)
+    ]
     if "<sitemapindex" in xml:
         return [], locations
     return locations, []
@@ -630,9 +636,17 @@ async def list_pages(site: str, *, fetcher: Fetcher, limit: int) -> list[str]:
 async def all_page_urls(site: str, *, fetcher: Fetcher, limit: int) -> list[str]:
     """The list before pruning — what the prune patterns are judged against."""
     found: list[str] = []
+    seen: set[str] = set()
     pending = [urljoin(site, "/sitemap.xml")]
     while pending and len(found) < limit * 10:
-        page = await fetcher.get(pending.pop(0))
+        url = pending.pop(0)
+        # A sitemap index that points back at itself, or an escaped URL a
+        # server answers with the index again, looped forever and froze the
+        # batch — never fetch the same sitemap URL twice in one walk (#77).
+        if url in seen:
+            continue
+        seen.add(url)
+        page = await fetcher.get(url)
         if page.error is not None or not page.html:
             continue
         pages, nested = read_sitemap(page.html)
